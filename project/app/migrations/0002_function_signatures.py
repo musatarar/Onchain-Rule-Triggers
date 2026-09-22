@@ -17,6 +17,7 @@ class Migration(migrations.Migration):
                 ("hex_signature", models.CharField(db_index=True, max_length=10)),
                 ("text_signature", models.CharField(max_length=512)),
                 ("created_at", models.DateTimeField()),
+                ("description", models.TextField(blank=True, default="")),
             ],
             options={
                 "ordering": ["-id"],

@@ -56,6 +56,8 @@ class FunctionSignature(models.Model):
     text_signature = models.CharField(max_length=512)  # "transferFrom(address,address,uint256)"
     # When the source recorded it, not when this row was loaded.
     created_at = models.DateTimeField()
+    # Never loaded: what a reader adds, which a re-load leaves alone.
+    description = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["-id"]

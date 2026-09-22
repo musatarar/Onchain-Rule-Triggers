@@ -154,6 +154,28 @@ class LoadFunctionSignaturesTests(TestCase):
         self.assertEqual(row.text_signature, "_expectedBalance()")
         self.assertEqual(row.created_at, CREATED)
 
+    def test_a_loaded_row_starts_with_no_description(self):
+        recorder = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
+
+        with recorder.patch_client():
+            load_function_signatures(start=2, end=2)
+
+        self.assertEqual(FunctionSignature.objects.get(pk=1216430).description, "")
+
+    def test_a_second_run_leaves_a_written_description_alone(self):
+        first = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
+        with first.patch_client():
+            load_function_signatures(start=2, end=2)
+        FunctionSignature.objects.filter(pk=1216430).update(description="Reads the escrow float.")
+
+        second = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")]})
+        with second.patch_client():
+            load_function_signatures(start=2, end=2)
+
+        row = FunctionSignature.objects.get(pk=1216430)
+        self.assertEqual(row.description, "Reads the escrow float.")
+        self.assertEqual(row.text_signature, "_expectedBalance(uint256)")
+
     def test_a_second_run_updates_rather_than_duplicates(self):
         first = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
         with first.patch_client():
