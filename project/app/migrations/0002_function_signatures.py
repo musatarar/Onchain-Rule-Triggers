@@ -1,4 +1,4 @@
-"""The 4byte.directory signature catalog: a new table, so its index rides the create."""
+"""The signature catalog: a new table, so its index rides the create."""
 
 from django.db import migrations, models
 

@@ -5,17 +5,16 @@ import functools
 from unittest import mock
 
 import httpx
-from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.test import TestCase
 
 from project.app.defi import services
-from project.app.management.commands.load_function_signatures import (
+from project.app.models import FunctionSignature
+from scripts.load_function_signatures import (
     API_URL,
     DEFAULT_END_PAGE,
     DEFAULT_START_PAGE,
+    load_function_signatures,
 )
-from project.app.models import FunctionSignature
 
 CREATED = datetime.datetime(2026, 9, 22, 13, 53, 58, tzinfo=datetime.timezone.utc)
 
@@ -42,7 +41,7 @@ def patched_client(transport):
 
 
 class PageRecorder:
-    """A 4byte.directory double: one page of results per requested page number."""
+    """A signature API double: one page of results per requested page number."""
 
     def __init__(self, pages=None):
         self.pages = pages or {}
@@ -132,23 +131,23 @@ class SelectorLookupTests(TestCase):
         self.assertEqual(services.signatures_for_selector("0xdeadbeef"), [])
 
 
-class LoadFunctionSignaturesCommandTests(TestCase):
+class LoadFunctionSignaturesTests(TestCase):
     def test_loads_pages_two_to_eight_by_default(self):
         recorder = PageRecorder(
             {page: [entry(page, "0x23b872dd", f"f{page}()")] for page in range(2, 9)}
         )
 
         with recorder.patch_client():
-            call_command("load_function_signatures")
+            load_function_signatures()
 
         self.assertEqual(recorder.requested, list(range(DEFAULT_START_PAGE, DEFAULT_END_PAGE + 1)))
         self.assertEqual(FunctionSignature.objects.count(), 7)
 
-    def test_stores_the_directory_id_hex_and_text_of_each_entry(self):
+    def test_stores_the_id_hex_and_text_of_each_entry(self):
         recorder = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
 
         with recorder.patch_client():
-            call_command("load_function_signatures", start=2, end=2)
+            load_function_signatures(start=2, end=2)
 
         row = FunctionSignature.objects.get(pk=1216430)
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
@@ -158,11 +157,11 @@ class LoadFunctionSignaturesCommandTests(TestCase):
     def test_a_second_run_updates_rather_than_duplicates(self):
         first = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
         with first.patch_client():
-            call_command("load_function_signatures", start=2, end=2)
+            load_function_signatures(start=2, end=2)
 
         second = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")]})
         with second.patch_client():
-            call_command("load_function_signatures", start=2, end=2)
+            load_function_signatures(start=2, end=2)
 
         self.assertEqual(FunctionSignature.objects.count(), 1)
         self.assertEqual(
@@ -175,11 +174,11 @@ class LoadFunctionSignaturesCommandTests(TestCase):
         )
 
         with recorder.patch_client():
-            call_command("load_function_signatures", start=3, end=4)
+            load_function_signatures(start=3, end=4)
 
         self.assertEqual(recorder.requested, [3, 4])
 
-    def test_the_request_asks_the_directory_for_the_page(self):
+    def test_the_request_asks_the_api_for_the_page(self):
         seen = {}
 
         def respond(request):
@@ -187,23 +186,23 @@ class LoadFunctionSignaturesCommandTests(TestCase):
             return httpx.Response(200, json={"results": []})
 
         with patched_client(httpx.MockTransport(respond)):
-            call_command("load_function_signatures", start=5, end=5)
+            load_function_signatures(start=5, end=5)
 
         self.assertEqual(seen["url"], f"{API_URL}?page=5")
 
     def test_an_end_before_the_start_is_refused(self):
-        with self.assertRaises(CommandError):
-            call_command("load_function_signatures", start=4, end=3)
+        with self.assertRaises(ValueError):
+            load_function_signatures(start=4, end=3)
 
     def test_a_page_number_below_one_is_refused(self):
-        with self.assertRaises(CommandError):
-            call_command("load_function_signatures", start=0, end=3)
+        with self.assertRaises(ValueError):
+            load_function_signatures(start=0, end=3)
 
     def test_an_api_error_stops_the_run(self):
         transport = httpx.MockTransport(lambda request: httpx.Response(500))
 
         with patched_client(transport):
             with self.assertRaises(httpx.HTTPStatusError):
-                call_command("load_function_signatures", start=2, end=2)
+                load_function_signatures(start=2, end=2)
 
         self.assertEqual(FunctionSignature.objects.count(), 0)

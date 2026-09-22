@@ -1,4 +1,4 @@
-"""The 4byte.directory catalog: a function selector and the text signature it decodes to."""
+"""The signature catalog: a function selector and the text signature it decodes to."""
 
 import re
 
@@ -44,17 +44,17 @@ def _worded(name):
 
 
 class FunctionSignature(models.Model):
-    """One 4byte.directory entry: a selector and a text signature it decodes to.
+    """One catalog entry: a selector and a text signature it decodes to.
 
-    ``id`` is the directory's own, so re-loading a page updates the rows it
-    first wrote. A selector is four bytes of a hash, so several text signatures
-    share one ``hex_signature``: the column is indexed, never unique.
+    ``id`` is the one the source assigned, so re-loading a page updates the
+    rows it first wrote. A selector is four bytes of a hash, so several text
+    signatures share one ``hex_signature``: the column is indexed, never unique.
     """
 
     id = models.BigIntegerField(primary_key=True)
     hex_signature = models.CharField(max_length=10, db_index=True)  # "0xc1c3d3d9"
     text_signature = models.CharField(max_length=512)  # "transferFrom(address,address,uint256)"
-    # When the directory recorded it, not when this row was loaded.
+    # When the source recorded it, not when this row was loaded.
     created_at = models.DateTimeField()
 
     class Meta:
@@ -64,7 +64,7 @@ class FunctionSignature(models.Model):
         """The stored text as its name and the input types it declares."""
         match = _SIGNATURE_RE.match(self.text_signature or "")
         if match is None:
-            # A row the directory stored without an argument list is all name.
+            # A row stored without an argument list is all name.
             return Signature(name=(self.text_signature or "").strip(), inputs=[])
         name, arguments = match.groups()
         return Signature(name=name.strip(), inputs=_inputs(arguments))
