@@ -16,7 +16,8 @@
       "Bash(npm run build)",
       "Bash(git status*)",
       "Bash(git log*)",
-      "Bash(git diff*)"
+      "Bash(git diff*)",
+      "Bash(git rm *)"
     ]
   },
   "hooks": {
