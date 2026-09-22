@@ -1,20 +1,16 @@
 """The signature catalog: how a stored text signature reads, and how the loader fills it."""
 
 import datetime
-import functools
-from unittest import mock
+import io
+import json
+import os
+import tempfile
 
-import httpx
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from project.app.defi import services
 from project.app.models import FunctionSignature
-from scripts.load_function_signatures import (
-    API_URL,
-    DEFAULT_END_PAGE,
-    DEFAULT_START_PAGE,
-    load_function_signatures,
-)
 
 CREATED = datetime.datetime(2026, 9, 22, 13, 53, 58, tzinfo=datetime.timezone.utc)
 
@@ -35,29 +31,15 @@ def entry(pk, hex_signature, text):
     }
 
 
-def patched_client(transport):
-    """The command's client, built on a double; partial binds the real class before the patch."""
-    return mock.patch("httpx.Client", functools.partial(httpx.Client, transport=transport))
-
-
-class PageRecorder:
-    """A signature API double: one page of results per requested page number."""
-
-    def __init__(self, pages=None):
-        self.pages = pages or {}
-        self.requested = []
-
-    def transport(self):
-        return httpx.MockTransport(self._respond)
-
-    def _respond(self, request):
-        page = int(dict(request.url.params).get("page", 1))
-        self.requested.append(page)
-        results = self.pages.get(page, [])
-        return httpx.Response(200, json={"count": 1183334, "next": None, "results": results})
-
-    def patch_client(self):
-        return patched_client(self.transport())
+def load(entries, **options):
+    """Run the command against ``entries`` written to a raw_data-style file; answer its output."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "function_signatures.json")
+        with open(path, "w", encoding="utf-8") as raw:
+            json.dump(entries, raw)
+        out = io.StringIO()
+        call_command("load_function_signatures", path=path, stdout=out, **options)
+    return out.getvalue()
 
 
 class FunctionSignatureParsingTests(TestCase):
@@ -132,22 +114,14 @@ class SelectorLookupTests(TestCase):
 
 
 class LoadFunctionSignaturesTests(TestCase):
-    def test_loads_pages_two_to_eight_by_default(self):
-        recorder = PageRecorder(
-            {page: [entry(page, "0x23b872dd", f"f{page}()")] for page in range(2, 9)}
-        )
+    def test_loads_every_entry_in_the_file(self):
+        output = load([entry(pk, "0x23b872dd", f"f{pk}()") for pk in range(1, 8)])
 
-        with recorder.patch_client():
-            load_function_signatures()
-
-        self.assertEqual(recorder.requested, list(range(DEFAULT_START_PAGE, DEFAULT_END_PAGE + 1)))
         self.assertEqual(FunctionSignature.objects.count(), 7)
+        self.assertIn("Loaded 7 of 7 signature(s).", output)
 
     def test_stores_the_id_hex_and_text_of_each_entry(self):
-        recorder = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
-
-        with recorder.patch_client():
-            load_function_signatures(start=2, end=2)
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
 
         row = FunctionSignature.objects.get(pk=1216430)
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
@@ -155,76 +129,55 @@ class LoadFunctionSignaturesTests(TestCase):
         self.assertEqual(row.created_at, CREATED)
 
     def test_a_loaded_row_starts_with_no_description(self):
-        recorder = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
-
-        with recorder.patch_client():
-            load_function_signatures(start=2, end=2)
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
 
         self.assertEqual(FunctionSignature.objects.get(pk=1216430).description, "")
 
+    def test_a_limit_loads_only_that_many_from_the_top_of_the_file(self):
+        output = load([entry(pk, "0x23b872dd", f"f{pk}()") for pk in (9, 4, 7, 2)], limit=2)
+
+        self.assertEqual(sorted(FunctionSignature.objects.values_list("id", flat=True)), [4, 9])
+        self.assertIn("Loaded 2 of 4 signature(s).", output)
+
+    def test_a_limit_past_the_end_of_the_file_loads_it_all(self):
+        load([entry(1, "0x23b872dd", "f()")], limit=50)
+
+        self.assertEqual(FunctionSignature.objects.count(), 1)
+
+    def test_a_limit_of_zero_loads_nothing(self):
+        load([entry(1, "0x23b872dd", "f()")], limit=0)
+
+        self.assertEqual(FunctionSignature.objects.count(), 0)
+
+    def test_a_negative_limit_is_refused(self):
+        with self.assertRaises(CommandError):
+            load([entry(1, "0x23b872dd", "f()")], limit=-1)
+
+        with self.assertRaises(ValueError):
+            services.load_function_signatures([], limit=-1)
+
     def test_a_second_run_leaves_a_written_description_alone(self):
-        first = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
-        with first.patch_client():
-            load_function_signatures(start=2, end=2)
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
         FunctionSignature.objects.filter(pk=1216430).update(description="Reads the escrow float.")
 
-        second = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")]})
-        with second.patch_client():
-            load_function_signatures(start=2, end=2)
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")])
 
         row = FunctionSignature.objects.get(pk=1216430)
         self.assertEqual(row.description, "Reads the escrow float.")
         self.assertEqual(row.text_signature, "_expectedBalance(uint256)")
 
     def test_a_second_run_updates_rather_than_duplicates(self):
-        first = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance()")]})
-        with first.patch_client():
-            load_function_signatures(start=2, end=2)
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
 
-        second = PageRecorder({2: [entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")]})
-        with second.patch_client():
-            load_function_signatures(start=2, end=2)
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")])
 
         self.assertEqual(FunctionSignature.objects.count(), 1)
         self.assertEqual(
             FunctionSignature.objects.get(pk=1216430).text_signature, "_expectedBalance(uint256)"
         )
 
-    def test_a_page_range_loads_only_the_pages_it_names(self):
-        recorder = PageRecorder(
-            {3: [entry(3, "0x23b872dd", "f3()")], 4: [entry(4, "0x23b872dd", "f4()")]}
-        )
-
-        with recorder.patch_client():
-            load_function_signatures(start=3, end=4)
-
-        self.assertEqual(recorder.requested, [3, 4])
-
-    def test_the_request_asks_the_api_for_the_page(self):
-        seen = {}
-
-        def respond(request):
-            seen["url"] = str(request.url)
-            return httpx.Response(200, json={"results": []})
-
-        with patched_client(httpx.MockTransport(respond)):
-            load_function_signatures(start=5, end=5)
-
-        self.assertEqual(seen["url"], f"{API_URL}?page=5")
-
-    def test_an_end_before_the_start_is_refused(self):
-        with self.assertRaises(ValueError):
-            load_function_signatures(start=4, end=3)
-
-    def test_a_page_number_below_one_is_refused(self):
-        with self.assertRaises(ValueError):
-            load_function_signatures(start=0, end=3)
-
-    def test_an_api_error_stops_the_run(self):
-        transport = httpx.MockTransport(lambda request: httpx.Response(500))
-
-        with patched_client(transport):
-            with self.assertRaises(httpx.HTTPStatusError):
-                load_function_signatures(start=2, end=2)
+    def test_a_missing_file_is_reported(self):
+        with self.assertRaises(CommandError):
+            call_command("load_function_signatures", path="/nonexistent/signatures.json")
 
         self.assertEqual(FunctionSignature.objects.count(), 0)
