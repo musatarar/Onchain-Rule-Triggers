@@ -1,0 +1,18 @@
+# Runtime dependencies. Python 3.12+.
+#   pip install -r requirements.txt
+
+Django==4.2.30
+djangorestframework==3.16.1
+
+# SQLite is the local default; DATABASE_URL switches to Postgres.
+dj-database-url==3.1.2
+psycopg2-binary==2.9.12
+
+# LLM providers: claude uses the anthropic SDK, the OpenAI-compatible three
+# (chatgpt, deepseek, groq) talk REST over httpx with no vendor SDK.
+anthropic==0.109.1
+httpx==0.28.1
+
+# Structured outputs derive their JSON schema from a pydantic model; pinned
+# here because the LLM layer imports it, not just the anthropic SDK.
+pydantic==2.13.5

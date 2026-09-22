@@ -1,0 +1,204 @@
+"""Django settings -> the knobs the concurrent planner runs on.
+
+The only module under ``services/llm/`` that knows Django exists, and even here
+the imports are function-local so importing it stays safe without Django.
+Validation messages name the *setting*, not the dataclass field, so an operator
+knows which environment variable to fix.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from .retry import (
+    DEFAULT_INITIAL_BACKOFF_S,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_S,
+    DEFAULT_MULTIPLIER,
+    RetryPolicy,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from django.core.exceptions import ImproperlyConfigured
+
+# Fallbacks used when a settings module doesn't define the knob at all. The four
+# retry values come from retry.py rather than being restated; `project/settings.py`
+# necessarily states the same numbers again as env-var defaults, and
+# `PlannerRuntimeDefaultsTests` pins the two lists together.
+DEFAULT_MAX_IN_FLIGHT = 8
+DEFAULT_REQUEST_TIMEOUT_S = 60.0
+DEFAULT_PER_LEAD_TIMEOUT_S = 150.0
+
+# Sanity ceiling on the pool -- a typo guard, not a capacity limit: `>= 1` alone
+# would let `80000` typed for `8` through.
+MAX_IN_FLIGHT_CEILING = 256
+
+SETTING_MAX_IN_FLIGHT = "OUTREACH_MAX_IN_FLIGHT"
+SETTING_MAX_ATTEMPTS = "OUTREACH_MAX_ATTEMPTS"
+SETTING_INITIAL_BACKOFF_S = "OUTREACH_INITIAL_BACKOFF_S"
+SETTING_MAX_BACKOFF_S = "OUTREACH_MAX_BACKOFF_S"
+SETTING_BACKOFF_MULTIPLIER = "OUTREACH_BACKOFF_MULTIPLIER"
+SETTING_REQUEST_TIMEOUT_S = "OUTREACH_REQUEST_TIMEOUT_S"
+SETTING_PER_LEAD_TIMEOUT_S = "OUTREACH_PER_LEAD_TIMEOUT_S"
+
+
+@dataclass(frozen=True, slots=True)
+class Timeouts:
+    """Two nested deadlines around one lead's copy generation.
+
+    ``request_s`` bounds a single HTTP attempt and is handed to the adapter;
+    ``per_lead_s`` bounds the *whole* retry loop -- every attempt plus every
+    backoff sleep. The nesting is enforced, not merely described: a per-lead
+    budget shorter than one attempt fails every lead.
+    """
+
+    request_s: float = DEFAULT_REQUEST_TIMEOUT_S
+    per_lead_s: float = DEFAULT_PER_LEAD_TIMEOUT_S
+
+    def __post_init__(self) -> None:
+        # Zero is rejected as firmly as negative: `asyncio.timeout(0)` means
+        # "expire immediately", not "no deadline".
+        if self.request_s <= 0:
+            raise ValueError("Timeouts.request_s must be greater than 0.")
+        if self.per_lead_s <= 0:
+            raise ValueError("Timeouts.per_lead_s must be greater than 0.")
+        if self.per_lead_s < self.request_s:
+            raise ValueError(
+                "Timeouts.per_lead_s must be at least Timeouts.request_s -- a "
+                "per-lead budget shorter than one attempt fails every lead."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerRuntime:
+    """Everything one planner run needs to know about how hard to push.
+
+    Resolved once, at the top of the run, and passed down -- an aggregate makes
+    "decided once, before the run" structural. It also gives the boot-time
+    system check (``project/app/checks.py``) one call site covering every knob.
+    """
+
+    max_in_flight: int
+    retry: RetryPolicy
+    timeouts: Timeouts
+
+
+def _setting(name: str, default: Any) -> Any:
+    # Imported inside the function so this module is importable without Django
+    # configured -- see the module docstring.
+    from django.conf import settings
+
+    return getattr(settings, name, default)
+
+
+def _as_int(name: str, default: int) -> int:
+    value = _setting(name, default)
+    # bool is an int subclass; `OUTREACH_MAX_IN_FLIGHT=True` silently becoming a
+    # semaphore of 1 is exactly the kind of thing nobody ever finds.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _bad(name, value, "a whole number")
+    return value
+
+
+def _as_float(name: str, default: float) -> float:
+    value = _setting(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _bad(name, value, "a number")
+    return float(value)
+
+
+def _bad(name: str, value: Any, expected: str) -> "ImproperlyConfigured":
+    # Imported here, not at module scope, for the same reason `settings` is --
+    # and annotated via TYPE_CHECKING so mypy knows `raise _bad(...)` is terminal.
+    from django.core.exceptions import ImproperlyConfigured
+
+    return ImproperlyConfigured(f"{name} must be {expected}, got {value!r}.")
+
+
+def _require(condition: bool, name: str, value: Any, requirement: str) -> None:
+    if not condition:
+        raise _bad(name, value, requirement)
+
+
+def get_retry_policy() -> RetryPolicy:
+    """Build the run's :class:`RetryPolicy` from Django settings."""
+    max_attempts = _as_int(SETTING_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS)
+    initial_backoff_s = _as_float(SETTING_INITIAL_BACKOFF_S, DEFAULT_INITIAL_BACKOFF_S)
+    max_backoff_s = _as_float(SETTING_MAX_BACKOFF_S, DEFAULT_MAX_BACKOFF_S)
+    multiplier = _as_float(SETTING_BACKOFF_MULTIPLIER, DEFAULT_MULTIPLIER)
+
+    # Checked ahead of RetryPolicy's own __post_init__ purely so the message
+    # names the environment variable: a better message, not the only guard.
+    _require(max_attempts >= 1, SETTING_MAX_ATTEMPTS, max_attempts, "at least 1")
+    _require(initial_backoff_s >= 0, SETTING_INITIAL_BACKOFF_S, initial_backoff_s, "non-negative")
+    _require(max_backoff_s >= 0, SETTING_MAX_BACKOFF_S, max_backoff_s, "non-negative")
+    _require(multiplier >= 1, SETTING_BACKOFF_MULTIPLIER, multiplier, "at least 1")
+
+    return RetryPolicy(
+        max_attempts=max_attempts,
+        initial_backoff_s=initial_backoff_s,
+        max_backoff_s=max_backoff_s,
+        multiplier=multiplier,
+    )
+
+
+def get_timeouts() -> Timeouts:
+    """Build the run's :class:`Timeouts` from Django settings."""
+    request_s = _as_float(SETTING_REQUEST_TIMEOUT_S, DEFAULT_REQUEST_TIMEOUT_S)
+    per_lead_s = _as_float(SETTING_PER_LEAD_TIMEOUT_S, DEFAULT_PER_LEAD_TIMEOUT_S)
+    _require(request_s > 0, SETTING_REQUEST_TIMEOUT_S, request_s, "greater than 0")
+    _require(per_lead_s > 0, SETTING_PER_LEAD_TIMEOUT_S, per_lead_s, "greater than 0")
+    _require(
+        per_lead_s >= request_s,
+        SETTING_PER_LEAD_TIMEOUT_S,
+        per_lead_s,
+        f"at least {SETTING_REQUEST_TIMEOUT_S} ({request_s}) -- a per-lead "
+        "budget shorter than one attempt fails every lead",
+    )
+    return Timeouts(request_s=request_s, per_lead_s=per_lead_s)
+
+
+def get_max_in_flight() -> int:
+    """How many provider calls the planner may have outstanding at once.
+
+    A property of the *run*, not of a single call: the planner's semaphore is
+    the sole consumer, and the provider layer never sees it.
+    """
+    value = _as_int(SETTING_MAX_IN_FLIGHT, DEFAULT_MAX_IN_FLIGHT)
+    _require(value >= 1, SETTING_MAX_IN_FLIGHT, value, "at least 1")
+    _require(
+        value <= MAX_IN_FLIGHT_CEILING,
+        SETTING_MAX_IN_FLIGHT,
+        value,
+        f"at most {MAX_IN_FLIGHT_CEILING}",
+    )
+    return value
+
+
+def get_planner_runtime() -> PlannerRuntime:
+    """Resolve every knob for one run, once.
+
+    The planner calls this at the top of a run; the boot-time system check calls
+    it so a misconfiguration fails ``manage.py check`` rather than a request.
+    """
+    return PlannerRuntime(
+        max_in_flight=get_max_in_flight(),
+        retry=get_retry_policy(),
+        timeouts=get_timeouts(),
+    )
+
+
+__all__ = [
+    "Timeouts",
+    "PlannerRuntime",
+    "RetryPolicy",
+    "DEFAULT_MAX_IN_FLIGHT",
+    "DEFAULT_REQUEST_TIMEOUT_S",
+    "DEFAULT_PER_LEAD_TIMEOUT_S",
+    "MAX_IN_FLIGHT_CEILING",
+    "get_retry_policy",
+    "get_timeouts",
+    "get_max_in_flight",
+    "get_planner_runtime",
+]

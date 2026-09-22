@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel superseded runs per PR; never cancel a master push.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The test suite mocks every LLM provider call, so no API key is needed and
+  # no job here reaches a provider.
+  DJANGO_SETTINGS_MODULE: project.settings
+  # Required by settings.py; a throwaway value is fine, CI never serves traffic.
+  DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: mypy project/app/services/
+
+  frontend:
+    name: Frontend (typecheck, tests, bundle freshness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      # The React bundle is committed and served by Django with no Node in the
+      # image, so a stale bundle means the app serves old code while the new
+      # source sits in the repo looking merged. Nothing else catches that.
+      - name: Fail if the committed bundle is stale
+        run: git diff --exit-code -- project/app/static/frontend/
+
+  test:
+    name: Test (py${{ matrix.python-version }}, ${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Django 4.2.30 only advertises 3.9-3.12 support; the runtime requires
+        # 3.12+, and 3.13 is included because the full suite passes on it.
+        python-version: ["3.12", "3.13"]
+        database: ["sqlite", "postgres"]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # settings.py falls back to SQLite when DATABASE_URL is unset.
+      DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgres://postgres:postgres@localhost:5432/postgres' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Check for missing migrations
+        run: |
+          # Same dance as the test step below -- this command runs Django's
+          # system checks, which touch the database, so an empty DATABASE_URL
+          # fails it on the sqlite leg before it ever looks at a migration.
+          [ -n "$DATABASE_URL" ] || unset DATABASE_URL
+          python manage.py makemigrations --check --dry-run
+      - name: Run tests with coverage
+        run: |
+          # dj_database_url treats a *present-but-empty* DATABASE_URL as
+          # malformed (not "unset"), so drop it for the sqlite leg rather
+          # than leaving it set to "".
+          [ -n "$DATABASE_URL" ] || unset DATABASE_URL
+          coverage run manage.py test project.app
+          coverage report
+
+  # Rulesets require status checks *by name*, and the test matrix produces one
+  # name per cell — this single stable name is what gets protected. It fails on
+  # any failed/cancelled/skipped dependency.
+  ci-ok:
+    name: ci-ok
+    needs: [lint, typecheck, frontend, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every dependency succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          bad = {name: spec["result"] for name, spec in needs.items() if spec["result"] != "success"}
+          if bad:
+              print(f"ci-ok: FAIL — non-success dependencies: {bad}")
+              sys.exit(1)
+          print("ci-ok: PASS —", ", ".join(sorted(needs)))
+          EOF
