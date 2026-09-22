@@ -28,16 +28,6 @@ if _env_file.exists():
 #   deepseek -> DEEPSEEK_API_KEY
 #   groq     -> GROQ_API_KEY
 
-# Grounding verifier strictness for generated outreach copy:
-#   off | standard (default) | strict. See project/app/services/verify.py.
-COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
-
-# --- Planner concurrency, retries and timeouts --------------------------------
-# Read here and handed to services/llm/runtime.py as frozen dataclasses --
-# nothing under services/llm/ reads Django settings, so those modules stay
-# importable without Django configured. The retry defaults are deliberately
-# duplicated there (settings must not import app code) and pinned by a test.
-
 
 def _env_number(name, default, parse, expected):
     """Parse a numeric env var, or return ``default`` when it is unset/blank.
@@ -66,17 +56,6 @@ def _env_list(name):
     """Comma-separated env var -> list of stripped, non-empty entries."""
     return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
 
-
-OUTREACH_MAX_IN_FLIGHT = _env_int("OUTREACH_MAX_IN_FLIGHT", 8)
-OUTREACH_MAX_ATTEMPTS = _env_int("OUTREACH_MAX_ATTEMPTS", 4)
-OUTREACH_INITIAL_BACKOFF_S = _env_float("OUTREACH_INITIAL_BACKOFF_S", 0.5)
-OUTREACH_MAX_BACKOFF_S = _env_float("OUTREACH_MAX_BACKOFF_S", 30.0)
-OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
-# Two nested deadlines: one HTTP attempt, and the whole retry loop for one lead.
-OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
-OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
-# Token budget for one copy call; a reasoning model's hidden reasoning is billed against it.
-OUTREACH_MAX_COPY_TOKENS = _env_int("OUTREACH_MAX_COPY_TOKENS", 1000)
 
 # Whether an actions-engine run may call the provider. Two values:
 #   True (the default) -- dry run: the inference pass asks nothing, every
@@ -232,19 +211,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth_request_ip": LOGIN_RATE_LIMIT_IP,
         "auth_consume_ip": "60/hour",
-        # The live grounding check, hit once per debounced keystroke.
-        "copy_verify": "120/min",
-        # The review inbox list.
-        "outreach_list": "120/min",
         # The rules-catalog CRUD surface.
         "rules_catalog": "120/min",
-        # The list of what the actions engine chose.
-        "actions_list": "120/min",
         # The caller's own lead/event shape.
         "shape": "120/min",
     },
     # No list endpoint serializes an unbounded table: pagination is the
-    # default, and the review list narrows it further with `?page_size=`.
+    # default, and the rules catalog narrows it further with `?page_size=`.
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
 }

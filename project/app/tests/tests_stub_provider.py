@@ -4,27 +4,15 @@ the app without the ``OUTREACH_ALLOW_STUB_LLM`` opt-in."""
 import os
 from unittest import mock
 
-from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 
-from project.app.models import Lead
-from project.app.services import verify
 from project.app.services.llm import _REGISTRY, _build_client, build_client, get_llm_client
 from project.app.services.llm.stub import (
     ALLOW_ENV_VAR,
     PROVIDER_NAME,
     StubClient,
     StubLLMNotAllowed,
-    canned_copy,
-    canned_email,
 )
-from project.app.services.outreach import (
-    OutreachCopy,
-    _build_copy_prompt,
-    render_email,
-    validate_copy,
-)
-from project.app.tests.tests_shape_utils import shape_for
 
 
 def _allowed():
@@ -80,61 +68,6 @@ class StubIsUnreachableFromTheAppTests(TestCase):
 
         self.assertIsInstance(client, StubClient)
         self.assertEqual(client.provider_name, PROVIDER_NAME)
-
-
-class CannedEmailPassesTheRealGatesTests(TestCase):
-    """The stub's output has to survive the planner's two output gates."""
-
-    def setUp(self):
-        super().setUp()
-        self.owner = get_user_model().objects.create_user(username="ae@lockedin.example")
-        shape_for(self.owner)
-        self.lead = Lead.objects.create(
-            id="synth_0001",
-            owner=self.owner,
-            data={
-                "agency_name": "Summit Risk Advisors",
-                "contact_name": "Priya Nair",
-                "contact_email": "priya.nair@summitrisk.com",
-                "contact_phone": "555-0000",
-                "state": "CO",
-                "num_producers": 4,
-                "years_in_business": 12,
-                "estimated_book_size_usd": 5_000_000,
-                "stage": "demo_completed",
-                "deals_closed": 3,
-            },
-        )
-        self.prompt = _build_copy_prompt(self.lead, "complete_onboarding", "reason")
-
-    def test_the_email_names_the_actual_lead(self):
-        email = canned_email(self.prompt)
-
-        # These come from the prompt, not from hardcoded strings in the stub.
-        self.assertIn("Priya Nair", email)
-        self.assertIn("Summit Risk Advisors", email)
-
-    def test_it_passes_the_shape_gate(self):
-        self.assertEqual(validate_copy(canned_email(self.prompt)), [])
-
-    def test_it_passes_the_grounding_gate_at_the_strictest_level(self):
-        violations = verify.verify_copy(
-            self.lead, canned_email(self.prompt), "complete_onboarding", level="strict"
-        )
-        self.assertEqual(violations, [], f"stub copy is not grounded: {violations}")
-
-    def test_it_makes_no_numeric_claim(self):
-        # An invented number would fail the verifier and route the lead to a human.
-        self.assertFalse(
-            [ch for ch in canned_email(self.prompt) if ch.isdigit()],
-            "the canned email contains a digit, which the verifier may contradict",
-        )
-
-    def test_an_unparseable_prompt_still_produces_a_well_formed_email(self):
-        email = canned_email("not a prompt at all")
-
-        self.assertEqual(validate_copy(email), [])
-        self.assertIn("Hi there", email)
 
 
 class StubBehaviourTests(SimpleTestCase):
@@ -222,60 +155,3 @@ class StubBehaviourTests(SimpleTestCase):
         elapsed = asyncio.run(two_at_once())
 
         self.assertLess(elapsed, 0.28, "agenerate appears to block the event loop")
-
-
-class StubStructuredOutputTests(TestCase):
-    """The planner asks for copy through the structured seam, so the stub has
-    to answer there too or it can no longer exercise the planner."""
-
-    def setUp(self):
-        super().setUp()
-        owner = get_user_model().objects.create_user(username="ae@lockedin.example")
-        shape_for(owner)
-        self.prompt = _build_copy_prompt(
-            Lead.objects.create(
-                id="synth_0002",
-                owner=owner,
-                data={
-                    "agency_name": "Summit Risk Advisors",
-                    "contact_name": "Priya Nair",
-                    "contact_email": "priya.nair@summitrisk.com",
-                    "contact_phone": "555-0000",
-                    "state": "CO",
-                    "num_producers": 4,
-                    "years_in_business": 12,
-                    "estimated_book_size_usd": 5_000_000,
-                    "stage": "demo_completed",
-                },
-            ),
-            "complete_onboarding",
-            "reason",
-        )
-
-    def _client(self):
-        with _allowed():
-            return StubClient(latency_mean_s=0.0, latency_stddev_s=0.0)
-
-    def test_it_returns_the_two_fields_for_the_lead_in_the_prompt(self):
-        parsed = self._client().generate_structured(self.prompt, OutreachCopy).parsed
-
-        self.assertIn("Summit Risk Advisors", parsed.subject)
-        self.assertIn("Priya Nair", parsed.body)
-
-    def test_the_async_path_answers_with_the_same_pair(self):
-        import asyncio
-
-        client = self._client()
-        parsed = asyncio.run(client.agenerate_structured(self.prompt, OutreachCopy)).parsed
-
-        self.assertEqual((parsed.subject, parsed.body), canned_copy(self.prompt))
-
-    def test_the_canned_body_carries_no_sign_off(self):
-        _subject, body = canned_copy(self.prompt)
-
-        self.assertNotIn("Best,", body)
-
-    def test_rendering_the_pair_reproduces_the_canned_email(self):
-        parsed = self._client().generate_structured(self.prompt, OutreachCopy).parsed
-
-        self.assertEqual(render_email(parsed), canned_email(self.prompt))

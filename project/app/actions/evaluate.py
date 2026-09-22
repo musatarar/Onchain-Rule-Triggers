@@ -9,7 +9,7 @@ database, no provider call. Lead-authored text is only ever read sanitized.
 import datetime
 
 from project.app.rules import utils
-from project.app.services import outreach, sanitize
+from project.app.services import prompts, sanitize
 
 
 class ConditionError(Exception):
@@ -80,7 +80,7 @@ def _value(source, field, lead, shape, today):
         return value
     if source == utils.SOURCE_DERIVED:
         column = field[len(utils.DAYS_SINCE_PREFIX) :]
-        return outreach._days_since(shape.value(data, column), today)
+        return prompts._days_since(shape.value(data, column), today)
     # In the vocabulary, but nothing computes it yet -- the event columns need
     # an "any event where..." semantic first.
     raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")

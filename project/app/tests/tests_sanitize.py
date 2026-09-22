@@ -3,7 +3,7 @@ End-to-end adversarial coverage lives in ``tests_redteam.py``."""
 
 import unittest
 
-from project.app.services import outreach, sanitize
+from project.app.services import sanitize
 
 
 class SanitizeUntrustedTests(unittest.TestCase):
@@ -78,42 +78,6 @@ class WrapUntrustedTests(unittest.TestCase):
         self.assertTrue(wrapped.startswith(sanitize.UNTRUSTED_OPEN))
         self.assertTrue(wrapped.endswith(sanitize.UNTRUSTED_CLOSE))
         self.assertIn("hello", wrapped)
-
-
-class ValidateCopyTests(unittest.TestCase):
-    GOOD = (
-        "Subject: Let's finish setting up\n\n"
-        "Hi Priya,\n\n"
-        "Summit Risk Advisors has a strong book and real momentum, and I'd hate to "
-        "see it stall before your account is live. Getting fully set up takes about "
-        "fifteen minutes, and once it's done your producers can start protecting "
-        "premiums right away. I know the demo covered a lot, so I'm happy to walk "
-        "your team through the final steps personally and answer anything that came "
-        "up afterward. Would you have time for a quick call this week to wrap up "
-        "onboarding?\n\n"
-        "Best,\nThe Locked In team"
-    )
-
-    def test_well_formed_email_has_no_problems(self):
-        self.assertEqual(outreach.validate_copy(self.GOOD), [])
-
-    def test_empty_is_flagged(self):
-        self.assertTrue(outreach.validate_copy(""))
-        self.assertTrue(outreach.validate_copy("   \n  "))
-
-    def test_too_short_body_is_flagged(self):
-        problems = outreach.validate_copy("Subject: Hi\n\nHi Priya, let's talk soon.")
-        self.assertTrue(any("word" in p.lower() for p in problems))
-
-    def test_multiple_ctas_flagged(self):
-        many = (
-            "Subject: Lots of asks\n\n"
-            "Hi Priya, can we talk? Would you reply today? Let me know if next week "
-            "works. Are you free Thursday? Reach out anytime and let's schedule a call "
-            "so we can get started together on this soon this month okay great."
-        )
-        problems = outreach.validate_copy(many)
-        self.assertTrue(any("call-to-action" in p.lower() for p in problems))
 
 
 if __name__ == "__main__":
