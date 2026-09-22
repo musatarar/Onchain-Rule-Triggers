@@ -658,14 +658,11 @@ class UnauthenticatedAccessTests(APITestCase):
 
     PREVIOUSLY_PUBLIC = [
         ("get", "/api/leads/"),
-        ("get", "/api/outreach/"),
-        # The review surface: the permission check runs before the view, so an
-        # id that does not exist still answers 401 rather than 404.
-        ("post", "/api/outreach/1/edit/"),
-        ("post", "/api/outreach/1/verify/"),
-        ("post", "/api/outreach/1/approve/"),
-        ("post", "/api/outreach/1/dismiss/"),
-        ("post", "/api/outreach/1/reopen/"),
+        ("get", "/api/rules/"),
+        # The permission check runs before the view, so an id that does not
+        # exist still answers 401 rather than 404.
+        ("get", "/api/rules/1/"),
+        ("post", "/api/rules/"),
     ]
 
     def test_every_previously_public_endpoint_is_401_when_anonymous(self):
@@ -697,7 +694,7 @@ class UnauthenticatedAccessTests(APITestCase):
     def test_the_html_shells_stay_public(self):
         # The shells render an empty #root; @login_required would replace the
         # designed sign-in redirect with a Django 302.
-        for url in ("/leads/", "/inbox", "/signin"):
+        for url in ("/leads/", "/signin"):
             with self.subTest(url=url):
                 self.assertEqual(Client().get(url).status_code, 200)
 
@@ -726,7 +723,7 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
 
         # Any authenticated POST does: the CSRF check runs before the view.
         with_stale = client.post(
-            "/api/outreach/1/approve/",
+            "/api/rules/",
             json.dumps({}),
             content_type="application/json",
             HTTP_X_CSRFTOKEN=stale,
@@ -735,7 +732,7 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
         self.assertEqual(with_stale.json()["code"], "csrf_failed")
 
         with_fresh = client.post(
-            "/api/outreach/1/approve/",
+            "/api/rules/",
             json.dumps({}),
             content_type="application/json",
             HTTP_X_CSRFTOKEN=fresh,
@@ -759,6 +756,6 @@ class AuthenticatedAPITestCaseTests(AuthenticatedAPITestCase):
     def test_json_format_requests_still_work(self):
         # client_class is APIClient so existing format="json" call sites keep
         # working: a parse failure would answer 400, not the view's own 404.
-        resp = self.client.post("/api/outreach/1/edit/", {"copy": "x"}, format="json")
+        resp = self.client.patch("/api/rules/1/", {"name": "x"}, format="json")
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.data["code"], "not_found")

@@ -1,14 +1,11 @@
-import { Badge, Button } from '../ui';
-import type { LeadRecord, ProposedAction } from '../../api/types';
-import { formatDateOnly, formatStage, formatTimestamp, formatUsdCompact } from '../../util/labels';
-import { canGenerate, isAwaitingReview, urgencyTone } from './proposals';
-import { isRowBackgroundClick } from './leadTable';
+import type { LeadRecord } from '../../api/types';
+import { formatDateOnly, formatStage, formatUsdCompact } from '../../util/labels';
 import type { SortDirection, SortKey, SortState } from './leadTable';
 
 interface Column {
   key: SortKey;
   label: string;
-  /** Right-aligned, mono: figures read as machine output, per the inbox rules. */
+  /** Right-aligned, mono: figures read as machine output. */
   numeric?: boolean;
 }
 
@@ -20,111 +17,29 @@ const COLUMNS: Column[] = [
   { key: 'last_contacted_date', label: 'Last contacted', numeric: true },
 ];
 
-/** Sortable columns, plus proposed action. */
-const COLUMN_COUNT = COLUMNS.length + 1;
-
 /** `aria-sort` carries a direction only on the column actually sorted. */
 function ariaSort(active: boolean, direction: SortDirection) {
   if (!active) return 'none' as const;
   return direction === 'asc' ? ('ascending' as const) : ('descending' as const);
 }
 
-interface DetailProps {
-  proposal: ProposedAction | undefined;
-  generating: number | null;
-  onGenerate: (proposal: ProposedAction) => void;
-}
-
-/**
- * The expanded row: why the engine chose this action, and the one button that
- * turns the choice into copy.
- *
- * A lead with no proposal still expands. "The engine has not chosen anything
- * for this lead" is an answer to the click, and a row that silently refuses to
- * open reads as a broken control.
- */
-function LeadDetail({ proposal, generating, onGenerate }: DetailProps) {
-  if (!proposal) {
-    return (
-      <p className="lead-detail__empty">
-        No action chosen for this lead yet. The engine judges the book on its own schedule;
-        a lead it cannot make a case for stays blank.
-      </p>
-    );
-  }
-  return (
-    <>
-      <ul className="lead-detail__reasons">
-        {proposal.reasons.map((reason) => (
-          <li key={reason}>{reason}</li>
-        ))}
-      </ul>
-      <div className="lead-detail__foot">
-        <span className="lead-detail__decided">
-          Weight {proposal.weight ?? '—'} · decided{' '}
-          {proposal.decided_at ? formatTimestamp(proposal.decided_at) : 'unknown'}
-        </span>
-        {canGenerate(proposal) ? (
-          <Button
-            size="sm"
-            loading={generating === proposal.id}
-            disabled={generating !== null}
-            onClick={() => onGenerate(proposal)}
-          >
-            Generate email
-          </Button>
-        ) : (
-          <span className="lead-detail__drafted">Drafted — review it in the inbox</span>
-        )}
-      </div>
-    </>
-  );
-}
-
 interface Props {
   leads: LeadRecord[];
   sort: SortState;
   onSort: (key: SortKey) => void;
-  /** Lead ids with an email already drafted — see `openLeadIds`. */
-  open: Set<string>;
-  /** What the engine chose, per lead — see `proposalsByLead`. */
-  proposals: Map<string, ProposedAction>;
-  /** The one lead whose decision is expanded, if any. */
-  expanded: string | null;
-  onToggle: (leadId: string) => void;
-  /** The proposal a draft is being generated for, if any. */
-  generating: number | null;
-  onGenerate: (proposal: ProposedAction) => void;
 }
 
 /**
- * The book, as a table. Presentational only: ordering, the review flags and
- * each row's proposal arrive already resolved, so this file holds no logic
- * worth testing and the logic that matters is tested without a DOM.
- *
- * One column carries the whole state of a lead: the action the engine chose,
- * or — once that action has produced an email — the review it is waiting on.
- *
- * One row expands at a time. The decision panel is long enough that two open at
- * once pushes the rest of the book off the screen.
+ * The book, as a table. Presentational only: ordering arrives already
+ * resolved, so this file holds no logic worth testing and the logic that
+ * matters is tested without a DOM.
  */
-export function LeadsTable({
-  leads,
-  sort,
-  onSort,
-  open,
-  proposals,
-  expanded,
-  onToggle,
-  generating,
-  onGenerate,
-}: Props) {
+export function LeadsTable({ leads, sort, onSort }: Props) {
   return (
     <div className="leads-table-wrap">
       <table className="leads-table">
         <caption className="leads-table__caption">
-          Leads, sorted by {sort.key.replace(/_/g, ' ')}, {sort.direction}ending. Choosing a
-          lead opens the decision behind its proposed action.
+          Leads, sorted by {sort.key.replace(/_/g, ' ')}, {sort.direction}ending.
         </caption>
         <thead>
           <tr>
@@ -152,90 +67,36 @@ export function LeadsTable({
                 </th>
               );
             })}
-            <th scope="col">Proposed action</th>
           </tr>
         </thead>
         <tbody>
-          {leads.map((lead) => {
-            const proposal = proposals.get(lead.id);
-            const isOpen = expanded === lead.id;
-            return [
-              <tr
-                key={lead.id}
-                className={isOpen ? 'leads-table__row--open' : undefined}
-                onClick={(event) => {
-                  if (isRowBackgroundClick(event.target as Element | null)) onToggle(lead.id);
-                }}
-              >
-                <td>
-                  {/* A real button as well as the row handler: the row is the
-                      mouse target, and this is what a keyboard and a screen
-                      reader can reach. */}
-                  <button
-                    type="button"
-                    className="leads-table__expand"
-                    aria-expanded={isOpen}
-                    // Only while it exists: the panel is not rendered when closed.
-                    aria-controls={isOpen ? `lead-detail-${lead.id}` : undefined}
-                    onClick={() => onToggle(lead.id)}
-                  >
-                    <span aria-hidden="true" className="leads-table__chevron">
-                      {isOpen ? '▾' : '▸'}
-                    </span>
-                    <span>
-                      <span className="leads-table__agency">
-                        {lead.data.agency_name ?? lead.id}
-                      </span>
-                      <span className="leads-table__id">{lead.id}</span>
-                    </span>
-                  </button>
-                </td>
-                <td>
-                  <span className="leads-table__contact">{lead.data.contact_name ?? '—'}</span>
-                  {lead.data.contact_email ? (
-                    <a className="leads-table__email" href={`mailto:${lead.data.contact_email}`}>
-                      {lead.data.contact_email}
-                    </a>
-                  ) : (
-                    <span className="leads-table__email">—</span>
-                  )}
-                </td>
-                <td>{formatStage(lead.data.stage ?? '')}</td>
-                <td className="leads-table__num">
-                  {lead.data.estimated_book_size_usd === undefined
-                    ? '—'
-                    : formatUsdCompact(lead.data.estimated_book_size_usd)}
-                </td>
-                <td className="leads-table__num">
-                  {formatDateOnly(lead.data.last_contacted_date ?? null)}
-                </td>
-                <td className="leads-table__proposal">
-                  {isAwaitingReview(proposal, open.has(lead.id)) ? (
-                    <Badge tone="pending">Review drafted email</Badge>
-                  ) : proposal ? (
-                    <Badge tone={urgencyTone(proposal.action.urgency)}>
-                      {proposal.action.label}
-                    </Badge>
-                  ) : (
-                    <span className="leads-table__idle">—</span>
-                  )}
-                </td>
-              </tr>,
-              // Rendered only when open: an always-present hidden row doubles
-              // the table's size for every book, on every sort.
-              isOpen && (
-                <tr key={`${lead.id}-detail`} className="leads-table__detail">
-                  <td colSpan={COLUMN_COUNT} id={`lead-detail-${lead.id}`}>
-                    <LeadDetail
-                      proposal={proposal}
-                      generating={generating}
-                      onGenerate={onGenerate}
-                    />
-                  </td>
-                </tr>
-              ),
-            ];
-          })}
+          {leads.map((lead) => (
+            <tr key={lead.id}>
+              <td>
+                <span className="leads-table__agency">{lead.data.agency_name ?? lead.id}</span>
+                <span className="leads-table__id">{lead.id}</span>
+              </td>
+              <td>
+                <span className="leads-table__contact">{lead.data.contact_name ?? '—'}</span>
+                {lead.data.contact_email ? (
+                  <a className="leads-table__email" href={`mailto:${lead.data.contact_email}`}>
+                    {lead.data.contact_email}
+                  </a>
+                ) : (
+                  <span className="leads-table__email">—</span>
+                )}
+              </td>
+              <td>{formatStage(lead.data.stage ?? '')}</td>
+              <td className="leads-table__num">
+                {lead.data.estimated_book_size_usd === undefined
+                  ? '—'
+                  : formatUsdCompact(lead.data.estimated_book_size_usd)}
+              </td>
+              <td className="leads-table__num">
+                {formatDateOnly(lead.data.last_contacted_date ?? null)}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

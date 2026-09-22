@@ -6,7 +6,6 @@ import { SignOutButton } from './SignOutButton';
 // navigation looks fine.
 const LINKS = [
   { to: '/leads/', label: 'Leads' },
-  { to: '/inbox', label: 'Inbox' },
 ];
 
 /**

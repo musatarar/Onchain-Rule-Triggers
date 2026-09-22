@@ -1,74 +1,11 @@
-import json
 from datetime import date
-from pathlib import Path
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.core.management import call_command
 from django.test import TestCase
-from django.utils.timezone import is_aware
 
-from project.app.models import Event, Lead, OutreachAction, Shape
+from project.app.models import Event, Lead, Shape
 from project.app.tests.tests_shape_utils import shape, shape_for
-
-
-def _raw_json(name):
-    with open(Path(settings.BASE_DIR) / "raw_data" / name, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-# Expected counts derived from the real seed files, so the tests keep passing
-# as the dataset grows (new leads/events can be added without editing these).
-EXPECTED_LEADS = len(_raw_json("leads.json"))
-EXPECTED_EVENTS = sum(len(block.get("events", [])) for block in _raw_json("events.json"))
-
-
-class IngestDataCommandTests(TestCase):
-    """Ingestion command loads the real JSON fixtures correctly."""
-
-    def test_loads_all_leads_and_their_events(self):
-        call_command("ingest_data")
-
-        self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
-        self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
-
-        # The row lands in `data` exactly as the file has it, minus the id.
-        lead = Lead.objects.get(id="lead_001")
-        self.assertNotIn("id", lead.data)
-        self.assertEqual(lead.data["agency_name"], "Summit Risk Advisors")
-        self.assertEqual(lead.data["contact_email"], "priya.nair@summitrisk.example.com")
-        self.assertEqual(lead.data["estimated_book_size_usd"], 1400000)
-        self.assertEqual(lead.data["deals_closed"], 6)
-        self.assertEqual(lead.data["signed_up_date"], "2026-04-22")
-
-        # Events attach to the right lead, with timezone-aware timestamps.
-        self.assertEqual(lead.events.count(), 8)
-        ts = lead.events.first().timestamp
-        self.assertTrue(is_aware(ts))
-
-        # The nested meta is flattened beside the event's own keys.
-        deal = lead.events.filter(data__type="deal_closed").first()
-        self.assertEqual(deal.data["type"], "deal_closed")
-        self.assertIn("premium", deal.data)
-        self.assertNotIn("meta", deal.data)
-        self.assertNotIn("timestamp", deal.data)
-
-    def test_a_null_column_is_stored_as_null_rather_than_dropped(self):
-        call_command("ingest_data")
-        # lead_003 (demo_completed) has null signed_up_date / last_login_date.
-        lead = Lead.objects.get(id="lead_003")
-        self.assertIsNone(lead.data["signed_up_date"])
-        self.assertIsNone(lead.data["last_login_date"])
-        self.assertEqual(lead.events.count(), 2)
-
-    def test_idempotent_no_duplicates(self):
-        call_command("ingest_data")
-        call_command("ingest_data")
-
-        self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
-        self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
-        self.assertEqual(Lead.objects.get(id="lead_001").events.count(), 8)
 
 
 class ModelBasicsTests(TestCase):
@@ -92,18 +29,6 @@ class ModelBasicsTests(TestCase):
         stored = shape_for(owner)
         lead = Lead.objects.create(id="lead_995", owner=owner)
         self.assertEqual(lead.shape.pk, stored.pk)
-
-    def test_outreach_action_defaults_and_str(self):
-        lead = Lead.objects.create(id="lead_997", data={"agency_name": "Acme"})
-        action = OutreachAction.objects.create(
-            lead=lead,
-            priority=1,
-            action_type="nudge_usage",
-            reason="Underusing the portal.",
-        )
-        self.assertFalse(action.needs_human)
-        self.assertEqual(action.suggested_copy, "")
-        self.assertEqual(str(action), "lead_997 - nudge_usage (p1)")
 
 
 class ShapeValueTests(TestCase):

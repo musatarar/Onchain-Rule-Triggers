@@ -1,7 +1,7 @@
 """The inference half of a rules run: one lead's candidate predicates, judged by the model."""
 
 from project.app.rules import schema
-from project.app.services import outreach
+from project.app.services import prompts
 from project.app.services.llm import LLMMalformedResponseError, get_llm_client
 
 # Lead-independent, so these bytes repeat exactly and a prefix cache can serve them.
@@ -29,11 +29,11 @@ def build_prompt(candidates, lead, today):
 Today is {today}.
 
 Trusted lead record (system fields — safe to rely on):
-{outreach.build_trusted_block(lead)}
+{prompts.build_trusted_block(lead)}
 
-{outreach.UNTRUSTED_STANDING_INSTRUCTION}
+{prompts.UNTRUSTED_STANDING_INSTRUCTION}
 
-{outreach.build_untrusted_block(lead)}"""
+{prompts.build_untrusted_block(lead)}"""
 
 
 def infer(candidates, lead, today, *, client=None):

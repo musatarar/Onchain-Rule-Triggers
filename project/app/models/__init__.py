@@ -2,24 +2,17 @@
 
 from project.app.actions.models import ActionJob
 from project.app.defi.function_signatures import FunctionSignature
-from project.app.rules.models import ActionType, OutreachRule
+from project.app.rules.models import OutreachRule
 
 from .auth import LoginToken
 from .lead import Event, Lead, Shape
-from .outreach import (
-    DismissedOutreachKey,
-    OutreachAction,
-)
 
 __all__ = [
     "ActionJob",
-    "ActionType",
-    "DismissedOutreachKey",
     "Event",
     "FunctionSignature",
     "Lead",
     "LoginToken",
-    "OutreachAction",
     "OutreachRule",
     "Shape",
 ]

@@ -11,7 +11,7 @@ from django.db.models import Q
 
 
 class ActionJob(models.Model):
-    """One queued lead, the events it was queued for, and what the engine chose.
+    """One queued lead, the events it was queued for, and the rules that matched.
 
     ``events`` is a snapshot taken at enqueue rather than ``lead.events``: the
     job is evaluated against the activity it was queued for, so a lead that
@@ -20,18 +20,18 @@ class ActionJob(models.Model):
 
     STATUS_QUEUED = "queued"
     STATUS_PROCESSING = "processing"
-    STATUS_DETERMINISTIC_ACTION_CHOSEN = "deterministic_action_chosen"
+    STATUS_MATCHED_DETERMINISTIC = "matched_deterministic"
     STATUS_INFERRING = "inferring"
-    STATUS_INFERRED_ACTION_CHOSEN = "inferred_action_chosen"
-    STATUS_NO_ACTION = "no_action"
+    STATUS_MATCHED_INFERRED = "matched_inferred"
+    STATUS_NO_MATCH = "no_match"
     STATUS_FAILED = "failed"
     STATUS_CHOICES = [
         (STATUS_QUEUED, "Queued"),
         (STATUS_PROCESSING, "Processing"),
-        (STATUS_DETERMINISTIC_ACTION_CHOSEN, "Deterministic action chosen"),
+        (STATUS_MATCHED_DETERMINISTIC, "Matched deterministic"),
         (STATUS_INFERRING, "Inferring"),
-        (STATUS_INFERRED_ACTION_CHOSEN, "Inferred action chosen"),
-        (STATUS_NO_ACTION, "No action"),
+        (STATUS_MATCHED_INFERRED, "Matched inferred"),
+        (STATUS_NO_MATCH, "No match"),
         (STATUS_FAILED, "Failed"),
     ]
 
@@ -41,9 +41,9 @@ class ActionJob(models.Model):
     # Statuses where the engine reached a verdict. A failed job is not one:
     # it owes a retry, so it never settles the lead.
     DECIDED_STATUSES = (
-        STATUS_DETERMINISTIC_ACTION_CHOSEN,
-        STATUS_INFERRED_ACTION_CHOSEN,
-        STATUS_NO_ACTION,
+        STATUS_MATCHED_DETERMINISTIC,
+        STATUS_MATCHED_INFERRED,
+        STATUS_NO_MATCH,
     )
 
     # The state machine. A transition runs as a conditional UPDATE from the
@@ -51,12 +51,12 @@ class ActionJob(models.Model):
     ALLOWED_TRANSITIONS = {
         STATUS_QUEUED: (STATUS_PROCESSING, STATUS_FAILED),
         STATUS_PROCESSING: (
-            STATUS_DETERMINISTIC_ACTION_CHOSEN,
+            STATUS_MATCHED_DETERMINISTIC,
             STATUS_INFERRING,
-            STATUS_NO_ACTION,
+            STATUS_NO_MATCH,
             STATUS_FAILED,
         ),
-        STATUS_INFERRING: (STATUS_INFERRED_ACTION_CHOSEN, STATUS_NO_ACTION, STATUS_FAILED),
+        STATUS_INFERRING: (STATUS_MATCHED_INFERRED, STATUS_NO_MATCH, STATUS_FAILED),
     }
 
     lead = models.ForeignKey("app.Lead", on_delete=models.CASCADE, related_name="action_jobs")
@@ -64,12 +64,8 @@ class ActionJob(models.Model):
     status = models.CharField(
         max_length=32, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True
     )
-    # The chosen action, NULL until a pass chooses one (and on no_action/failed).
-    selected_action = models.ForeignKey(
-        "app.ActionType", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
-    )
-    # The tally's workings: which rules fired, their weight, the stub's TODO.
-    # Rule names only -- no lead text, no prompts.
+    # Which rules matched, and the stub's TODO. Rule names only -- no lead
+    # text, no prompts.
     decision = models.JSONField(default=dict, blank=True)
     attempts = models.PositiveSmallIntegerField(default=0)
     error = models.TextField(blank=True, default="")
@@ -90,10 +86,10 @@ class ActionJob(models.Model):
                     status__in=(
                         "queued",
                         "processing",
-                        "deterministic_action_chosen",
+                        "matched_deterministic",
                         "inferring",
-                        "inferred_action_chosen",
-                        "no_action",
+                        "matched_inferred",
+                        "no_match",
                         "failed",
                     )
                 ),

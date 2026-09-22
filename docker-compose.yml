@@ -8,8 +8,6 @@ x-app-env: &app-env
   DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
   DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}
   DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
-  # Grounding strictness: off | standard | strict. `off` disables the check.
-  COPY_VERIFY_LEVEL: ${COPY_VERIFY_LEVEL:-standard}
   # LLM provider/model selection -- see .env.example. Blank reads as unset,
   # so an operator who sets neither gets groq on its default model.
   LLM_PROVIDER: ${LLM_PROVIDER:-}
@@ -23,20 +21,6 @@ x-app-env: &app-env
   # candidate comes back unevaluable and the tick costs nothing. Blank reads as
   # the settings.py default, which is a dry run -- set exactly "False" to spend.
   ACTIONS_LLM_DRY_RUN: ${ACTIONS_LLM_DRY_RUN:-}
-  # Planner concurrency, retries and timeouts -- see .env.example for what
-  # each one bounds. Passed through blank rather than defaulted here:
-  # settings.py already owns the defaults, and restating them would make
-  # this another copy that nothing pins. A blank value reads as "unset"
-  # (see project/settings.py::_env_number), so an operator who never sets
-  # these gets exactly the documented defaults.
-  OUTREACH_MAX_IN_FLIGHT: ${OUTREACH_MAX_IN_FLIGHT:-}
-  OUTREACH_MAX_ATTEMPTS: ${OUTREACH_MAX_ATTEMPTS:-}
-  OUTREACH_INITIAL_BACKOFF_S: ${OUTREACH_INITIAL_BACKOFF_S:-}
-  OUTREACH_MAX_BACKOFF_S: ${OUTREACH_MAX_BACKOFF_S:-}
-  OUTREACH_BACKOFF_MULTIPLIER: ${OUTREACH_BACKOFF_MULTIPLIER:-}
-  OUTREACH_REQUEST_TIMEOUT_S: ${OUTREACH_REQUEST_TIMEOUT_S:-}
-  OUTREACH_PER_LEAD_TIMEOUT_S: ${OUTREACH_PER_LEAD_TIMEOUT_S:-}
-  OUTREACH_MAX_COPY_TOKENS: ${OUTREACH_MAX_COPY_TOKENS:-}
   # Magic-link sign-in. The API is authenticated, so set
   # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
   # -- there is no signup flow, the allowlist is the whole gate. Delivery

@@ -1,11 +1,9 @@
 #!/usr/bin/env sh
-# Container startup: apply migrations, seed the demo pipeline, then serve.
-# Both steps are idempotent, so restarting the container is safe. Never add
-# --reset here: it empties every table, and this runs on every restart.
+# Container startup: apply migrations, then serve. Migrating is idempotent,
+# so restarting the container is safe.
 set -e
 
 python manage.py migrate --noinput
-python scripts/populate_demo_data.py
 
 # This is the Django dev server, not a production setup. --insecure makes it
 # serve the committed React bundle even with DEBUG off; compose interpolates

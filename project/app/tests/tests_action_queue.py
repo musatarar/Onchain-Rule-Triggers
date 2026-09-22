@@ -1,5 +1,5 @@
 """The actions engine end to end: the queue, the cron's claim, and the passes
-that take one job from queued to a chosen action."""
+that take one job from queued to the rules it matched."""
 
 import datetime
 from io import StringIO
@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
-from project.app.models import ActionType, Event, Lead, OutreachRule
+from project.app.models import Event, Lead, OutreachRule
 from project.app.rules import inference, schema, utils
 from project.app.rules import utils as rules_utils
 from project.app.rules.utils import _all_of
@@ -73,14 +73,11 @@ class EngineTestCase(TestCase):
             lead=lead, timestamp=timezone.now(), data=dict(data, type=type_)
         )
 
-    def _action(self, key, owner=None):
-        return ActionType.objects.create(owner=owner or self.owner, key=key, label=key)
-
-    def _rule(self, action, name, weight=OutreachRule.WEIGHT_MEDIUM, **kwargs):
-        kwargs.setdefault("owner", action.owner)
+    def _rule(self, name, **kwargs):
+        kwargs.setdefault("owner", self.owner)
         kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _all_of(_cond("deals_closed", ">", 2)))
-        return OutreachRule.objects.create(action=action, name=name, weight=weight, **kwargs)
+        return OutreachRule.objects.create(name=name, **kwargs)
 
     def _run(self, job):
         self.assertTrue(services.claim(job))
@@ -147,7 +144,7 @@ class EnqueueTests(EngineTestCase):
 class SettledLeadTests(EngineTestCase):
     """A lead a run decided today, with nothing new since, is not asked again."""
 
-    def _decided_today(self, lead, status=ActionJob.STATUS_NO_ACTION, **kwargs):
+    def _decided_today(self, lead, status=ActionJob.STATUS_NO_MATCH, **kwargs):
         job = services.enqueue_lead(lead)
         ActionJob.objects.filter(pk=job.pk).update(
             status=status, finished_at=timezone.now(), **kwargs
@@ -176,7 +173,7 @@ class SettledLeadTests(EngineTestCase):
         # Queued, then the event lands, then the run ends: it judged neither.
         event = self._event(lead, "login")
         ActionJob.objects.filter(pk=job.pk).update(
-            status=ActionJob.STATUS_NO_ACTION,
+            status=ActionJob.STATUS_NO_MATCH,
             finished_at=event.timestamp + datetime.timedelta(minutes=1),
         )
 
@@ -244,27 +241,24 @@ class ClaimTests(EngineTestCase):
     def test_a_job_another_worker_already_finished_is_left_alone(self):
         job = services.enqueue_lead(self._lead())
         self.assertTrue(services.claim(job))
-        ActionJob.objects.filter(pk=job.pk).update(status=ActionJob.STATUS_NO_ACTION)
+        ActionJob.objects.filter(pk=job.pk).update(status=ActionJob.STATUS_NO_MATCH)
 
         services.run_job(job, today=TODAY)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
         self.assertEqual(job.decision, {})
 
     def test_a_transition_the_state_machine_does_not_allow_is_refused(self):
         job = services.enqueue_lead(self._lead())
 
         with self.assertRaises(ValueError):
-            services._transition(
-                job, ActionJob.STATUS_QUEUED, ActionJob.STATUS_INFERRED_ACTION_CHOSEN
-            )
+            services._transition(job, ActionJob.STATUS_QUEUED, ActionJob.STATUS_MATCHED_INFERRED)
 
 
 class DeterministicPassTests(EngineTestCase):
-    def test_a_matching_rule_chooses_its_action_without_reaching_inference(self):
-        action = self._action("power_user_reward")
-        self._rule(action, "Modest deal momentum", OutreachRule.WEIGHT_HIGH)
+    def test_a_matching_rule_settles_the_job_without_reaching_inference(self):
+        rule = self._rule("Modest deal momentum")
         job = services.enqueue_lead(self._lead())
 
         with mock.patch.object(inference, "infer") as infer:
@@ -272,63 +266,34 @@ class DeterministicPassTests(EngineTestCase):
 
         infer.assert_not_called()
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
-        self.assertEqual(job.selected_action, action)
-        self.assertEqual(job.decision["selected"]["action_key"], "power_user_reward")
-        self.assertEqual(job.decision["selected"]["reasons"], ["Modest deal momentum"])
+        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_DETERMINISTIC)
+        self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [rule.pk])
+        self.assertEqual(job.decision["deterministic"]["matched_rules"], ["Modest deal momentum"])
         self.assertIsNotNone(job.finished_at)
 
-    def test_the_heaviest_tally_wins_when_two_actions_are_argued_for(self):
-        weak = self._action("nudge_usage")
-        strong = self._action("reengage_dormant")
-        self._rule(weak, "modest momentum", OutreachRule.WEIGHT_MEDIUM)
-        self._rule(strong, "dormant", OutreachRule.WEIGHT_HIGH)
+    def test_every_matching_rule_is_recorded_not_just_the_first(self):
+        first = self._rule("modest momentum")
+        second = self._rule("logs in but never submits")
         job = services.enqueue_lead(self._lead())
 
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.selected_action, strong)
-        self.assertEqual(job.decision["selected"]["weight"], 3)
+        self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [first.pk, second.pk])
 
-    def test_two_weak_rules_agreeing_clear_the_floor_one_alone_does_not(self):
-        action = self._action("nudge_usage")
-        self._rule(action, "modest momentum", OutreachRule.WEIGHT_LOW)
-        alone = services.enqueue_lead(self._lead("lead_001"))
-        self._run(alone)
-        alone.refresh_from_db()
-        self.assertEqual(alone.status, ActionJob.STATUS_NO_ACTION)
-
-        self._rule(action, "logs in but never submits", OutreachRule.WEIGHT_LOW)
-        together = services.enqueue_lead(self._lead("lead_002"))
-        self._run(together)
-
-        together.refresh_from_db()
-        self.assertEqual(together.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
-        self.assertEqual(together.decision["selected"]["weight"], 2)
-
-    def test_a_disabled_rule_or_a_disabled_action_never_fires(self):
-        self._rule(self._action("nudge_usage"), "off", OutreachRule.WEIGHT_HIGH, enabled=False)
-        self._rule(
-            self._action("reengage_dormant", owner=self.owner),
-            "action off",
-            OutreachRule.WEIGHT_HIGH,
-        )
-        ActionType.objects.filter(key="reengage_dormant").update(enabled=False)
+    def test_a_disabled_rule_never_fires(self):
+        self._rule("off", enabled=False)
         job = services.enqueue_lead(self._lead())
 
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
 
     def test_the_job_is_judged_on_its_own_events_not_the_leads_later_ones(self):
         lead = self._lead(last_contacted_date=(TODAY - datetime.timedelta(days=15)).isoformat())
-        action = self._action("follow_up_after_hold")
         self._rule(
-            action,
             "went quiet",
-            OutreachRule.WEIGHT_HIGH,
             conditions=_all_of(
                 _cond("hubspot_notes", "contains", "circle back", source="notes"),
                 _cond("days_since_last_contacted_date", ">=", 14, source="derived"),
@@ -341,18 +306,15 @@ class DeterministicPassTests(EngineTestCase):
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
 
     def test_a_typed_column_the_lead_authored_decides_the_job_rather_than_failing_it(self):
         self.shape.lead_columns = self.shape.lead_columns + [
             {"name": "self_reported_seats", "type": "number", "lead_authored": True}
         ]
         self.shape.save()
-        action = self._action("nudge_usage")
-        self._rule(
-            action,
+        rule = self._rule(
             "Says they have seats to fill",
-            OutreachRule.WEIGHT_HIGH,
             conditions=_all_of(
                 _cond("deals_closed", ">", 2),
                 {
@@ -368,13 +330,13 @@ class DeterministicPassTests(EngineTestCase):
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
-        self.assertEqual(job.selected_action, action)
+        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_DETERMINISTIC)
+        self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [rule.pk])
         self.assertEqual(job.decision["unevaluable_rule_ids"], [])
         self.assertEqual(job.error, "")
 
     def test_a_rule_the_engine_cannot_evaluate_is_recorded_instead_of_firing(self):
-        rule = self._rule(self._action("nudge_usage"), "stale vocabulary", OutreachRule.WEIGHT_HIGH)
+        rule = self._rule("stale vocabulary")
         # Written before the field it names left the vocabulary.
         OutreachRule.objects.filter(pk=rule.pk).update(
             conditions={
@@ -395,24 +357,25 @@ class DeterministicPassTests(EngineTestCase):
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
         self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
 
 
 class OwnerScopingTests(EngineTestCase):
     def test_another_users_rules_never_fire_on_this_leads_job(self):
         other = get_user_model().objects.create_user(username="other@elsewhere.example")
-        self._rule(self._action("nudge_usage", owner=other), "theirs", OutreachRule.WEIGHT_HIGH)
+        shape_for(other)
+        self._rule("theirs", owner=other)
         job = services.enqueue_lead(self._lead())
 
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
         self.assertEqual(job.decision["rules_evaluated"], 0)
 
     def test_an_unowned_lead_has_no_rules(self):
-        self._rule(self._action("nudge_usage"), "ours", OutreachRule.WEIGHT_HIGH)
+        self._rule("ours")
         lead = self._lead()
         Lead.objects.filter(pk=lead.pk).update(owner=None)
         job = services.enqueue_lead(Lead.objects.get(pk=lead.pk))
@@ -420,33 +383,29 @@ class OwnerScopingTests(EngineTestCase):
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
         self.assertEqual(job.decision["rules_evaluated"], 0)
         self.assertIsNone(job.decision["owner_id"])
 
     def test_the_job_runs_the_catalog_of_the_user_whose_book_the_lead_is_in(self):
         colleague = get_user_model().objects.create_user(username="colleague@lockedin.example")
         shape_for(colleague)
-        self._rule(self._action("nudge_usage"), "mine", OutreachRule.WEIGHT_HIGH)
-        self._rule(
-            self._action("reengage_dormant", owner=colleague), "theirs", OutreachRule.WEIGHT_HIGH
-        )
+        self._rule("mine")
+        theirs = self._rule("theirs", owner=colleague)
         job = services.enqueue_lead(self._lead(owner=colleague))
 
         self._run(job)
 
         job.refresh_from_db()
         self.assertEqual(job.decision["owner_id"], colleague.pk)
-        self.assertEqual(job.decision["selected"]["action_key"], "reengage_dormant")
+        self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [theirs.pk])
 
 
 @override_settings(ACTIONS_LLM_DRY_RUN=False)
 class InferencePassTests(EngineTestCase):
-    def _inference_rule(self, action, name, weight=OutreachRule.WEIGHT_HIGH, **kwargs):
+    def _inference_rule(self, name, **kwargs):
         return self._rule(
-            action,
             name,
-            weight,
             kind=OutreachRule.KIND_INFERENCE,
             conditions=kwargs.pop("conditions", {}),
             inference_prompt=kwargs.pop("inference_prompt", "the notes say they need help"),
@@ -454,8 +413,7 @@ class InferencePassTests(EngineTestCase):
         )
 
     def test_a_lead_no_deterministic_rule_resolves_reaches_the_inference_pass(self):
-        action = self._action("set_up_appointment")
-        rule = self._inference_rule(action, "they need help")
+        rule = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
 
         with mock.patch.object(
@@ -469,20 +427,19 @@ class InferencePassTests(EngineTestCase):
         job.refresh_from_db()
         self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
 
-    def test_a_pass_that_answers_nothing_chooses_no_action(self):
-        rule = self._inference_rule(self._action("set_up_appointment"), "they need help")
+    def test_a_pass_that_answers_nothing_finishes_as_no_match(self):
+        rule = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
 
         with mock.patch.object(inference, "infer", return_value=_section(unevaluable=[rule.pk])):
             self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
-        self.assertIsNone(job.selected_action)
-        self.assertNotIn("selected", job.decision)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
+        self.assertEqual(job.decision["inference"]["matched_rule_ids"], [])
 
     def test_a_candidate_answered_unusably_is_unevaluable_not_a_refusal(self):
-        rule = self._inference_rule(self._action("set_up_appointment"), "they need help")
+        rule = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
 
         with mock.patch.object(inference, "infer", return_value=_section(unevaluable=[rule.pk])):
@@ -494,9 +451,7 @@ class InferencePassTests(EngineTestCase):
         self.assertEqual(job.decision["inference"]["verdicts"], [])
 
     def test_both_passes_unevaluable_rules_land_in_one_list(self):
-        deterministic = self._rule(
-            self._action("nudge_usage"), "stale vocabulary", OutreachRule.WEIGHT_HIGH
-        )
+        deterministic = self._rule("stale vocabulary")
         OutreachRule.objects.filter(pk=deterministic.pk).update(
             conditions={
                 "version": utils.SCHEMA_VERSION,
@@ -511,7 +466,7 @@ class InferencePassTests(EngineTestCase):
                 ],
             }
         )
-        inferred = self._inference_rule(self._action("set_up_appointment"), "they need help")
+        inferred = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
 
         with mock.patch.object(
@@ -527,9 +482,7 @@ class InferencePassTests(EngineTestCase):
         self.assertNotIn("rules_evaluated", job.decision["inference"])
 
     def test_an_inference_rule_gated_by_conditions_is_not_asked_until_they_hold(self):
-        action = self._action("set_up_appointment")
         self._inference_rule(
-            action,
             "gated",
             conditions=_all_of(_cond("deals_closed", ">", 100)),
         )
@@ -543,27 +496,22 @@ class InferencePassTests(EngineTestCase):
         job.refresh_from_db()
         self.assertEqual(job.decision["unevaluable_rule_ids"], [])
 
-    def test_a_match_from_the_pass_chooses_an_action_through_the_same_tally(self):
-        action = self._action("set_up_appointment")
-        rule = self._inference_rule(action, "they need help")
+    def test_a_match_from_the_pass_finishes_the_job_as_matched_inferred(self):
+        rule = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
 
         with mock.patch.object(inference, "infer", return_value=_section(rule)):
             self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_INFERRED_ACTION_CHOSEN)
-        self.assertEqual(job.selected_action, action)
-        self.assertEqual(job.decision["selected"]["action_key"], "set_up_appointment")
+        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_INFERRED)
         self.assertEqual(job.decision["inference"]["matched_rule_ids"], [rule.pk])
 
     def test_a_verdict_naming_a_rule_that_was_never_a_candidate_is_not_a_match(self):
-        action = self._action("set_up_appointment")
-        candidate = self._inference_rule(action, "they need help")
+        candidate = self._inference_rule("they need help")
         other = get_user_model().objects.create_user(username="other@elsewhere.example")
-        stranger = self._inference_rule(
-            self._action("nudge_usage", owner=other), "someone else's rule", owner=other
-        )
+        shape_for(other)
+        stranger = self._inference_rule("someone else's rule", owner=other)
         job = services.enqueue_lead(self._lead())
         section = _section(candidate)
         section["matched_rule_ids"] = [stranger.pk]
@@ -573,21 +521,7 @@ class InferencePassTests(EngineTestCase):
             self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
-        self.assertIsNone(job.selected_action)
-
-    def test_both_passes_tally_together_so_two_weak_agreeing_rules_decide(self):
-        action = self._action("nudge_usage")
-        self._rule(action, "modest momentum", OutreachRule.WEIGHT_LOW)
-        inferred = self._inference_rule(action, "they need help", OutreachRule.WEIGHT_LOW)
-        job = services.enqueue_lead(self._lead())
-
-        with mock.patch.object(inference, "infer", return_value=_section(inferred)):
-            self._run(job)
-
-        job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_INFERRED_ACTION_CHOSEN)
-        self.assertEqual(job.decision["selected"]["weight"], 2)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
 
 
 class DryRunTests(EngineTestCase):
@@ -595,9 +529,7 @@ class DryRunTests(EngineTestCase):
 
     def _inference_rule(self, name="they need help"):
         return self._rule(
-            self._action("set_up_appointment"),
             name,
-            OutreachRule.WEIGHT_HIGH,
             kind=OutreachRule.KIND_INFERENCE,
             conditions={},
             inference_prompt="the notes say they need help",
@@ -621,19 +553,19 @@ class DryRunTests(EngineTestCase):
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
         self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
         self.assertIn("ACTIONS_LLM_DRY_RUN", job.decision["inference"]["reason"])
 
     @override_settings(ACTIONS_LLM_DRY_RUN=True)
     def test_a_dry_run_still_resolves_a_lead_the_deterministic_pass_settles(self):
-        self._rule(self._action("nudge_usage"), "modest momentum", OutreachRule.WEIGHT_HIGH)
+        self._rule("modest momentum")
         job = services.enqueue_lead(self._lead())
 
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
+        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_DETERMINISTIC)
 
     @override_settings(ACTIONS_LLM_DRY_RUN=False)
     def test_the_inference_pass_runs_when_the_dry_run_flag_is_off(self):
@@ -682,7 +614,7 @@ class FailureTests(EngineTestCase):
 
 class CronCommandTests(EngineTestCase):
     def test_the_command_queues_every_lead_then_runs_the_batch(self):
-        self._rule(self._action("nudge_usage"), "modest momentum", OutreachRule.WEIGHT_HIGH)
+        self._rule("modest momentum")
         self._lead("lead_001")
         self._lead("lead_002")
 
@@ -690,7 +622,7 @@ class CronCommandTests(EngineTestCase):
 
         self.assertEqual(ActionJob.objects.count(), 2)
         self.assertEqual(
-            ActionJob.objects.filter(status=ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN).count(), 2
+            ActionJob.objects.filter(status=ActionJob.STATUS_MATCHED_DETERMINISTIC).count(), 2
         )
 
     def test_the_limit_bounds_one_tick_and_leaves_the_rest_queued(self):
@@ -713,39 +645,6 @@ class CronCommandTests(EngineTestCase):
         call_command("run_action_jobs")
 
         self.assertFalse(ActionJob.objects.filter(status__in=ActionJob.OPEN_STATUSES).exists())
-
-
-class SeededCatalogTests(EngineTestCase):
-    """The seeded catalog and this engine share one vocabulary, or the demo
-    rules would validate and then never fire."""
-
-    def test_every_seeded_deterministic_payload_evaluates(self):
-        from project.app.management.commands import seed_rules_catalog
-
-        lead = self._lead()
-        for spec in seed_rules_catalog._rules(self.shape):
-            conditions = spec.get("conditions")
-            if not conditions:
-                continue
-            with self.subTest(spec["name"]):
-                self.assertIsInstance(evaluate.matches(conditions, lead, TODAY), bool)
-
-    def test_the_seeded_catalog_is_what_its_owners_leads_are_run_against(self):
-        call_command("seed_rules_catalog", owner="demo@lockedin.example")
-        demo = get_user_model().objects.get(username="demo@lockedin.example")
-
-        self.assertTrue(services.rules_for_lead(self._lead(owner=demo)).exists())
-        self.assertFalse(services.rules_for_lead(self._lead("lead_002")).exists())
-
-    def test_the_seeded_catalog_chooses_the_planners_action_for_a_dormant_lead(self):
-        call_command("seed_rules_catalog", owner=self.owner.username)
-        lead = self._lead(last_login_date=(TODAY - datetime.timedelta(days=60)).isoformat())
-
-        job = self._run(services.enqueue_lead(lead))
-
-        job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
-        self.assertEqual(job.selected_action.key, "reengage_dormant")
 
 
 class VocabularyCoverageTests(EngineTestCase):
@@ -772,11 +671,8 @@ class VocabularyCoverageTests(EngineTestCase):
             evaluate.matches(payload, self._lead(), TODAY)
 
     def test_a_column_the_owner_renames_leaves_its_old_rule_unevaluable(self):
-        action = self._action("nudge_usage")
         self._rule(
-            action,
             "reads a column that is about to be renamed",
-            OutreachRule.WEIGHT_HIGH,
             conditions=_all_of(_cond("deals_closed", ">", 0)),
         )
         self.shape.lead_columns = [
@@ -791,7 +687,7 @@ class VocabularyCoverageTests(EngineTestCase):
         job = self._run(services.enqueue_lead(self._lead()))
 
         job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
         self.assertEqual(len(job.decision["unevaluable_rule_ids"]), 1)
 
 

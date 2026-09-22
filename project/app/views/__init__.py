@@ -2,14 +2,6 @@
 
 from .auth import AuthConsumeView, AuthLogoutView, AuthMeView, AuthRequestLinkView
 from .leads import LeadListView, ShapeView
-from .review import (
-    ReviewApproveView,
-    ReviewDismissView,
-    ReviewEditView,
-    ReviewListView,
-    ReviewReopenView,
-    ReviewVerifyView,
-)
 
 __all__ = [
     "AuthConsumeView",
@@ -17,11 +9,5 @@ __all__ = [
     "AuthMeView",
     "AuthRequestLinkView",
     "LeadListView",
-    "ReviewApproveView",
-    "ReviewDismissView",
-    "ReviewEditView",
-    "ReviewListView",
-    "ReviewReopenView",
-    "ReviewVerifyView",
     "ShapeView",
 ]
