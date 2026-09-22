@@ -22,9 +22,3 @@ def signin(request):
 def auth_consume(request):
     """Render the token-consumption page. Public; the token is in the query string."""
     return render(request, "app/auth_consume.html")
-
-
-@ensure_csrf_cookie
-def inbox(request):
-    """Render the review inbox shell. Access control is the client-side guard."""
-    return render(request, "app/inbox.html")

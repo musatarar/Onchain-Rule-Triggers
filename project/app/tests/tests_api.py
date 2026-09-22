@@ -4,9 +4,7 @@ from django.urls import reverse
 from rest_framework import status
 
 from project.app.models import (
-    ActionType,
     Lead,
-    OutreachAction,
     OutreachRule,
     Shape,
 )
@@ -55,90 +53,6 @@ class LeadListViewTests(AuthenticatedAPITestCase):
         first = resp.data[0]
         self.assertEqual(set(first), {"id", "owner", "data"})
         self.assertEqual(first["data"]["agency_name"], "Alpha")
-
-
-class OutreachListViewTests(AuthenticatedAPITestCase):
-    """GET /api/outreach/ — the review inbox: latest action per lead, paginated."""
-
-    @classmethod
-    def setUpTestData(cls):
-        cls.lead1 = make_lead("lead_001")
-        cls.lead2 = make_lead("lead_002")
-
-        # Two actions for lead1 — only the most recent should appear.
-        cls.old = OutreachAction.objects.create(
-            lead=cls.lead1,
-            priority=1,
-            action_type="nudge_usage",
-            reason="old reason",
-            suggested_copy="old copy",
-        )
-        cls.recent = OutreachAction.objects.create(
-            lead=cls.lead1,
-            priority=3,
-            action_type="reengage_dormant",
-            reason="recent reason",
-            suggested_copy="recent copy",
-        )
-        # Single action for lead2 at higher priority (lower number).
-        cls.action2 = OutreachAction.objects.create(
-            lead=cls.lead2,
-            priority=2,
-            action_type="complete_onboarding",
-            reason="onboard",
-            needs_human=False,
-        )
-
-    def test_most_recent_action_per_lead_ordered_by_priority(self):
-        resp = self.client.get(reverse("outreach-list"))
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        results = resp.data["results"]
-        self.assertEqual(len(results), 2)
-
-        ids = [row["id"] for row in results]
-        self.assertNotIn(self.old.id, ids)
-        self.assertIn(self.recent.id, ids)
-
-        self.assertEqual([row["priority"] for row in results], [2, 3])
-        self.assertEqual(results[0]["id"], self.action2.id)
-        self.assertEqual(results[1]["id"], self.recent.id)
-
-    def test_the_list_is_paginated(self):
-        resp = self.client.get(reverse("outreach-list"), {"page_size": 1})
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        # The envelope is the contract: an unbounded array is what pagination fixes.
-        self.assertEqual(set(resp.data.keys()), {"count", "next", "previous", "results"})
-        self.assertEqual(resp.data["count"], 2)
-        self.assertEqual(len(resp.data["results"]), 1)
-        self.assertIsNotNone(resp.data["next"])
-
-    def test_review_item_shape_matches_contract(self):
-        resp = self.client.get(reverse("outreach-list"))
-        row = resp.data["results"][0]
-        self.assertEqual(
-            set(row.keys()),
-            {
-                "id",
-                "status",
-                "status_changed_at",
-                "priority",
-                "action_type",
-                "action_label",
-                "reason",
-                "needs_human",
-                "further_action",
-                "created_at",
-                "dedupe_key",
-                "lead",
-                "suggested_copy",
-                "edited_copy",
-                "effective_copy",
-                "is_edited",
-                "verification",
-                "can_approve",
-            },
-        )
-        self.assertEqual(set(row["lead"].keys()), {"id", "data", "recent_events"})
 
 
 class ShapeViewTests(AuthenticatedAPITestCase):
@@ -267,12 +181,10 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
         # DRF keeps throttle history in the default cache, which outlives a test.
         cache.clear()
         self.client.put(reverse("shape"), self.SHAPE, format="json")
-        action = ActionType.objects.create(owner=self.user, key="nudge_usage", label="Nudge")
         # Saved through the catalog's own path, so it was valid under this shape.
         self.rule = rules_services.create_rule(
             self.user,
             {
-                "action": action,
                 "name": "Modest deal momentum",
                 "kind": OutreachRule.KIND_DETERMINISTIC,
                 "conditions": _all_of(_cond("deals_closed", ">", 2, source="lead")),

@@ -7,7 +7,6 @@
       "Bash(python manage.py makemigrations --check --dry-run)",
       "Bash(python manage.py migrate)",
       "Bash(python manage.py check)",
-      "Bash(python evals/run_rules_eval.py)",
       "Bash(ruff check *)",
       "Bash(ruff format *)",
       "Bash(mypy project/app/services/)",

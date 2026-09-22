@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { RequireAuth } from './components/RequireAuth';
 import { ConsumePage } from './pages/ConsumePage';
-import { InboxPage } from './pages/InboxPage';
 import { LeadsPage } from './pages/LeadsPage';
 import { SignInPage } from './pages/SignInPage';
 import './styles.css';
@@ -19,7 +18,6 @@ createRoot(root).render(
         <Route path="/signin" element={<SignInPage />} />
         <Route path="/auth/consume" element={<ConsumePage />} />
         <Route path="/leads/" element={<RequireAuth><LeadsPage /></RequireAuth>} />
-        <Route path="/inbox" element={<RequireAuth><InboxPage /></RequireAuth>} />
       </Routes>
     </BrowserRouter>
   </StrictMode>,
