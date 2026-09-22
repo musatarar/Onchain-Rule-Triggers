@@ -1,4 +1,4 @@
-"""The signature catalog: how a stored text signature reads, and how the loader fills it."""
+"""The signature catalog: how a text signature parses, and how the loader fills it."""
 
 import io
 import json
@@ -9,11 +9,12 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from project.app.defi import services
+from project.app.defi.function_signatures import parse_signature
 from project.app.models import FunctionSignature
 
 
-def signature(text, hex_signature="0x23b872dd", pk=1):
-    return FunctionSignature(id=pk, hex_signature=hex_signature, text_signature=text)
+def signature(name, inputs=(), hex_signature="0x23b872dd", pk=1):
+    return FunctionSignature(id=pk, hex_signature=hex_signature, name=name, inputs=list(inputs))
 
 
 def entry(pk, hex_signature, text):
@@ -39,43 +40,43 @@ def load(entries, **options):
 
 class FunctionSignatureParsingTests(TestCase):
     def test_splits_a_signature_into_its_name_and_input_types(self):
-        parsed = signature("transferFrom(address,address,uint256)").signature()
+        parsed = parse_signature("transferFrom(address,address,uint256)")
 
         self.assertEqual(parsed.name, "transferFrom")
         self.assertEqual(parsed.inputs, ["address", "address", "uint256"])
 
     def test_a_function_taking_nothing_has_no_inputs(self):
-        parsed = signature("_expectedBalance()").signature()
+        parsed = parse_signature("_expectedBalance()")
 
         self.assertEqual(parsed.name, "_expectedBalance")
         self.assertEqual(parsed.inputs, [])
 
     def test_a_tuple_argument_stays_one_input(self):
-        parsed = signature("fill((address,uint256)[],bytes)").signature()
+        parsed = parse_signature("fill((address,uint256)[],bytes)")
 
         self.assertEqual(parsed.inputs, ["(address,uint256)[]", "bytes"])
 
     def test_text_without_an_argument_list_is_all_name(self):
-        parsed = signature("mysteryEntry").signature()
+        parsed = parse_signature("mysteryEntry")
 
         self.assertEqual(parsed.name, "mysteryEntry")
         self.assertEqual(parsed.inputs, [])
 
     def test_camel_case_reads_as_words(self):
         self.assertEqual(
-            signature("transferFrom(address)").pretty_signature().name, "Transfer From"
+            signature("transferFrom", ["address"]).pretty_signature().name, "Transfer From"
         )
 
     def test_snake_case_reads_as_words(self):
-        self.assertEqual(signature("my_func(uint256)").pretty_signature().name, "My Func")
+        self.assertEqual(signature("my_func", ["uint256"]).pretty_signature().name, "My Func")
 
     def test_an_acronym_keeps_its_capitals(self):
         self.assertEqual(
-            signature("ERC20TransferFrom()").pretty_signature().name, "ERC20 Transfer From"
+            signature("ERC20TransferFrom").pretty_signature().name, "ERC20 Transfer From"
         )
 
     def test_the_pretty_signature_keeps_the_input_types_as_written(self):
-        pretty = signature("safeTransferFrom(address,uint256)").pretty_signature()
+        pretty = signature("safeTransferFrom", ["address", "uint256"]).pretty_signature()
 
         self.assertEqual(pretty.inputs, ["address", "uint256"])
 
@@ -85,9 +86,9 @@ class SelectorLookupTests(TestCase):
     def setUpTestData(cls):
         FunctionSignature.objects.bulk_create(
             [
-                signature("transferFrom(address,address,uint256)", "0x23b872dd", pk=2),
-                signature("gasprice_bit_ether(int128)", "0x23b872dd", pk=1),
-                signature("balanceOf(address)", "0x70a08231", pk=3),
+                signature("transferFrom", ["address", "address", "uint256"], pk=2),
+                signature("gasprice_bit_ether", ["int128"], pk=1),
+                signature("balanceOf", ["address"], "0x70a08231", pk=3),
             ]
         )
 
@@ -95,8 +96,8 @@ class SelectorLookupTests(TestCase):
         found = services.signatures_for_selector("0x23b872dd")
 
         self.assertEqual(
-            [row.text_signature for row in found],
-            ["gasprice_bit_ether(int128)", "transferFrom(address,address,uint256)"],
+            [row.name for row in found],
+            ["gasprice_bit_ether", "transferFrom"],
         )
 
     def test_a_selector_is_matched_however_it_is_capitalised(self):
@@ -115,12 +116,20 @@ class LoadFunctionSignaturesTests(TestCase):
         self.assertEqual(FunctionSignature.objects.count(), 7)
         self.assertIn("Loaded 7 of 7 signature(s).", output)
 
-    def test_stores_the_id_hex_and_text_of_each_entry(self):
-        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
+    def test_stores_the_id_hex_name_and_inputs_of_each_entry(self):
+        load([entry(1216430, "0xc1c3d3d9", "fill((address,uint256)[],bytes)")])
 
         row = FunctionSignature.objects.get(pk=1216430)
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
-        self.assertEqual(row.text_signature, "_expectedBalance()")
+        self.assertEqual(row.name, "fill")
+        self.assertEqual(row.inputs, ["(address,uint256)[]", "bytes"])
+
+    def test_a_function_taking_nothing_is_stored_with_no_inputs(self):
+        load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
+
+        row = FunctionSignature.objects.get(pk=1216430)
+        self.assertEqual(row.name, "_expectedBalance")
+        self.assertEqual(row.inputs, [])
 
     def test_a_loaded_row_starts_with_no_description(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
@@ -158,7 +167,7 @@ class LoadFunctionSignaturesTests(TestCase):
 
         row = FunctionSignature.objects.get(pk=1216430)
         self.assertEqual(row.description, "Reads the escrow float.")
-        self.assertEqual(row.text_signature, "_expectedBalance(uint256)")
+        self.assertEqual(row.inputs, ["uint256"])
 
     def test_a_second_run_updates_rather_than_duplicates(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
@@ -166,9 +175,7 @@ class LoadFunctionSignaturesTests(TestCase):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")])
 
         self.assertEqual(FunctionSignature.objects.count(), 1)
-        self.assertEqual(
-            FunctionSignature.objects.get(pk=1216430).text_signature, "_expectedBalance(uint256)"
-        )
+        self.assertEqual(FunctionSignature.objects.get(pk=1216430).inputs, ["uint256"])
 
     def test_a_missing_file_is_reported(self):
         with self.assertRaises(CommandError):

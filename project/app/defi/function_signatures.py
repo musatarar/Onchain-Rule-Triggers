@@ -43,36 +43,37 @@ def _worded(name):
     return " ".join(word[:1].upper() + word[1:] for word in words)
 
 
-class FunctionSignature(models.Model):
-    """One catalog entry: a selector and a text signature it decodes to.
+def parse_signature(text):
+    """A text signature as its name and the input types it declares."""
+    match = _SIGNATURE_RE.match(text or "")
+    if match is None:
+        # Text without an argument list is all name.
+        return Signature(name=(text or "").strip(), inputs=[])
+    name, arguments = match.groups()
+    return Signature(name=name.strip(), inputs=_inputs(arguments))
 
-    ``id`` is the one the source assigned, so re-loading a page updates the
-    rows it first wrote. A selector is four bytes of a hash, so several text
-    signatures share one ``hex_signature``: the column is indexed, never unique.
+
+class FunctionSignature(models.Model):
+    """One catalog entry: a selector and a function it decodes to.
+
+    ``id`` is the one the source assigned, so re-loading an entry updates the
+    row it first wrote. A selector is four bytes of a hash, so several
+    functions share one ``hex_signature``: the column is indexed, never unique.
     """
 
     id = models.BigIntegerField(primary_key=True)
     hex_signature = models.CharField(max_length=10, db_index=True)  # "0xc1c3d3d9"
-    text_signature = models.CharField(max_length=512)  # "transferFrom(address,address,uint256)"
+    name = models.CharField(max_length=255)  # "transferFrom"
+    inputs = models.JSONField(default=list, blank=True)  # ["address", "address", "uint256"]
     # Never loaded: what a reader adds, which a re-load leaves alone.
     description = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["-id"]
 
-    def signature(self):
-        """The stored text as its name and the input types it declares."""
-        match = _SIGNATURE_RE.match(self.text_signature or "")
-        if match is None:
-            # A row stored without an argument list is all name.
-            return Signature(name=(self.text_signature or "").strip(), inputs=[])
-        name, arguments = match.groups()
-        return Signature(name=name.strip(), inputs=_inputs(arguments))
-
     def pretty_signature(self):
-        """:meth:`signature` with the name's camelCase and snake_case runs read as words."""
-        parsed = self.signature()
-        return Signature(name=_worded(parsed.name), inputs=parsed.inputs)
+        """The name's camelCase and snake_case runs read as words, the inputs as stored."""
+        return Signature(name=_worded(self.name), inputs=self.inputs)
 
     def __str__(self):
-        return f"{self.hex_signature} {self.text_signature}"
+        return f"{self.hex_signature} {self.name}({','.join(self.inputs)})"

@@ -15,7 +15,8 @@ class Migration(migrations.Migration):
             fields=[
                 ("id", models.BigIntegerField(primary_key=True, serialize=False)),
                 ("hex_signature", models.CharField(db_index=True, max_length=10)),
-                ("text_signature", models.CharField(max_length=512)),
+                ("name", models.CharField(max_length=255)),
+                ("inputs", models.JSONField(blank=True, default=list)),
                 ("description", models.TextField(blank=True, default="")),
             ],
             options={
