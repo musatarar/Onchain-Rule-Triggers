@@ -1,6 +1,5 @@
 """The signature catalog: how a stored text signature reads, and how the loader fills it."""
 
-import datetime
 import io
 import json
 import os
@@ -12,19 +11,15 @@ from django.test import TestCase
 from project.app.defi import services
 from project.app.models import FunctionSignature
 
-CREATED = datetime.datetime(2026, 9, 22, 13, 53, 58, tzinfo=datetime.timezone.utc)
-
 
 def signature(text, hex_signature="0x23b872dd", pk=1):
-    return FunctionSignature(
-        id=pk, hex_signature=hex_signature, text_signature=text, created_at=CREATED
-    )
+    return FunctionSignature(id=pk, hex_signature=hex_signature, text_signature=text)
 
 
 def entry(pk, hex_signature, text):
     return {
         "id": pk,
-        "created_at": CREATED.isoformat().replace("+00:00", "Z"),
+        "created_at": "2026-09-22T13:53:58Z",
         "text_signature": text,
         "hex_signature": hex_signature,
         "bytes_signature": "ignored",
@@ -126,7 +121,6 @@ class LoadFunctionSignaturesTests(TestCase):
         row = FunctionSignature.objects.get(pk=1216430)
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
         self.assertEqual(row.text_signature, "_expectedBalance()")
-        self.assertEqual(row.created_at, CREATED)
 
     def test_a_loaded_row_starts_with_no_description(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])

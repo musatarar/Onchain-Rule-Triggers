@@ -1,11 +1,9 @@
 """The signature catalog: what one four-byte selector might decode to, and how entries get in."""
 
-from django.utils.dateparse import parse_datetime
-
 from project.app.defi.function_signatures import FunctionSignature
 
 # `description` is left out, so a re-load refreshes the signature and keeps a written note.
-_UPDATED_FIELDS = ["hex_signature", "text_signature", "created_at"]
+_UPDATED_FIELDS = ["hex_signature", "text_signature"]
 
 
 def signatures_for_selector(hex_signature):
@@ -33,7 +31,6 @@ def load_function_signatures(entries, limit=None):
             id=entry["id"],
             hex_signature=entry["hex_signature"],
             text_signature=entry["text_signature"],
-            created_at=parse_datetime(entry["created_at"]),
         )
         for entry in entries[:limit]
     ]
