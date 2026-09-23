@@ -19,11 +19,11 @@ _LOGICAL_OPS = {"all_of": utils.AND, "any_of": utils.OR}
 
 def tree_from_legacy(payload):
     """The condition tree a legacy ``{"version", "operator", "conditions"}``
-    payload spelled. Unknown shapes pass through for the validator to refuse."""
+    payload spelled. Unknown shapes pass through for the validator to refuse;
+    a leaf's ``source`` is dropped, since the shape says where a field is read."""
     if "field" in payload:
         condition = {
             "node_type": utils.NODE_CONDITION,
-            "source": payload.get("source"),
             "field_name": payload.get("field"),
             "operator": payload.get("operator"),
         }

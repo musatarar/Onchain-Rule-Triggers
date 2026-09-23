@@ -173,11 +173,13 @@ class ConditionNode(models.Model):
     """One node of a rule's condition tree: a group of nodes, or one condition.
 
     A ``GROUP`` node joins its children with ``logical_op`` (AND / OR); a
-    ``CONDITION`` node compares one field (``source`` + ``field_name``)
-    against ``comparand`` with ``operator``. The root is the rule's one group
-    with no parent. Every node carries its ``rule`` as well as its parent, so a
-    rule's whole tree is one query (``rule.conditions``) and
-    :func:`~project.app.rules.utils.tree_from_nodes` nests it in memory.
+    ``CONDITION`` node compares one field (``field_name``, a name the owner's
+    shape declares) against ``comparand`` with ``operator``. The root is the
+    rule's one group with no parent, and groups nest to any depth up to
+    :data:`~project.app.rules.utils.MAX_DEPTH`. Every node carries its ``rule``
+    as well as its parent, so a rule's whole tree is one query
+    (``rule.conditions``) and :func:`~project.app.rules.utils.tree_from_nodes`
+    nests it in memory.
 
     ``comparand`` is JSON rather than text because it is typed by the field it
     is compared to: a number, a boolean, an ISO date, a phrase, or a list for
@@ -203,7 +205,6 @@ class ConditionNode(models.Model):
     # GROUP only.
     logical_op = models.CharField(max_length=3, choices=LOGICAL_OP_CHOICES, null=True, blank=True)
     # CONDITION only.
-    source = models.CharField(max_length=10, null=True, blank=True)
     field_name = models.CharField(max_length=utils.FIELD_NAME_MAX_CHARS, null=True, blank=True)
     operator = models.CharField(max_length=10, null=True, blank=True)
     comparand = models.JSONField(null=True, blank=True)
@@ -219,7 +220,6 @@ class ConditionNode(models.Model):
                     Q(
                         node_type="GROUP",
                         logical_op__in=("AND", "OR"),
-                        source__isnull=True,
                         field_name__isnull=True,
                         operator__isnull=True,
                         comparand__isnull=True,
@@ -227,7 +227,6 @@ class ConditionNode(models.Model):
                     | Q(
                         node_type="CONDITION",
                         logical_op__isnull=True,
-                        source__isnull=False,
                         field_name__isnull=False,
                         operator__isnull=False,
                     )
@@ -247,5 +246,5 @@ class ConditionNode(models.Model):
             return f"{self.logical_op} group {self.pk} of rule {self.rule_id}"
         return (
             f"condition {self.pk} of rule {self.rule_id}: "
-            f"{self.source}.{self.field_name} {self.operator} {self.comparand!r}"
+            f"{self.field_name} {self.operator} {self.comparand!r}"
         )

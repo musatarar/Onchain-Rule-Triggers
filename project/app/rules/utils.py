@@ -5,8 +5,8 @@ rows, one per node, each pointing at its parent. In memory and on the wire the
 same tree is nested dicts, one per node, whose keys are the node's columns:
 
     {"node_type": "GROUP", "logical_op": "OR", "children": [
-        {"node_type": "CONDITION", "source": "lead", "field_name": "deals_closed",
-         "operator": ">", "comparand": 20},
+        {"node_type": "CONDITION", "field_name": "deals_closed", "operator": ">",
+         "comparand": 20},
         {"node_type": "GROUP", "logical_op": "AND", "children": [...]},
     ]}
 
@@ -23,11 +23,10 @@ the fields a rule may name follow that declaration instead of drifting from it.
 A tree may name more than the evaluator resolves: an unresolved field is
 refused at evaluation rather than quietly firing.
 
-Sources split by who controls the value. ``lead`` and ``derived`` are the
-agency's own record and figures computed from it; ``notes`` and ``events``
-carry free text a lead can write. A condition tree may read the untrusted
-ones, but is never satisfiable by them alone — see
-:data:`CORROBORATING_SOURCES`.
+A condition names a field only; the field's source — how the evaluator reads
+it — follows from the shape (:func:`fields_by_name`). ``lead`` and ``derived``
+are the agency's own record and figures computed from it; ``notes`` and
+``events`` carry text a lead can write, which the evaluator reads sanitized.
 """
 
 import datetime
@@ -41,14 +40,9 @@ SOURCE_DERIVED = "derived"
 SOURCE_NOTES = "notes"
 SOURCE_EVENTS = "events"
 
-# Resolution order for a condition that does not name its source, and the order
-# error messages list sources in.
+# Resolution order: a name two sources claim (a lead column and an event
+# column of the same name) reads from the first.
 SOURCES = (SOURCE_LEAD, SOURCE_DERIVED, SOURCE_NOTES, SOURCE_EVENTS)
-
-# Sources whose values the lead cannot author, so a condition reading one is
-# enough to corroborate a branch that also reads CRM text. (An inference
-# rule's predicate is judged separately, and may stand alone.)
-CORROBORATING_SOURCES = frozenset({SOURCE_LEAD, SOURCE_DERIVED})
 
 # The one event column the shape does not declare, because the table carries it.
 EVENT_TIMESTAMP = "timestamp"
@@ -78,7 +72,12 @@ MIN_LITERAL_PHRASE_CHARS = 3
 # The longest field name a node's column holds; a shape may declare longer.
 FIELD_NAME_MAX_CHARS = 255
 
-LEAF_KEYS = frozenset({"node_type", "source", "field_name", "operator", "comparand"})
+# How deep groups may nest (the root is depth 1). Generous for any rule a
+# person writes; it bounds the recursion that validates, stores and evaluates
+# a tree, so a pathological payload is refused instead of exhausting the stack.
+MAX_DEPTH = 32
+
+LEAF_KEYS = frozenset({"node_type", "field_name", "operator", "comparand"})
 GROUP_KEYS = frozenset({"node_type", "logical_op", "children"})
 
 # An inference predicate renders into one line of a larger prompt. These
@@ -90,8 +89,8 @@ PREDICATE_FORBIDDEN = ('"', "\n", "\r")
 def fields_by_source(shape):
     """Every field a condition may name, by source and type, for one shape.
 
-    A trusted lead column is named under ``lead`` and a lead-authored one under
-    ``notes``, so untrusted text can never be read as a corroborator. Each
+    A trusted lead column is read under ``lead`` and a lead-authored one under
+    ``notes``, so its text is sanitized before it is matched. Each
     trusted date column gets a ``days_since_`` twin under ``derived``, and
     ``events`` carries the structural timestamp plus every declared event
     column.
@@ -108,24 +107,22 @@ def fields_by_source(shape):
     return fields
 
 
-def source_for(field, shape):
-    """The source that owns ``field``, first match in :data:`SOURCES` order.
+def fields_by_name(shape):
+    """``{field_name: (source, type)}`` for every field a condition may name.
 
-    An unclaimed name answers ``lead`` so that :func:`validate_conditions`
-    stays the one place an unknown field is refused.
+    A name two sources claim resolves to the first in :data:`SOURCES` order.
     """
-    fields = fields_by_source(shape)
-    for source in SOURCES:
-        if field in fields[source]:
-            return source
-    return SOURCE_LEAD
+    named = {}
+    for source, fields in fields_by_source(shape).items():
+        for name, field_type in fields.items():
+            named.setdefault(name, (source, field_type))
+    return named
 
 
-def _cond(field, operator, comparand=None, source=None, shape=None):
-    """One condition node. The source is given, or read off ``shape``."""
+def _cond(field, operator, comparand=None):
+    """One condition node."""
     condition = {
         "node_type": NODE_CONDITION,
-        "source": source or (source_for(field, shape) if shape is not None else SOURCE_LEAD),
         "field_name": field,
         "operator": operator,
     }
@@ -169,7 +166,6 @@ def _subtree(node, children):
         }
     condition = {
         "node_type": NODE_CONDITION,
-        "source": node.source,
         "field_name": node.field_name,
         "operator": node.operator,
     }
@@ -188,13 +184,7 @@ def validate_conditions(tree, shape):
         raise ValidationError("conditions must be an object.")
     if tree.get("node_type") != NODE_GROUP:
         raise ValidationError(f"conditions.node_type must be {NODE_GROUP!r} at the root.")
-    _validate_group(tree, "conditions", fields_by_source(shape), nested=False)
-
-    if not _branch_corroborated(tree):
-        raise ValidationError(
-            "These conditions can be satisfied by lead-controlled text alone: "
-            "every branch needs at least one 'lead' or 'derived' condition."
-        )
+    _validate_group(tree, "conditions", fields_by_name(shape), depth=1)
 
 
 def validate_inference_predicate(text):
@@ -209,7 +199,7 @@ def validate_inference_predicate(text):
             )
 
 
-def _validate_group(group, path, fields, *, nested):
+def _validate_group(group, path, fields, *, depth):
     unknown = set(group) - GROUP_KEYS
     if unknown:
         raise ValidationError(f"{path} has unknown key(s): {_listed(unknown)}.")
@@ -227,9 +217,9 @@ def _validate_group(group, path, fields, *, nested):
         if node_type == NODE_CONDITION:
             _validate_leaf(child, child_path, fields)
         elif node_type == NODE_GROUP:
-            if nested:
-                raise ValidationError(f"{child_path}: groups nest one level only.")
-            _validate_group(child, child_path, fields, nested=True)
+            if depth >= MAX_DEPTH:
+                raise ValidationError(f"{child_path}: groups nest at most {MAX_DEPTH} deep.")
+            _validate_group(child, child_path, fields, depth=depth + 1)
         else:
             raise ValidationError(
                 f"{child_path}.node_type must be {_listed(NODE_TYPES)}, got {node_type!r}."
@@ -240,19 +230,14 @@ def _validate_leaf(leaf, path, fields):
     unknown = set(leaf) - LEAF_KEYS
     if unknown:
         raise ValidationError(f"{path} has unknown key(s): {_listed(unknown)}.")
-    source = leaf.get("source")
-    if source not in fields:
-        raise ValidationError(f"{path}.source must be one of {_listed(fields)}, got {source!r}.")
     field = leaf.get("field_name")
     if not isinstance(field, str) or len(field) > FIELD_NAME_MAX_CHARS:
         raise ValidationError(
             f"{path}.field_name must be text of at most {FIELD_NAME_MAX_CHARS} characters."
         )
-    if field not in fields[source]:
-        raise ValidationError(
-            f"{path}: {source!r} has no field {field!r}; known: {_listed(fields[source])}."
-        )
-    field_type = fields[source][field]
+    if field not in fields:
+        raise ValidationError(f"{path}: no field {field!r}; known: {_listed(fields)}.")
+    _source, field_type = fields[field]
     operator = leaf.get("operator")
     if operator not in OPERATORS_BY_TYPE[field_type]:
         raise ValidationError(
@@ -311,21 +296,6 @@ def _validate_scalar(value, field_type, path):
         return
     if not isinstance(value, str):
         raise ValidationError(f"{path}: expected text, got {value!r}.")
-
-
-def _branch_corroborated(node):
-    """Whether every way of satisfying ``node`` involves a corroborating source.
-
-    A condition corroborates only if its own source does. An AND group holds
-    only when all its children hold, so one corroborated child is enough; an OR
-    group can be satisfied by any single child, so every child must carry its
-    own corroborator.
-    """
-    if node.get("node_type") == NODE_CONDITION:
-        return node.get("source") in CORROBORATING_SOURCES
-    children = node.get("children") or []
-    check = any if node.get("logical_op") == AND else all
-    return check(_branch_corroborated(child) for child in children)
 
 
 def _listed(values):

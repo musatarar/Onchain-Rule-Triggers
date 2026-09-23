@@ -117,7 +117,6 @@ def _store_node(rule, node, parent):
         rule=rule,
         parent=parent,
         node_type=utils.NODE_CONDITION,
-        source=node["source"],
         field_name=node["field_name"],
         operator=node["operator"],
         comparand=node.get("comparand"),

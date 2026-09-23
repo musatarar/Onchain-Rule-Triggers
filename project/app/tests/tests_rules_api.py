@@ -17,11 +17,11 @@ RULES_URL = "/api/rules/"
 
 
 def _conditions():
-    return _all_of(_cond("deals_closed", ">", 20, source="lead"))
+    return _all_of(_cond("deals_closed", ">", 20))
 
 
 def _gate():
-    return _all_of(_cond("signed_up_date", "exists", source="lead"))
+    return _all_of(_cond("signed_up_date", "exists"))
 
 
 class RulesApiTestCase(TestCase):
@@ -104,10 +104,8 @@ class RuleApiTests(RulesApiTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], "validation_error")
 
-    def test_a_conditions_payload_satisfiable_by_crm_text_alone_is_rejected(self):
-        notes_only = _all_of(
-            _cond("hubspot_notes", "contains", "waiting on budget", source="notes")
-        )
+    def test_a_tree_reading_only_crm_text_is_accepted(self):
+        notes_only = _all_of(_cond("hubspot_notes", "contains", "waiting on budget"))
         response = self.client.post(
             RULES_URL,
             {
@@ -117,8 +115,8 @@ class RuleApiTests(RulesApiTestCase):
             },
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["conditions"], notes_only)
 
     def test_an_unevaluable_conditions_payload_is_rejected(self):
         for payload in (
@@ -128,7 +126,7 @@ class RuleApiTests(RulesApiTestCase):
             {"lol": 1},
             {"node_type": "GROUP", "logical_op": "XOR", "children": []},
             {"version": 1, "operator": "all_of", "conditions": [_cond("deals_closed", "exists")]},
-            _all_of(_cond("favourite_colour", "==", "blue", source="lead")),
+            _all_of(_cond("favourite_colour", "==", "blue")),
         ):
             with self.subTest(payload=payload):
                 response = self.client.post(
@@ -160,10 +158,10 @@ class RuleApiTests(RulesApiTestCase):
     def test_a_condition_tree_round_trips_through_the_api(self):
         # (deals_closed > 20) OR (stage == "active_trial" AND state != "CA")
         tree = _any_of(
-            _cond("deals_closed", ">", 20, source="lead"),
+            _cond("deals_closed", ">", 20),
             _all_of(
-                _cond("stage", "==", "active_trial", source="lead"),
-                _cond("state", "!=", "CA", source="lead"),
+                _cond("stage", "==", "active_trial"),
+                _cond("state", "!=", "CA"),
             ),
         )
         created = self.client.post(

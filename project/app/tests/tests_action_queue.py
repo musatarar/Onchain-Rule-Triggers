@@ -15,16 +15,11 @@ from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
 from project.app.models import Event, Lead, Rule
 from project.app.rules import inference, schema, utils
-from project.app.rules import utils as rules_utils
-from project.app.rules.utils import _all_of
+from project.app.rules.utils import _all_of, _cond
 from project.app.tests.tests_rule_utils import plant_conditions, plant_rule
 from project.app.tests.tests_shape_utils import shape, shape_for
 
 SHAPE = shape()
-
-
-def _cond(field, operator, comparand=None, source=None):
-    return rules_utils._cond(field, operator, comparand, source=source, shape=SHAPE)
 
 
 TODAY = datetime.date(2026, 6, 12)
@@ -296,8 +291,8 @@ class DeterministicPassTests(EngineTestCase):
         self._rule(
             "went quiet",
             conditions=_all_of(
-                _cond("hubspot_notes", "contains", "circle back", source="notes"),
-                _cond("days_since_last_contacted_date", ">=", 14, source="derived"),
+                _cond("hubspot_notes", "contains", "circle back"),
+                _cond("days_since_last_contacted_date", ">=", 14),
             ),
         )
         job = services.enqueue_lead(lead)
@@ -318,7 +313,7 @@ class DeterministicPassTests(EngineTestCase):
             "Says they have seats to fill",
             conditions=_all_of(
                 _cond("deals_closed", ">", 2),
-                _cond("self_reported_seats", ">", 5, source="notes"),
+                _cond("self_reported_seats", ">", 5),
             ),
         )
         job = services.enqueue_lead(self._lead(self_reported_seats=7))
@@ -334,7 +329,7 @@ class DeterministicPassTests(EngineTestCase):
     def test_a_rule_the_engine_cannot_evaluate_is_recorded_instead_of_firing(self):
         rule = self._rule("stale vocabulary")
         # Written before the field it names left the vocabulary.
-        plant_conditions(rule, _all_of(_cond("favourite_colour", "==", "red", source="lead")))
+        plant_conditions(rule, _all_of(_cond("favourite_colour", "==", "red")))
         job = services.enqueue_lead(self._lead())
 
         self._run(job)
@@ -435,9 +430,7 @@ class InferencePassTests(EngineTestCase):
 
     def test_both_passes_unevaluable_rules_land_in_one_list(self):
         deterministic = self._rule("stale vocabulary")
-        plant_conditions(
-            deterministic, _all_of(_cond("favourite_colour", "==", "red", source="lead"))
-        )
+        plant_conditions(deterministic, _all_of(_cond("favourite_colour", "==", "red")))
         inferred = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
 
@@ -646,13 +639,13 @@ class VocabularyCoverageTests(EngineTestCase):
         for source in (utils.SOURCE_LEAD, utils.SOURCE_DERIVED, utils.SOURCE_NOTES):
             for field in fields[source]:
                 with self.subTest(source=source, field=field):
-                    payload = _all_of(_cond(field, "exists", source=source))
+                    payload = _all_of(_cond(field, "exists"))
                     self.assertIsInstance(evaluate.matches(payload, lead, TODAY), bool)
 
     def test_an_event_column_stores_in_a_rule_but_has_no_verdict_yet(self):
         payload = _all_of(
             _cond("deals_closed", ">", 0),
-            _cond("type", "==", "login", source=utils.SOURCE_EVENTS),
+            _cond("type", "==", "login"),
         )
         utils.validate_conditions(payload, self.shape)
         with self.assertRaises(evaluate.ConditionError):

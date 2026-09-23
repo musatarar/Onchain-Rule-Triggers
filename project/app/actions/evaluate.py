@@ -30,7 +30,7 @@ def matches(tree, lead, today):
     if shape is None:
         raise ConditionError("This lead's owner declares no shape, so nothing resolves.")
     # Derived once for the whole tree: every leaf asks the same shape.
-    fields = utils.fields_by_source(shape)
+    fields = utils.fields_by_name(shape)
     return _node(tree, lead, shape, fields, today)
 
 
@@ -51,11 +51,10 @@ def _node(node, lead, shape, fields, today):
 
 
 def _leaf(leaf, lead, shape, fields, today):
-    source = leaf.get("source")
     field = leaf.get("field_name")
-    field_type = fields.get(source, {}).get(field)
-    if field_type is None:
-        raise ConditionError(f"Unknown field {field!r} on source {source!r}.")
+    if field not in fields:
+        raise ConditionError(f"Unknown field {field!r}.")
+    source, field_type = fields[field]
     comparand = leaf.get("comparand")
     if source == utils.SOURCE_NOTES and field_type == utils.TEXT:
         comparand = _lowered(comparand)
@@ -74,9 +73,7 @@ def _value(source, field, lead, shape, today):
     if source == utils.SOURCE_NOTES:
         value = shape.value(data, field)
         if isinstance(value, str):
-            # Attacker-controlled free text, sanitized before it is matched
-            # against; a phrase match is only a SIGNAL, and `validate_conditions`
-            # is what keeps it from satisfying a rule on its own (see SECURITY.md).
+            # Lead-authored free text, sanitized before it is matched against.
             return sanitize.sanitize_untrusted(value).lower()
         # A number or flag the lead authored is still a value of its declared
         # type: it is untrusted, not unreadable.

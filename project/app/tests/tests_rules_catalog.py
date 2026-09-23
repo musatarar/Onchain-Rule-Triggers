@@ -28,12 +28,12 @@ def _user(username="planner@lockedin.example"):
 
 def _deterministic_conditions(field="deals_closed", operator=">", comparand=20):
     """The brief's worked example: ``deals_closed > 20 -> reward_power_user``."""
-    return _all_of(_cond(field, operator, comparand, source="lead"))
+    return _all_of(_cond(field, operator, comparand))
 
 
 def _gate():
     """The optional structured gate an inference rule can put before the model."""
-    return _all_of(_cond("signed_up_date", "exists", source="lead"))
+    return _all_of(_cond("signed_up_date", "exists"))
 
 
 class RuleTests(TestCase):
@@ -184,18 +184,14 @@ class RuleTests(TestCase):
             rule.full_clean()
         self.assertIn("conditions", ctx.exception.message_dict)
 
-    def test_a_deterministic_rule_reading_only_the_notes_is_refused(self):
+    def test_a_deterministic_rule_may_read_only_the_notes(self):
         notes_only = unsaved_rule(
             owner=self.user,
             name="CRM text alone",
             kind=Rule.KIND_DETERMINISTIC,
-            conditions=_all_of(
-                _cond("hubspot_notes", "contains", "waiting on budget", source="notes")
-            ),
+            conditions=_all_of(_cond("hubspot_notes", "contains", "waiting on budget")),
         )
-        with self.assertRaises(ValidationError) as ctx:
-            notes_only.full_clean()
-        self.assertIn("conditions", ctx.exception.message_dict)
+        notes_only.full_clean()
 
     def test_an_unknown_rule_kind_is_rejected_by_the_db(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -235,10 +231,10 @@ class ConditionNodeTests(TestCase):
     def _example_tree(self):
         # (deals_closed > 20) OR (stage == "active_trial" AND state != "CA")
         return _any_of(
-            _cond("deals_closed", ">", 20, source="lead"),
+            _cond("deals_closed", ">", 20),
             _all_of(
-                _cond("stage", "==", "active_trial", source="lead"),
-                _cond("state", "!=", "CA", source="lead"),
+                _cond("stage", "==", "active_trial"),
+                _cond("state", "!=", "CA"),
             ),
         )
 
@@ -274,6 +270,24 @@ class ConditionNodeTests(TestCase):
         with self.assertNumQueries(0):
             self.assertEqual(rule.condition_tree(), self._example_tree())
 
+    def test_a_tree_nested_several_levels_round_trips(self):
+        tree = _any_of(
+            _cond("deals_closed", ">", 20),
+            _all_of(
+                _cond("stage", "==", "active_trial"),
+                _any_of(
+                    _cond("state", "in", ["ID", "TX"]),
+                    _all_of(
+                        _cond("quotes_created", ">", 5),
+                        _cond("hubspot_notes", "contains", "budget"),
+                    ),
+                ),
+            ),
+        )
+        rule = Rule.objects.get(pk=self._rule(tree).pk)
+        self.assertEqual(rule.condition_tree(), tree)
+        self.assertEqual(rule.conditions.count(), 9)
+
     def test_a_rule_with_no_rows_has_no_tree(self):
         rule = plant_rule(
             owner=self.user,
@@ -286,9 +300,9 @@ class ConditionNodeTests(TestCase):
 
     def test_a_comparand_keeps_its_type(self):
         tree = _all_of(
-            _cond("deals_closed", ">", 2.5, source="lead"),
-            _cond("state", "in", ["ID", "TX"], source="lead"),
-            _cond("signed_up_date", "exists", source="lead"),
+            _cond("deals_closed", ">", 2.5),
+            _cond("state", "in", ["ID", "TX"]),
+            _cond("signed_up_date", "exists"),
         )
         rule = Rule.objects.get(pk=self._rule(tree).pk)
         self.assertEqual(rule.condition_tree(), tree)
@@ -304,15 +318,14 @@ class ConditionNodeTests(TestCase):
         for columns in (
             {"node_type": "GROUP", "logical_op": "AND", "field_name": "deals_closed"},
             {"node_type": "GROUP", "logical_op": "XOR"},
-            {"node_type": "CONDITION", "source": "lead", "field_name": "deals_closed"},
+            {"node_type": "CONDITION", "field_name": "deals_closed"},
             {
                 "node_type": "CONDITION",
                 "logical_op": "AND",
-                "source": "lead",
                 "field_name": "deals_closed",
                 "operator": ">",
             },
-            {"node_type": "RULE", "source": "lead", "field_name": "x", "operator": ">"},
+            {"node_type": "RULE", "field_name": "x", "operator": ">"},
         ):
             with self.subTest(columns=columns):
                 with self.assertRaises(IntegrityError), transaction.atomic():

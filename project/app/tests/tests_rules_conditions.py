@@ -1,5 +1,4 @@
-"""The condition tree contract: schema, vocabulary, and the rule that a rule
-may never fire on lead-controlled text alone.
+"""The condition tree contract: schema, nesting and vocabulary.
 
 Pure — no database. What is stored here is what the evaluator must resolve, so
 anything this accepts is a promise and anything it rejects never reaches a row.
@@ -10,13 +9,10 @@ from django.test import SimpleTestCase
 
 from project.app.models import Shape
 from project.app.rules import utils
+from project.app.rules.utils import _cond
 from project.app.tests.tests_shape_utils import shape
 
 SHAPE = shape()
-
-
-def _cond(field, operator, comparand=None, source=None):
-    return utils._cond(field, operator, comparand, source=source, shape=SHAPE)
 
 
 def _validate(payload, against=SHAPE):
@@ -27,17 +23,25 @@ def _payload(*children, logical_op=utils.AND):
     return {"node_type": utils.NODE_GROUP, "logical_op": logical_op, "children": list(children)}
 
 
+def _nested(depth, leaf):
+    """``depth`` groups, each the only child of the one above, around ``leaf``."""
+    tree = leaf
+    for _ in range(depth):
+        tree = utils._all_of(tree)
+    return tree
+
+
 LEAD = _cond("deals_closed", ">", 20)
-DERIVED = _cond("days_since_last_contacted_date", ">=", 14, source="derived")
-NOTES = _cond("hubspot_notes", "contains", "waiting on", source="notes")
-EVENTS = _cond("type", "==", "email_sent", source="events")
+DERIVED = _cond("days_since_last_contacted_date", ">=", 14)
+NOTES = _cond("hubspot_notes", "contains", "waiting on")
+EVENTS = _cond("type", "==", "email_sent")
 
 
 class ValidPayloadTests(SimpleTestCase):
     def test_the_builders_produce_a_payload_the_validator_accepts(self):
         _validate(utils._all_of(LEAD))
 
-    def test_notes_alongside_a_corroborator_is_accepted(self):
+    def test_notes_alongside_a_lead_field_is_accepted(self):
         _validate(_payload(NOTES, DERIVED))
 
     def test_every_seeded_shape_of_condition_is_evaluable(self):
@@ -47,13 +51,17 @@ class ValidPayloadTests(SimpleTestCase):
                 _cond("signed_up_date", "absent"),
                 _cond("last_login_date", ">=", "2026-01-01"),
                 _cond("state", "in", ["ID", "TX"]),
-                _cond("days_since_last_login_date", "<=", 21, source="derived"),
-                _cond("hubspot_notes", "contains", "waiting on", source="notes"),
+                _cond("days_since_last_login_date", "<=", 21),
+                _cond("hubspot_notes", "contains", "waiting on"),
             )
         )
 
     def test_one_level_of_grouping_is_allowed(self):
         _validate(_payload(LEAD, utils._any_of(NOTES)))
+
+    def test_groups_nest_to_any_depth_up_to_the_cap(self):
+        _validate(_payload(LEAD, utils._any_of(utils._all_of(LEAD, utils._any_of(NOTES)))))
+        _validate(_nested(utils.MAX_DEPTH, LEAD))
 
     def test_the_ops_read_as_in_the_example_tree(self):
         # (deals_closed > 20) OR (stage == "active_trial" AND state != "CA")
@@ -65,38 +73,18 @@ class ValidPayloadTests(SimpleTestCase):
         )
 
 
-class CorroboratorTests(SimpleTestCase):
-    """A conditions payload must not be satisfiable by CRM text on its own.
+class LeadWrittenTextTests(SimpleTestCase):
+    """Conditions may rest on text the lead wrote: it is read sanitized, but
+    nothing requires an agency-owned field alongside it."""
 
-    An inference rule's predicate is judged separately and may stand alone;
-    this is about the structured part.
-    """
+    def test_a_notes_only_tree_is_accepted(self):
+        _validate(_payload(NOTES))
 
-    def _refused(self, payload):
-        with self.assertRaises(ValidationError) as ctx:
-            _validate(payload)
-        self.assertIn("lead-controlled text alone", str(ctx.exception))
+    def test_an_or_whose_branch_reads_only_notes_is_accepted(self):
+        _validate(_payload(NOTES, LEAD, logical_op=utils.OR))
 
-    def test_a_notes_only_payload_is_refused(self):
-        self._refused(_payload(NOTES))
-
-    def test_an_events_only_payload_is_refused(self):
-        self._refused(_payload(EVENTS))
-
-    def test_an_any_of_branch_that_notes_alone_could_satisfy_is_refused(self):
-        # `any_of` means the notes branch fires the rule by itself, so the
-        # sibling lead condition corroborates nothing.
-        self._refused(_payload(NOTES, LEAD, logical_op=utils.OR))
-
-    def test_an_any_of_of_groups_needs_a_corroborator_in_every_branch(self):
-        corroborated = utils._all_of(NOTES, LEAD)
-        self._refused(_payload(corroborated, utils._all_of(NOTES), logical_op=utils.OR))
-        _validate(_payload(corroborated, corroborated, logical_op=utils.OR))
-
-    def test_hubspot_notes_cannot_be_read_as_a_lead_field(self):
-        # Otherwise a notes-only payload would launder through a trusted source.
-        with self.assertRaises(ValidationError):
-            _validate(_payload(_cond("hubspot_notes", "contains", "budget", source="lead")))
+    def test_an_events_only_tree_is_accepted_though_nothing_evaluates_it_yet(self):
+        _validate(_payload(EVENTS))
 
 
 class SchemaRejectionTests(SimpleTestCase):
@@ -126,13 +114,19 @@ class SchemaRejectionTests(SimpleTestCase):
     def test_an_empty_condition_list_is_refused(self):
         self._refused(_payload())
 
-    def test_groups_nest_one_level_only(self):
-        self._refused(_payload(LEAD, utils._any_of(utils._all_of(LEAD))))
+    def test_groups_nested_past_the_cap_are_refused(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _validate(_nested(utils.MAX_DEPTH + 1, LEAD))
+        self.assertIn(f"at most {utils.MAX_DEPTH} deep", str(ctx.exception))
 
-    def test_an_unknown_field_or_source_is_refused(self):
+    def test_an_empty_group_deep_in_the_tree_is_refused(self):
+        self._refused(_payload(LEAD, utils._any_of(LEAD, utils._all_of())))
+
+    def test_an_unknown_field_is_refused(self):
         self._refused(_payload(_cond("favourite_colour", "==", "blue")))
-        self._refused(_payload(_cond("deals_closed", ">", 1, source="vibes")))
-        self._refused(_payload(_cond("deals_closed", ">", 1, source="derived")))
+
+    def test_a_source_key_is_refused(self):
+        self._refused(_payload(dict(LEAD, source="lead")))
 
     def test_an_unknown_key_on_a_condition_is_refused(self):
         leaf = dict(LEAD, sneaky="payload")
@@ -146,18 +140,18 @@ class SchemaRejectionTests(SimpleTestCase):
         self._refused(_payload(_cond("deals_closed", ">", "twenty")))
         self._refused(_payload(_cond("deals_closed", ">", True)))
         self._refused(_payload(_cond("signed_up_date", ">", "last tuesday")))
-        self._refused(_payload(_cond("days_since_last_login_date", ">", "21", source="derived")))
+        self._refused(_payload(_cond("days_since_last_login_date", ">", "21")))
 
     def test_a_missing_or_surplus_comparand_is_refused(self):
         self._refused(_payload(_cond("deals_closed", ">")))
         self._refused(_payload(dict(_cond("signed_up_date", "exists"), comparand="2026-01-01")))
 
     def test_a_phrase_too_short_to_mean_anything_is_refused(self):
-        self._refused(_payload(_cond("hubspot_notes", "contains", "up", source="notes"), LEAD))
-        self._refused(_payload(_cond("hubspot_notes", "contains", "   ", source="notes"), LEAD))
+        self._refused(_payload(_cond("hubspot_notes", "contains", "up"), LEAD))
+        self._refused(_payload(_cond("hubspot_notes", "contains", "   "), LEAD))
 
-    def test_a_literal_phrase_is_accepted_alongside_a_corroborator(self):
-        _validate(_payload(_cond("hubspot_notes", "contains", "budget", source="notes"), LEAD))
+    def test_a_literal_phrase_is_accepted(self):
+        _validate(_payload(_cond("hubspot_notes", "contains", "budget"), LEAD))
 
 
 class PredicateTests(SimpleTestCase):
@@ -240,7 +234,7 @@ class VocabularyTests(SimpleTestCase):
         _validate(
             _payload(
                 _cond("deals_closed", ">", 1),
-                utils._cond("self_reported_seats", ">", 5, source=utils.SOURCE_NOTES),
+                utils._cond("self_reported_seats", ">", 5),
             ),
             typed,
         )
@@ -269,36 +263,24 @@ class VocabularyTests(SimpleTestCase):
         self.assertEqual(len(names), len(set(names)))
 
 
-class SourceResolutionTests(SimpleTestCase):
-    """A condition that does not name its source gets it from the field."""
+class FieldResolutionTests(SimpleTestCase):
+    """A condition names a field; the shape says which source reads it."""
 
-    def test_a_lead_column_resolves_to_the_lead_source(self):
-        self.assertEqual(_cond("deals_closed", ">", 1)["source"], utils.SOURCE_LEAD)
+    def _source(self, field, against=SHAPE):
+        return utils.fields_by_name(against)[field][0]
 
-    def test_without_a_shape_every_name_falls_through_to_lead(self):
-        # The builder has no vocabulary to consult; the validator refuses it.
-        self.assertEqual(
-            utils._cond("hubspot_notes", "contains", "budget")["source"], utils.SOURCE_LEAD
+    def test_each_kind_of_field_resolves_to_its_source(self):
+        self.assertEqual(self._source("deals_closed"), utils.SOURCE_LEAD)
+        self.assertEqual(self._source("days_since_last_contacted_date"), utils.SOURCE_DERIVED)
+        self.assertEqual(self._source("hubspot_notes"), utils.SOURCE_NOTES)
+        self.assertEqual(self._source("type"), utils.SOURCE_EVENTS)
+
+    def test_a_name_a_lead_and_an_event_column_share_reads_from_the_lead(self):
+        shared = shape(
+            lead_columns=[{"name": "outcome", "type": "text", "lead_authored": False}],
+            event_columns=[{"name": "outcome", "type": "number"}],
         )
+        self.assertEqual(utils.fields_by_name(shared)["outcome"], (utils.SOURCE_LEAD, utils.TEXT))
 
-    def test_an_event_column_resolves_to_the_events_source(self):
-        self.assertEqual(_cond("type", "==", "login")["source"], utils.SOURCE_EVENTS)
-
-    def test_a_lead_authored_column_resolves_to_notes(self):
-        self.assertEqual(_cond("hubspot_notes", "contains", "budget")["source"], utils.SOURCE_NOTES)
-
-    def test_a_computed_figure_resolves_to_its_declared_source(self):
-        self.assertEqual(
-            _cond("days_since_last_contacted_date", ">=", 14)["source"], utils.SOURCE_DERIVED
-        )
-
-    def test_an_explicit_source_is_never_overridden(self):
-        # Including a wrong one -- validate_conditions is what refuses it.
-        self.assertEqual(
-            _cond("hubspot_notes", "contains", "budget", source="lead")["source"], "lead"
-        )
-
-    def test_an_unclaimed_name_falls_through_to_lead_for_the_validator_to_refuse(self):
-        self.assertEqual(_cond("favourite_colour", "==", "blue")["source"], "lead")
-        with self.assertRaises(ValidationError):
-            _validate(_payload(_cond("favourite_colour", "==", "blue")))
+    def test_an_undeclared_name_resolves_to_nothing(self):
+        self.assertNotIn("favourite_colour", utils.fields_by_name(SHAPE))

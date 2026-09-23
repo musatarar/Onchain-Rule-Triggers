@@ -187,7 +187,7 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
             {
                 "name": "Modest deal momentum",
                 "kind": Rule.KIND_DETERMINISTIC,
-                "conditions": _all_of(_cond("deals_closed", ">", 2, source="lead")),
+                "conditions": _all_of(_cond("deals_closed", ">", 2)),
             },
         )
 
@@ -217,9 +217,9 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Modest deal momentum", resp.data["detail"])
 
-    def test_declaring_a_columns_text_lead_authored_is_refused_while_a_rule_trusts_it(self):
-        # The column stays, but under `notes`: the rule's `lead` leaf no longer
-        # resolves, and a rule that read it alone would stop corroborating.
+    def test_declaring_a_column_a_rule_reads_lead_authored_is_stored(self):
+        # A condition names the field, not where it is read from: the rule
+        # keeps resolving and now reads the column as lead-written.
         resp = self._put(
             [
                 {"name": "agency_name", "type": "text", "lead_authored": False},
@@ -227,8 +227,7 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
             ]
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Modest deal momentum", resp.data["detail"])
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_a_declaration_every_rule_survives_is_stored(self):
         resp = self._put(

@@ -82,10 +82,10 @@ class ValidatedWriteTests(RulesServiceTestCase):
 
 class ConditionTreeWriteTests(RulesServiceTestCase):
     TREE = _any_of(
-        _cond("deals_closed", ">", 20, source="lead"),
+        _cond("deals_closed", ">", 20),
         _all_of(
-            _cond("stage", "==", "active_trial", source="lead"),
-            _cond("state", "!=", "CA", source="lead"),
+            _cond("stage", "==", "active_trial"),
+            _cond("state", "!=", "CA"),
         ),
     )
 
@@ -111,7 +111,7 @@ class ConditionTreeWriteTests(RulesServiceTestCase):
 
     def test_a_new_tree_replaces_the_stored_one_whole(self):
         rule = self._create()
-        replacement = _all_of(_cond("deals_closed", ">", 3, source="lead"))
+        replacement = _all_of(_cond("deals_closed", ">", 3))
         services.update_rule(rule, {"conditions": replacement})
         self.assertEqual(self._stored_tree(rule), replacement)
         self.assertEqual(ConditionNode.objects.filter(rule=rule).count(), 2)
@@ -189,10 +189,10 @@ class BackfillTests(RulesServiceTestCase):
         self.assertEqual(
             rule.condition_tree(),
             _any_of(
-                _cond("deals_closed", ">", 20, source="lead"),
+                _cond("deals_closed", ">", 20),
                 _all_of(
-                    _cond("stage", "==", "trial", source="lead"),
-                    _cond("signed_up_date", "exists", source="lead"),
+                    _cond("stage", "==", "trial"),
+                    _cond("signed_up_date", "exists"),
                 ),
             ),
         )
