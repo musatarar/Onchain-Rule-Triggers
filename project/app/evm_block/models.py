@@ -15,7 +15,6 @@ block row, so ``chain`` and ``block_number`` together say which block it is in.
 from django.db import models
 
 from project.app.defi.chains import ChainId
-from project.app.defi.function_signatures import FunctionSignature
 
 HASH_LENGTH = 66  # "0x" and 32 bytes
 ADDRESS_LENGTH = 42  # "0x" and 20 bytes
@@ -69,13 +68,7 @@ class Transaction(models.Model):
     have no fee caps, access list or ``y_parity``, a pre-EIP-155 one has no
     ``chain_id``, and a contract creation has no ``to_address``. ``chain`` is the
     chain the block was read from, so it is there whatever the transaction signed.
-
-    ``function`` and ``inputs`` are ``input`` split as a call, raw: the
-    selector, and the calldata after it (see
-    :func:`~project.app.evm_block.services.get_transaction_function`). Both are
-    ``None`` for a plain transfer or a contract creation, neither of which is a
-    call. ``decoded_function`` is the catalog entry the selector decodes to, and
-    ``None`` where it knows none.
+    ``input`` is the calldata as sent, undecoded.
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -95,15 +88,6 @@ class Transaction(models.Model):
     max_priority_fee_per_gas = _uint256(null=True, blank=True)
     access_list = models.JSONField(null=True, blank=True)
     input = models.TextField()
-    function = models.TextField(null=True, blank=True)  # "0xa9059cbb"
-    inputs = models.JSONField(null=True, blank=True)  # the calldata after the selector
-    decoded_function = models.ForeignKey(
-        FunctionSignature,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="transactions",
-    )
     r = models.CharField(max_length=HASH_LENGTH)
     s = models.CharField(max_length=HASH_LENGTH)
     y_parity = models.BigIntegerField(null=True, blank=True)

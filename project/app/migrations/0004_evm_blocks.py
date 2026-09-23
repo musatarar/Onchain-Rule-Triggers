@@ -1,7 +1,6 @@
 """The EVM block tables: all new, so their indexes ride the creates."""
 
 from django.db import migrations, models
-import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
@@ -159,8 +158,6 @@ class Migration(migrations.Migration):
                 ),
                 ("access_list", models.JSONField(blank=True, null=True)),
                 ("input", models.TextField()),
-                ("function", models.TextField(blank=True, null=True)),
-                ("inputs", models.JSONField(blank=True, null=True)),
                 ("r", models.CharField(max_length=66)),
                 ("s", models.CharField(max_length=66)),
                 ("y_parity", models.BigIntegerField(blank=True, null=True)),
@@ -240,27 +237,16 @@ class Migration(migrations.Migration):
                 fields=("chain", "index"), name="withdrawal_chain_index_unique"
             ),
         ),
-        migrations.AddField(
+        migrations.AddIndex(
             model_name="transaction",
-            name="decoded_function",
-            field=models.ForeignKey(
-                blank=True,
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
-                related_name="transactions",
-                to="app.functionsignature",
+            index=models.Index(
+                fields=["chain", "block_number"], name="transaction_chain_block_idx"
             ),
         ),
         migrations.AddIndex(
             model_name="block",
             index=models.Index(
                 fields=["chain", "number"], name="block_chain_number_idx"
-            ),
-        ),
-        migrations.AddIndex(
-            model_name="transaction",
-            index=models.Index(
-                fields=["chain", "block_number"], name="transaction_chain_block_idx"
             ),
         ),
     ]

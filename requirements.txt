@@ -13,9 +13,6 @@ psycopg2-binary==2.9.12
 anthropic==0.109.1
 httpx==0.28.1
 
-# Calldata is checked against a catalog signature's input types by decoding it.
-eth-abi==6.0.0
-
 # Structured outputs derive their JSON schema from a pydantic model; pinned
 # here because the LLM layer imports it, not just the anthropic SDK.
 pydantic==2.13.5

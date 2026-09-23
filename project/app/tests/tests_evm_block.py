@@ -14,17 +14,12 @@ from django.test import TestCase
 
 from project.app.defi.chains import ChainId
 from project.app.evm_block import services
-from project.app.models import Block, FunctionSignature, Transaction, Withdrawal
+from project.app.models import Block, Transaction, Withdrawal
 from scripts.load_blocks import load_blocks
 
 BLOCK_HASH = "0x95b198e154acbfc64109dfd22d8224fe927fd8dfdedfae01587674482ba4baf3"
 DYNAMIC_FEE_HASH = "0x16e199673891df518e25db2ef5320155da82a3dd71a677e7d84363251885d133"
 LEGACY_HASH = "0x97e8589b6b8526108fe01f5c99be03bd29e48e67df8d9a8ea171b823711dc346"
-TRANSFER_SELECTOR = "0xa9059cbb"
-TRANSFER_ARGUMENTS = (
-    "000000000000000000000000d7a0b38496064412a8d6b1f77bc30ada93e7b7a5"
-    "0000000000000000000000000000000000000000000000000de0b6b3a7640000"
-)
 SIGNATURE = "0x485b18d5fdc11f0e76b8a6c24978fea8cd37707ee5d67ef4170fa401db8a28d1"
 
 
@@ -166,6 +161,7 @@ class StoreBlocksTests(TestCase):
         self.assertEqual(stored.max_priority_fee_per_gas, Decimal(1_000_000_000))
         self.assertEqual(stored.gas_price, Decimal(22_721_091_641))
         self.assertEqual(stored.access_list, [])
+        self.assertEqual(stored.input, "0x5578ceae")
         self.assertEqual(stored.y_parity, 1)
         self.assertEqual(stored.block_number, 18_000_000)
         self.assertEqual(stored.block_timestamp, Block.objects.get().timestamp)
@@ -264,154 +260,6 @@ class StoreBlocksTests(TestCase):
         )
 
         self.assertEqual(Transaction.objects.get().value, Decimal(value))
-
-
-def catalog(pk, name, inputs, hex_signature=TRANSFER_SELECTOR):
-    return FunctionSignature.objects.create(
-        id=pk, hex_signature=hex_signature, name=name, inputs=inputs
-    )
-
-
-class GetTransactionFunctionTests(TestCase):
-    def test_splits_calldata_into_its_raw_selector_and_inputs_and_decodes_it(self):
-        transfer = catalog(1, "transfer", ["address", "uint256"])
-
-        call = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
-
-        self.assertEqual(call.function, TRANSFER_SELECTOR)
-        self.assertEqual(call.inputs, TRANSFER_ARGUMENTS)
-        self.assertEqual(call.decoded_function, transfer)
-
-    def test_a_selector_the_catalog_does_not_know_is_still_split(self):
-        call = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
-
-        self.assertEqual(call.function, TRANSFER_SELECTOR)
-        self.assertEqual(call.inputs, TRANSFER_ARGUMENTS)
-        self.assertIsNone(call.decoded_function)
-
-    def test_a_selector_in_capitals_is_kept_raw_and_still_decodes(self):
-        transfer = catalog(1, "transfer", ["address", "uint256"])
-
-        call = services.get_transaction_function("0xA9059CBB")
-
-        self.assertEqual(call.function, "0xA9059CBB")
-        self.assertEqual(call.inputs, "")
-        self.assertEqual(call.decoded_function, transfer)
-
-    def test_calldata_too_short_for_a_selector_is_no_call(self):
-        self.assertEqual(services.get_transaction_function("0x"), (None, None, None))
-        self.assertEqual(services.get_transaction_function("0xa905"), (None, None, None))
-
-    def test_a_lone_entry_decodes_its_selector_without_checking_the_inputs(self):
-        colliding = catalog(1, "transfer", ["bytes4[9]", "bytes5[6]", "int48[11]"])
-
-        call = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
-
-        self.assertEqual(call.decoded_function, colliding)
-
-
-class SharedSelectorTests(TestCase):
-    """Several entries for one selector: the calldata's fit breaks the tie."""
-
-    def decoded(self, inputs=TRANSFER_ARGUMENTS):
-        return services.get_transaction_function(TRANSFER_SELECTOR + inputs).decoded_function
-
-    def test_the_entry_the_inputs_encode_wins_over_an_earlier_one(self):
-        catalog(1, "transfer", ["bytes4[9]", "bytes5[6]", "int48[11]"])
-        transfer = catalog(2, "transfer", ["address", "uint256"])
-
-        self.assertEqual(self.decoded(), transfer)
-
-    def test_an_entry_taking_fewer_inputs_than_the_calldata_carries_does_not_fit(self):
-        catalog(1, "transfer", ["address"])
-        transfer = catalog(2, "transfer", ["address", "uint256"])
-
-        self.assertEqual(self.decoded(), transfer)
-
-    def test_a_type_the_decoder_does_not_know_does_not_fit(self):
-        catalog(1, "transfer", ["notatype", "uint256"])
-        transfer = catalog(2, "transfer", ["address", "uint256"])
-
-        self.assertEqual(self.decoded(), transfer)
-
-    def test_two_that_fit_fall_to_the_earliest(self):
-        # Both read the same 64 bytes: telling them apart is issue #9.
-        catalog(7, "transfer", ["address", "uint256"])
-        earliest = catalog(3, "many_msg_babbage", ["uint256", "uint256"])
-
-        self.assertEqual(self.decoded(), earliest)
-
-    def test_when_none_fit_the_earliest_entry_stands(self):
-        earliest = catalog(1, "transfer", ["bool"])
-        catalog(2, "transfer", ["bytes4[9]", "bytes5[6]", "int48[11]"])
-
-        self.assertEqual(self.decoded(), earliest)
-
-    def test_calldata_that_is_not_hex_fits_nothing(self):
-        earliest = catalog(1, "transfer", ["address"])
-        catalog(2, "transfer", ["uint256"])
-
-        self.assertEqual(self.decoded("zz"), earliest)
-
-
-class StoredTransactionFunctionTests(TestCase):
-    def test_storing_a_block_splits_and_decodes_each_transactions_input(self):
-        catalog(1, "transfer", ["bytes4[9]", "bytes5[6]", "int48[11]"])
-        transfer = catalog(2, "transfer", ["address", "uint256"])
-        calldata = TRANSFER_SELECTOR + TRANSFER_ARGUMENTS
-
-        services.store_blocks(
-            [block(transactions=[dynamic_fee_transaction(input=calldata), legacy_transaction()])],
-            ChainId.ETHEREUM,
-        )
-
-        called = Transaction.objects.get(hash=DYNAMIC_FEE_HASH)
-        self.assertEqual(called.function, TRANSFER_SELECTOR)
-        self.assertEqual(called.inputs, TRANSFER_ARGUMENTS)
-        self.assertEqual(called.decoded_function, transfer)
-        self.assertEqual(list(transfer.transactions.all()), [called])
-        unknown = Transaction.objects.get(hash=LEGACY_HASH)
-        self.assertEqual(unknown.function, "0x18cbafe5")
-        self.assertEqual(unknown.inputs, "")
-        self.assertIsNone(unknown.decoded_function)
-
-    def test_a_plain_transfer_stores_no_function(self):
-        services.store_blocks(
-            [block(transactions=[legacy_transaction(input="0x")])], ChainId.ETHEREUM
-        )
-
-        stored = Transaction.objects.get()
-        self.assertIsNone(stored.function)
-        self.assertIsNone(stored.inputs)
-        self.assertIsNone(stored.decoded_function)
-
-    def test_a_contract_creations_init_code_is_not_read_as_a_call(self):
-        catalog(1, "transfer", ["address", "uint256"])
-
-        services.store_blocks(
-            [block(transactions=[legacy_transaction(to=None, input=TRANSFER_SELECTOR + "00")])],
-            ChainId.ETHEREUM,
-        )
-
-        stored = Transaction.objects.get()
-        self.assertIsNone(stored.function)
-        self.assertIsNone(stored.inputs)
-        self.assertIsNone(stored.decoded_function)
-
-    def test_a_catalog_entry_removed_later_leaves_the_transaction_undecoded(self):
-        transfer = catalog(1, "transfer", ["address", "uint256"])
-        services.store_blocks(
-            [
-                block(
-                    transactions=[legacy_transaction(input=TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)]
-                )
-            ],
-            ChainId.ETHEREUM,
-        )
-
-        transfer.delete()
-
-        self.assertIsNone(Transaction.objects.get().decoded_function)
 
 
 class LoadBlocksScriptTests(TestCase):

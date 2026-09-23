@@ -1,7 +1,6 @@
 """Bootstrap Django and load the sample blocks from raw_data/.
 
-Run after `manage.py migrate`, and after `manage.py load_function_signatures`
-for each transaction's function to be decoded. The file is a JSON list of
+Run after `manage.py migrate`. The file is a JSON list of
 ``eth_getBlockByNumber`` results with full transactions; a response never names
 its chain, so --chain does (default Ethereum, which the sample blocks are from).
 Idempotent: storing a block again updates what it stored rather than adding to it.
