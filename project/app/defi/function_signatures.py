@@ -53,10 +53,27 @@ def parse_signature(text):
     return Signature(name=name.strip(), inputs=_inputs(arguments))
 
 
+class FunctionSignatureCreateSchema(BaseModel):
+    """A catalog entry that is not stored yet."""
+
+    id: int
+    hex_signature: str
+    name: str
+    inputs: list[str]
+
+
+class FunctionSignatureUpdateSchema(BaseModel):
+    """What changes on a stored entry; its id names it, so that never does."""
+
+    hex_signature: str
+    name: str
+    inputs: list[str]
+
+
 class FunctionSignature(models.Model):
     """One catalog entry: a selector and a function it decodes to.
 
-    ``id`` is the one the source assigned, so re-loading an entry updates the
+    ``id`` is the one the source assigned, so saving an entry again updates the
     row it first wrote. A selector is four bytes of a hash, so several
     functions share one ``hex_signature``: the column is indexed, never unique.
     """
@@ -65,7 +82,7 @@ class FunctionSignature(models.Model):
     hex_signature = models.CharField(max_length=10, db_index=True)  # "0xc1c3d3d9"
     name = models.CharField(max_length=255)  # "transferFrom"
     inputs = models.JSONField(default=list, blank=True)  # ["address", "address", "uint256"]
-    # Never loaded: what a reader adds, which a re-load leaves alone.
+    # What a reader adds: in neither schema, so a save never sets or clears it.
     description = models.TextField(blank=True, default="")
 
     class Meta:

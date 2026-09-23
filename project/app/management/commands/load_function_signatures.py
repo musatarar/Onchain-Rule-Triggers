@@ -1,8 +1,9 @@
 """Load the function signature catalog from raw_data/.
 
 Run after `manage.py migrate`. The file is function signatures aggregated into a JSON list of
-results. Idempotent: each entry's own id is its row's primary key, so a re-run
-updates what it stored rather than adding to it.
+results, each stored as the name and inputs its ``text_signature`` parses to.
+Idempotent: each entry's own id is its row's primary key, so a re-run updates
+what it stored rather than adding to it.
 """
 
 import json
@@ -11,8 +12,21 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from project.app.defi import services
+from project.app.defi.function_signatures import FunctionSignatureCreateSchema, parse_signature
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "function_signatures.json"
+
+
+def signatures_from_entries(entries):
+    """The signatures ``entries`` list, in file order, each as its text parses."""
+    for entry in entries:
+        parsed = parse_signature(entry["text_signature"])
+        yield FunctionSignatureCreateSchema(
+            id=entry["id"],
+            hex_signature=entry["hex_signature"],
+            name=parsed.name,
+            inputs=parsed.inputs,
+        )
 
 
 class Command(BaseCommand):
@@ -40,5 +54,7 @@ class Command(BaseCommand):
         except FileNotFoundError as exc:
             raise CommandError(f"No signature file at {options['path']}.") from exc
 
-        loaded = services.load_function_signatures(entries, limit=options["limit"])
+        loaded = services.save_function_signatures(
+            signatures_from_entries(entries[: options["limit"]])
+        )
         self.stdout.write(f"Loaded {loaded} of {len(entries)} signature(s).")
