@@ -1,0 +1,125 @@
+"""Storing blocks as a JSON-RPC node returns them, transactions and withdrawals included."""
+
+import datetime
+
+from django.db import transaction as db_transaction
+
+from project.app.evm_block.models import Block, Transaction, Withdrawal
+
+# Every column but the key, so storing a block again refreshes the row it first wrote.
+_BLOCK_FIELDS = [field.name for field in Block._meta.concrete_fields if not field.primary_key]
+_TRANSACTION_FIELDS = [
+    field.name for field in Transaction._meta.concrete_fields if not field.primary_key
+]
+_WITHDRAWAL_FIELDS = [
+    field.name for field in Withdrawal._meta.concrete_fields if not field.primary_key
+]
+
+
+def store_blocks(blocks):
+    """Store every block in ``blocks`` with its transactions and withdrawals; answer how many.
+
+    Each block is an ``eth_getBlockByNumber`` result fetched with full
+    transaction objects. A block is keyed by its hash, a transaction by its
+    hash and a withdrawal by its index, so storing one again updates it.
+    """
+    parsed = [_parsed(raw) for raw in blocks]
+    with db_transaction.atomic():
+        Block.objects.bulk_create(
+            [block for block, _, _ in parsed],
+            update_conflicts=True,
+            update_fields=_BLOCK_FIELDS,
+            unique_fields=["hash"],
+        )
+        Transaction.objects.bulk_create(
+            [row for _, transactions, _ in parsed for row in transactions],
+            update_conflicts=True,
+            update_fields=_TRANSACTION_FIELDS,
+            unique_fields=["hash"],
+        )
+        Withdrawal.objects.bulk_create(
+            [row for _, _, withdrawals in parsed for row in withdrawals],
+            update_conflicts=True,
+            update_fields=_WITHDRAWAL_FIELDS,
+            unique_fields=["index"],
+        )
+    return len(parsed)
+
+
+def _parsed(raw):
+    """One raw block as unsaved rows: ``(block, transactions, withdrawals)``."""
+    block = Block(
+        hash=raw["hash"],
+        parent_hash=raw["parentHash"],
+        sha3_uncles=raw["sha3Uncles"],
+        miner=raw["miner"],
+        state_root=raw["stateRoot"],
+        transactions_root=raw["transactionsRoot"],
+        receipts_root=raw["receiptsRoot"],
+        logs_bloom=raw["logsBloom"],
+        difficulty=_quantity(raw["difficulty"]),
+        number=_quantity(raw["number"]),
+        gas_limit=_quantity(raw["gasLimit"]),
+        gas_used=_quantity(raw["gasUsed"]),
+        timestamp=_time(raw["timestamp"]),
+        extra_data=raw["extraData"],
+        mix_hash=raw["mixHash"],
+        nonce=raw["nonce"],
+        base_fee_per_gas=_quantity(raw.get("baseFeePerGas")),
+        withdrawals_root=raw.get("withdrawalsRoot"),
+        size=_quantity(raw["size"]),
+        uncles=raw.get("uncles", []),
+    )
+    transactions = [_transaction(entry, block) for entry in raw.get("transactions", [])]
+    withdrawals = [
+        Withdrawal(
+            index=_quantity(entry["index"]),
+            block=block,
+            validator_index=_quantity(entry["validatorIndex"]),
+            address=entry["address"],
+            amount=_quantity(entry["amount"]),
+        )
+        for entry in raw.get("withdrawals", [])
+    ]
+    return block, transactions, withdrawals
+
+
+def _transaction(entry, block):
+    if not isinstance(entry, dict):
+        # A block fetched without full transactions lists only their hashes.
+        raise ValueError(
+            f"Block {block.hash} lists transaction {entry!r} by hash only: "
+            "fetch it with full transaction objects."
+        )
+    return Transaction(
+        hash=entry["hash"],
+        block=block,
+        block_number=block.number,
+        block_timestamp=block.timestamp,
+        transaction_index=_quantity(entry["transactionIndex"]),
+        type=_quantity(entry["type"]),
+        chain_id=_quantity(entry.get("chainId")),
+        nonce=_quantity(entry["nonce"]),
+        from_address=entry["from"],
+        to_address=entry.get("to"),
+        value=_quantity(entry["value"]),
+        gas=_quantity(entry["gas"]),
+        gas_price=_quantity(entry["gasPrice"]),
+        max_fee_per_gas=_quantity(entry.get("maxFeePerGas")),
+        max_priority_fee_per_gas=_quantity(entry.get("maxPriorityFeePerGas")),
+        access_list=entry.get("accessList"),
+        input=entry["input"],
+        r=entry["r"],
+        s=entry["s"],
+        y_parity=_quantity(entry.get("yParity")),
+        v=_quantity(entry["v"]),
+    )
+
+
+def _quantity(value):
+    """A hex quantity (``"0x1c9c380"``) as an int; ``None`` for a field the entry leaves out."""
+    return None if value is None else int(value, 16)
+
+
+def _time(value):
+    return datetime.datetime.fromtimestamp(_quantity(value), tz=datetime.UTC)
