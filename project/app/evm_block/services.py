@@ -1,6 +1,7 @@
 """Storing blocks as a JSON-RPC node returns them, transactions and withdrawals included."""
 
 import datetime
+from typing import NamedTuple
 
 from django.db import transaction as db_transaction
 
@@ -9,6 +10,17 @@ from project.app.defi.services import signatures_for_selector
 from project.app.evm_block.models import Block, Transaction, Withdrawal
 
 SELECTOR_LENGTH = 10  # "0x" and the four-byte selector
+
+
+class TransactionFunction(NamedTuple):
+    """A transaction's input split as a call, and the name its selector decodes to."""
+
+    function: str | None
+    inputs: str | None
+    decoded_function_name: str | None
+
+
+NO_CALL = TransactionFunction(None, None, None)
 
 # Every column but the key, so storing a block again refreshes the row it first wrote.
 _BLOCK_FIELDS = [field.name for field in Block._meta.concrete_fields if not field.primary_key]
@@ -26,8 +38,9 @@ def store_blocks(blocks):
     Each block is an ``eth_getBlockByNumber`` result fetched with full
     transaction objects. A block is keyed by its hash, a transaction by its
     hash and a withdrawal by its index, so storing one again updates it.
-    Each transaction's ``function`` and ``inputs`` are read as
-    :func:`get_transaction_function` reads them, from one catalog query.
+    Each transaction's ``function``, ``inputs`` and ``decoded_function_name``
+    are read as :func:`get_transaction_function` reads them, from one catalog
+    query.
     """
     known = _signatures_by_selector(
         _selector(entry.get("input"))
@@ -59,13 +72,14 @@ def store_blocks(blocks):
 
 
 def get_transaction_function(data):
-    """``(function, inputs)`` for calldata ``data``.
+    """Calldata ``data`` split as a call, as a :class:`TransactionFunction`.
 
-    The first ten characters are the selector, and ``function`` is the text
-    signature the catalog decodes it to, the earliest entry where several
-    functions share one selector, or ``None`` where it knows none. ``inputs`` is
-    the rest of the string. Calldata too short to hold a selector (``"0x"``, a
-    plain transfer) is no call at all, so both are ``None``.
+    ``function`` is the first ten characters, the selector, and ``inputs`` the
+    rest of the string, both as given. ``decoded_function_name`` is the name the
+    catalog decodes the selector to, the earliest entry where several functions
+    share one selector, or ``None`` where it knows none. Calldata too short to
+    hold a selector (``"0x"``, a plain transfer) is no call at all, so every
+    field is ``None``.
     """
     return _call(data, signatures_for_selector)
 
@@ -74,9 +88,13 @@ def _call(data, candidates):
     """:func:`get_transaction_function`, with ``candidates`` answering a selector's signatures."""
     selector = _selector(data)
     if selector is None:
-        return None, None
+        return NO_CALL
     matches = candidates(selector)
-    return (_text_signature(matches[0]) if matches else None), data[SELECTOR_LENGTH:]
+    return TransactionFunction(
+        function=data[:SELECTOR_LENGTH],
+        inputs=data[SELECTOR_LENGTH:],
+        decoded_function_name=matches[0].name if matches else None,
+    )
 
 
 def _selector(data):
@@ -92,10 +110,6 @@ def _signatures_by_selector(selectors):
     for signature in FunctionSignature.objects.filter(hex_signature__in=wanted).order_by("id"):
         known.setdefault(signature.hex_signature, []).append(signature)
     return known
-
-
-def _text_signature(signature):
-    return f"{signature.name}({','.join(signature.inputs)})"
 
 
 def _parsed(raw, candidates):
@@ -144,9 +158,7 @@ def _transaction(entry, block, candidates):
             "fetch it with full transaction objects."
         )
     # A contract creation's input is the contract's init code, not a call.
-    function, inputs = (
-        (None, None) if entry.get("to") is None else _call(entry["input"], candidates)
-    )
+    call = NO_CALL if entry.get("to") is None else _call(entry["input"], candidates)
     return Transaction(
         hash=entry["hash"],
         block=block,
@@ -165,8 +177,9 @@ def _transaction(entry, block, candidates):
         max_priority_fee_per_gas=_quantity(entry.get("maxPriorityFeePerGas")),
         access_list=entry.get("accessList"),
         input=entry["input"],
-        function=function,
-        inputs=inputs,
+        function=call.function,
+        inputs=call.inputs,
+        decoded_function_name=call.decoded_function_name,
         r=entry["r"],
         s=entry["s"],
         y_parity=_quantity(entry.get("yParity")),

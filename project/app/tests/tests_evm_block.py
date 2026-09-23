@@ -230,43 +230,46 @@ def catalog(pk, name, inputs, hex_signature=TRANSFER_SELECTOR):
 
 
 class GetTransactionFunctionTests(TestCase):
-    def test_reads_the_selector_as_its_signature_and_the_rest_as_inputs(self):
+    def test_splits_calldata_into_its_raw_selector_and_inputs_and_decodes_the_name(self):
         catalog(1, "transfer", ["address", "uint256"])
 
-        function, inputs = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
+        call = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
 
-        self.assertEqual(function, "transfer(address,uint256)")
-        self.assertEqual(inputs, TRANSFER_ARGUMENTS)
+        self.assertEqual(call.function, TRANSFER_SELECTOR)
+        self.assertEqual(call.inputs, TRANSFER_ARGUMENTS)
+        self.assertEqual(call.decoded_function_name, "transfer")
 
-    def test_a_selector_the_catalog_does_not_know_still_has_inputs(self):
-        function, inputs = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
+    def test_a_selector_the_catalog_does_not_know_is_still_split(self):
+        call = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
 
-        self.assertIsNone(function)
-        self.assertEqual(inputs, TRANSFER_ARGUMENTS)
+        self.assertEqual(call.function, TRANSFER_SELECTOR)
+        self.assertEqual(call.inputs, TRANSFER_ARGUMENTS)
+        self.assertIsNone(call.decoded_function_name)
 
-    def test_a_shared_selector_reads_as_the_earliest_catalog_entry(self):
+    def test_a_shared_selector_decodes_as_the_earliest_catalog_entry(self):
         catalog(9, "many_msg_babbage", ["bytes1"])
         catalog(2, "transfer", ["address", "uint256"])
 
-        function, _ = services.get_transaction_function(TRANSFER_SELECTOR)
+        call = services.get_transaction_function(TRANSFER_SELECTOR)
 
-        self.assertEqual(function, "transfer(address,uint256)")
+        self.assertEqual(call.decoded_function_name, "transfer")
 
-    def test_a_selector_in_capitals_matches_the_catalog(self):
+    def test_a_selector_in_capitals_is_kept_raw_and_still_decodes(self):
         catalog(1, "transfer", ["address", "uint256"])
 
-        function, inputs = services.get_transaction_function("0xA9059CBB")
+        call = services.get_transaction_function("0xA9059CBB")
 
-        self.assertEqual(function, "transfer(address,uint256)")
-        self.assertEqual(inputs, "")
+        self.assertEqual(call.function, "0xA9059CBB")
+        self.assertEqual(call.inputs, "")
+        self.assertEqual(call.decoded_function_name, "transfer")
 
     def test_calldata_too_short_for_a_selector_is_no_call(self):
-        self.assertEqual(services.get_transaction_function("0x"), (None, None))
-        self.assertEqual(services.get_transaction_function("0xa905"), (None, None))
+        self.assertEqual(services.get_transaction_function("0x"), (None, None, None))
+        self.assertEqual(services.get_transaction_function("0xa905"), (None, None, None))
 
 
 class StoredTransactionFunctionTests(TestCase):
-    def test_storing_a_block_reads_each_transactions_function(self):
+    def test_storing_a_block_splits_and_decodes_each_transactions_input(self):
         catalog(1, "transfer", ["address", "uint256"])
         calldata = TRANSFER_SELECTOR + TRANSFER_ARGUMENTS
 
@@ -275,11 +278,13 @@ class StoredTransactionFunctionTests(TestCase):
         )
 
         called = Transaction.objects.get(hash=DYNAMIC_FEE_HASH)
-        self.assertEqual(called.function, "transfer(address,uint256)")
+        self.assertEqual(called.function, TRANSFER_SELECTOR)
         self.assertEqual(called.inputs, TRANSFER_ARGUMENTS)
+        self.assertEqual(called.decoded_function_name, "transfer")
         unknown = Transaction.objects.get(hash=LEGACY_HASH)
-        self.assertIsNone(unknown.function)
+        self.assertEqual(unknown.function, "0x18cbafe5")
         self.assertEqual(unknown.inputs, "")
+        self.assertIsNone(unknown.decoded_function_name)
 
     def test_a_plain_transfer_stores_no_function(self):
         services.store_blocks([block(transactions=[legacy_transaction(input="0x")])])
@@ -287,6 +292,7 @@ class StoredTransactionFunctionTests(TestCase):
         stored = Transaction.objects.get()
         self.assertIsNone(stored.function)
         self.assertIsNone(stored.inputs)
+        self.assertIsNone(stored.decoded_function_name)
 
     def test_a_contract_creations_init_code_is_not_read_as_a_call(self):
         catalog(1, "transfer", ["address", "uint256"])
@@ -298,3 +304,4 @@ class StoredTransactionFunctionTests(TestCase):
         stored = Transaction.objects.get()
         self.assertIsNone(stored.function)
         self.assertIsNone(stored.inputs)
+        self.assertIsNone(stored.decoded_function_name)
