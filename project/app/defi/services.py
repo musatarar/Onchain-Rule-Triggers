@@ -1,13 +1,10 @@
 """The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from project.app.defi.function_signatures import FunctionSignature, parse_signature
-from project.app.defi.tokens import Token
+from project.app.defi.tokens import TOKEN_KEY, Token, TokenSchema
 
 # `description` is left out, so a re-load refreshes the signature and keeps a written note.
 _UPDATED_FIELDS = ["hex_signature", "name", "inputs"]
-
-# `contract_is_verified` and `functions` are left out, so saving a token again keeps what was learned.
-_TOKEN_UPDATED_FIELDS = ["name", "coingecko_id"]
 
 
 def signatures_for_selector(hex_signature):
@@ -50,32 +47,29 @@ def load_function_signatures(entries, limit=None):
 
 
 def save_token(token):
-    """Store ``token``, or update the row already at its chain and address; answer the stored row.
+    """Store the ``TokenSchema`` ``token``, or update the row already at its chain and address.
 
-    An address is stored lowercase, so one contract is one row however it was written.
+    Answers the stored row.
     """
     row, _ = Token.objects.update_or_create(
-        chain=token.chain,
-        address=token.address.lower(),
-        defaults={field: getattr(token, field) for field in _TOKEN_UPDATED_FIELDS},
+        chain=token.chain, address=token.address, defaults=token.updated_fields()
     )
     return row
 
 
 def save_tokens(tokens):
-    """Store ``tokens`` in one statement, updating rows already at their chains and addresses.
+    """Store the ``TokenSchema`` ``tokens`` in one statement, updating rows already at their chains and addresses.
 
-    Answers how many rows that was. Addresses are stored lowercase, and when two
-    tokens name one chain and address, the first one given is the one stored.
+    Answers how many rows that was. When two tokens name one chain and
+    address, the first one given is the one stored.
     """
     rows = {}
     for token in tokens:
-        token.address = token.address.lower()
-        rows.setdefault((token.chain, token.address), token)
+        rows.setdefault((token.chain, token.address), Token(**token.model_dump()))
     Token.objects.bulk_create(
         list(rows.values()),
         update_conflicts=True,
-        update_fields=_TOKEN_UPDATED_FIELDS,
-        unique_fields=["chain", "address"],
+        update_fields=TokenSchema.updated_field_names(),
+        unique_fields=list(TOKEN_KEY),
     )
     return len(rows)

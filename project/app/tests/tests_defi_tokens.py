@@ -7,9 +7,11 @@ import tempfile
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
+from pydantic import ValidationError
 
 from project.app.defi import services
 from project.app.defi.chains import ChainId
+from project.app.defi.tokens import TokenSchema
 from project.app.models import FunctionSignature, Token
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
@@ -35,7 +37,7 @@ def address(n):
 
 
 def token(name="Tether", coingecko_id="tether", chain=ChainId.ETHEREUM, at=USDT):
-    return Token(name=name, coingecko_id=coingecko_id, chain=chain, address=at)
+    return TokenSchema(name=name, coingecko_id=coingecko_id, chain=chain, address=at)
 
 
 def load(entries, **options):
@@ -47,6 +49,24 @@ def load(entries, **options):
         out = io.StringIO()
         call_command("load_tokens", path=path, stdout=out, **options)
     return out.getvalue()
+
+
+class TokenSchemaTests(TestCase):
+    def test_an_address_is_lowercased(self):
+        self.assertEqual(token(at="0x" + USDT[2:].upper()).address, USDT)
+
+    def test_a_chain_is_read_as_its_chain_id(self):
+        self.assertIs(token(chain=8453).chain, ChainId.BASE)
+
+    def test_a_chain_without_an_id_is_refused(self):
+        with self.assertRaises(ValidationError):
+            token(chain=424242)
+
+    def test_a_save_updates_every_field_but_the_chain_and_address(self):
+        self.assertEqual(TokenSchema.updated_field_names(), ["name", "coingecko_id"])
+
+    def test_the_updated_fields_leave_out_the_chain_and_address(self):
+        self.assertEqual(token().updated_fields(), {"name": "Tether", "coingecko_id": "tether"})
 
 
 class SaveTokenTests(TestCase):
