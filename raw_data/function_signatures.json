@@ -1,0 +1,709 @@
+[
+  {
+    "id": 161159,
+    "created_at": "2026-05-11T06:05:38.699191Z",
+    "text_signature": "transfer(bytes4[9],bytes5[6],int48[11])",
+    "hex_signature": "0xa9059cbb",
+    "bytes_signature": "==·"
+  },
+  {
+    "id": 1216467,
+    "created_at": "2026-09-22T18:00:43.543856Z",
+    "text_signature": "getDelayBlocks(address)",
+    "hex_signature": "0xb5f19db2",
+    "bytes_signature": "µñ²"
+  },
+  {
+    "id": 1216466,
+    "created_at": "2026-09-22T18:00:43.198582Z",
+    "text_signature": "oldDepositManager()",
+    "hex_signature": "0x2153c239",
+    "bytes_signature": "!SÂ9"
+  },
+  {
+    "id": 1216465,
+    "created_at": "2026-09-22T18:00:40.104973Z",
+    "text_signature": "withdrawRewardsPOL(uint256)",
+    "hex_signature": "0x1c404cec",
+    "bytes_signature": "\u001c@Lì"
+  },
+  {
+    "id": 1216464,
+    "created_at": "2026-09-22T18:00:40.081281Z",
+    "text_signature": "unstakePOL(uint256)",
+    "hex_signature": "0x30cbe571",
+    "bytes_signature": "0Ëåq"
+  },
+  {
+    "id": 1216463,
+    "created_at": "2026-09-22T18:00:40.077388Z",
+    "text_signature": "unstakeClaimPOL(uint256)",
+    "hex_signature": "0xff3db8e3",
+    "bytes_signature": "ÿ=¸ã"
+  },
+  {
+    "id": 1216462,
+    "created_at": "2026-09-22T18:00:40.068361Z",
+    "text_signature": "transferFundsPOL(uint256,uint256,address)",
+    "hex_signature": "0xc7f067cb",
+    "bytes_signature": "ÇðgË"
+  },
+  {
+    "id": 1216461,
+    "created_at": "2026-09-22T18:00:40.054124Z",
+    "text_signature": "tokenMatic()",
+    "hex_signature": "0xf1674fdf",
+    "bytes_signature": "ñgOß"
+  },
+  {
+    "id": 1216460,
+    "created_at": "2026-09-22T18:00:40.020102Z",
+    "text_signature": "stakeForPOL(address,uint256,uint256,bool,bytes)",
+    "hex_signature": "0x81254e12",
+    "bytes_signature": "%N\u0012"
+  },
+  {
+    "id": 1216459,
+    "created_at": "2026-09-22T18:00:40.006509Z",
+    "text_signature": "restakePOL(uint256,uint256,bool)",
+    "hex_signature": "0x96a93224",
+    "bytes_signature": "©2$"
+  },
+  {
+    "id": 1216458,
+    "created_at": "2026-09-22T18:00:39.984059Z",
+    "text_signature": "initializePOL(address,address)",
+    "hex_signature": "0x3c343556",
+    "bytes_signature": "<45V"
+  },
+  {
+    "id": 1216457,
+    "created_at": "2026-09-22T18:00:39.974054Z",
+    "text_signature": "forceUnstakePOL(uint256)",
+    "hex_signature": "0x7854f354",
+    "bytes_signature": "xTóT"
+  },
+  {
+    "id": 1216456,
+    "created_at": "2026-09-22T18:00:39.961766Z",
+    "text_signature": "delegationDepositPOL(uint256,uint256,address)",
+    "hex_signature": "0x4c025500",
+    "bytes_signature": "L\u0002U\u0000"
+  },
+  {
+    "id": 1216455,
+    "created_at": "2026-09-22T18:00:39.945322Z",
+    "text_signature": "convertMaticToPOL(uint256)",
+    "hex_signature": "0x86a22666",
+    "bytes_signature": "¢&f"
+  },
+  {
+    "id": 1216454,
+    "created_at": "2026-09-22T18:00:32.073023Z",
+    "text_signature": "updateBaseTimeFrame(uint256)",
+    "hex_signature": "0x4689864a",
+    "bytes_signature": "FJ"
+  },
+  {
+    "id": 1216453,
+    "created_at": "2026-09-22T18:00:32.063747Z",
+    "text_signature": "queryNumberOfMinionsToActivateFromAmount(uint256)",
+    "hex_signature": "0x4f6f73c0",
+    "bytes_signature": "OosÀ"
+  },
+  {
+    "id": 1216452,
+    "created_at": "2026-09-22T18:00:32.060363Z",
+    "text_signature": "queryMinNativeAmountToMintTup()",
+    "hex_signature": "0x00e950f2",
+    "bytes_signature": "\u0000éPò"
+  },
+  {
+    "id": 1216451,
+    "created_at": "2026-09-22T18:00:32.056454Z",
+    "text_signature": "queryInvestedAmountForAsset(address)",
+    "hex_signature": "0xfddc76de",
+    "bytes_signature": "ýÜvÞ"
+  },
+  {
+    "id": 1216450,
+    "created_at": "2026-09-22T18:00:32.041725Z",
+    "text_signature": "queryFeeAmountToActivateMinions(uint256)",
+    "hex_signature": "0x60e883a9",
+    "bytes_signature": "`è©"
+  },
+  {
+    "id": 1216449,
+    "created_at": "2026-09-22T18:00:32.037919Z",
+    "text_signature": "queryAvailableTimeForTupMint(uint256)",
+    "hex_signature": "0x47e0b32b",
+    "bytes_signature": "Gà³+"
+  },
+  {
+    "id": 1216448,
+    "created_at": "2026-09-22T18:00:32.034580Z",
+    "text_signature": "queryAvailableTimeForDepositant(address)",
+    "hex_signature": "0xb70139ac",
+    "bytes_signature": "·\u00019¬"
+  },
+  {
+    "id": 1216447,
+    "created_at": "2026-09-22T18:00:32.024940Z",
+    "text_signature": "mintTupAsThirdParty(address,bool)",
+    "hex_signature": "0x651b1728",
+    "bytes_signature": "e\u001b\u0017("
+  },
+  {
+    "id": 1216446,
+    "created_at": "2026-09-22T18:00:32.021305Z",
+    "text_signature": "mintTupAsDepositant(bool)",
+    "hex_signature": "0x677a0854",
+    "bytes_signature": "gz\bT"
+  },
+  {
+    "id": 1216445,
+    "created_at": "2026-09-22T18:00:32.016729Z",
+    "text_signature": "minionCoordinator()",
+    "hex_signature": "0x734531c9",
+    "bytes_signature": "sE1É"
+  },
+  {
+    "id": 1216444,
+    "created_at": "2026-09-22T18:00:32.007180Z",
+    "text_signature": "investmentCoordinator()",
+    "hex_signature": "0x2ae8115c",
+    "bytes_signature": "*è\u0011\\"
+  },
+  {
+    "id": 1216443,
+    "created_at": "2026-09-22T18:00:32.003518Z",
+    "text_signature": "investWithNoCapital()",
+    "hex_signature": "0x7ddb2c4c",
+    "bytes_signature": "}Û,L"
+  },
+  {
+    "id": 1216442,
+    "created_at": "2026-09-22T18:00:31.997681Z",
+    "text_signature": "earnedAmount()",
+    "hex_signature": "0x0e62546a",
+    "bytes_signature": "\u000ebTj"
+  },
+  {
+    "id": 1216441,
+    "created_at": "2026-09-22T18:00:31.989700Z",
+    "text_signature": "createMinions()",
+    "hex_signature": "0xb2f6adf0",
+    "bytes_signature": "²ö­ð"
+  },
+  {
+    "id": 1216440,
+    "created_at": "2026-09-22T18:00:31.983077Z",
+    "text_signature": "consumedShares(address)",
+    "hex_signature": "0x6db5967b",
+    "bytes_signature": "mµ{"
+  },
+  {
+    "id": 1216439,
+    "created_at": "2026-09-22T18:00:31.979656Z",
+    "text_signature": "callToProduction(address)",
+    "hex_signature": "0x9bae11f2",
+    "bytes_signature": "®\u0011ò"
+  },
+  {
+    "id": 1216438,
+    "created_at": "2026-09-22T18:00:31.975996Z",
+    "text_signature": "calculateTimeToLock(uint256)",
+    "hex_signature": "0x9a1e1caa",
+    "bytes_signature": "\u001e\u001cª"
+  },
+  {
+    "id": 1216437,
+    "created_at": "2026-09-22T18:00:31.972580Z",
+    "text_signature": "blockToUnlock(address)",
+    "hex_signature": "0x14c14419",
+    "bytes_signature": "\u0014ÁD\u0019"
+  },
+  {
+    "id": 1216436,
+    "created_at": "2026-09-22T18:00:31.969145Z",
+    "text_signature": "baseTimeFrame()",
+    "hex_signature": "0x5f98783f",
+    "bytes_signature": "_x?"
+  },
+  {
+    "id": 1216435,
+    "created_at": "2026-09-22T18:00:31.964038Z",
+    "text_signature": "availableTimeAsCaller(address)",
+    "hex_signature": "0x83922a3c",
+    "bytes_signature": "*<"
+  },
+  {
+    "id": 1216434,
+    "created_at": "2026-09-22T18:00:31.957442Z",
+    "text_signature": "MINION_CREATION_FEE()",
+    "hex_signature": "0xeee1ddc8",
+    "bytes_signature": "îáÝÈ"
+  },
+  {
+    "id": 1216433,
+    "created_at": "2026-09-22T18:00:31.954255Z",
+    "text_signature": "MAX_PERCENTAGE_ALLOCATION_OF_TIME()",
+    "hex_signature": "0xcc50bd76",
+    "bytes_signature": "ÌP½v"
+  },
+  {
+    "id": 1216432,
+    "created_at": "2026-09-22T18:00:31.950926Z",
+    "text_signature": "INVESTMENT_FEE()",
+    "hex_signature": "0x8e8f9d0d",
+    "bytes_signature": "\r"
+  },
+  {
+    "id": 1216431,
+    "created_at": "2026-09-22T18:00:31.940353Z",
+    "text_signature": "DONATION_FEE()",
+    "hex_signature": "0x514fe007",
+    "bytes_signature": "QOà\u0007"
+  },
+  {
+    "id": 1216430,
+    "created_at": "2026-09-22T13:53:58.936185Z",
+    "text_signature": "_expectedBalance()",
+    "hex_signature": "0xc1c3d3d9",
+    "bytes_signature": "ÁÃÓÙ"
+  },
+  {
+    "id": 1216429,
+    "created_at": "2026-09-22T13:53:58.934332Z",
+    "text_signature": "_mockCsm(address)",
+    "hex_signature": "0x1b35bebf",
+    "bytes_signature": "\u001b5¾¿"
+  },
+  {
+    "id": 1216428,
+    "created_at": "2026-09-22T13:53:58.931149Z",
+    "text_signature": "_fundRNat(uint256)",
+    "hex_signature": "0xa969410d",
+    "bytes_signature": "©iA\r"
+  },
+  {
+    "id": 1216427,
+    "created_at": "2026-09-22T13:53:58.928200Z",
+    "text_signature": "testExistingAccountWithSelfdestructDustNotExploitable()",
+    "hex_signature": "0x4c13d64e",
+    "bytes_signature": "L\u0013ÖN"
+  },
+  {
+    "id": 1216426,
+    "created_at": "2026-09-22T13:53:58.920814Z",
+    "text_signature": "testCreationReentrancyCannotBrickRNat()",
+    "hex_signature": "0xc3165c4e",
+    "bytes_signature": "Ã\u0016\\N"
+  },
+  {
+    "id": 1216425,
+    "created_at": "2026-09-22T10:46:01.028824Z",
+    "text_signature": "_convertToWei(int256,int8)",
+    "hex_signature": "0x7a4fdd97",
+    "bytes_signature": "zOÝ"
+  },
+  {
+    "id": 1216424,
+    "created_at": "2026-09-22T10:46:01.024373Z",
+    "text_signature": "_getCurrentFeed(bytes21)",
+    "hex_signature": "0x27c104ac",
+    "bytes_signature": "'Á\u0004¬"
+  },
+  {
+    "id": 1216423,
+    "created_at": "2026-09-22T10:46:01.016427Z",
+    "text_signature": "_burnExcessValue(uint256)",
+    "hex_signature": "0xd1122772",
+    "bytes_signature": "Ñ\u0012'r"
+  },
+  {
+    "id": 1216422,
+    "created_at": "2026-09-22T10:46:00.718822Z",
+    "text_signature": "getCurrentFeedInWei(bytes21)",
+    "hex_signature": "0xf637b3da",
+    "bytes_signature": "ö7³Ú"
+  },
+  {
+    "id": 1216421,
+    "created_at": "2026-09-22T10:46:00.506301Z",
+    "text_signature": "_guardedSalt(address,bytes32)",
+    "hex_signature": "0x7ecde528",
+    "bytes_signature": "~Íå("
+  },
+  {
+    "id": 1216420,
+    "created_at": "2026-09-22T10:46:00.409769Z",
+    "text_signature": "invalidateChallenge(address)",
+    "hex_signature": "0xf8c1e657",
+    "bytes_signature": "øÁæW"
+  },
+  {
+    "id": 1216419,
+    "created_at": "2026-09-22T10:46:00.378503Z",
+    "text_signature": "getTeeGovernanceSafeAddress(uint256,bytes32)",
+    "hex_signature": "0x9821733b",
+    "bytes_signature": "!s;"
+  },
+  {
+    "id": 1216418,
+    "created_at": "2026-09-22T10:46:00.339945Z",
+    "text_signature": "_replacementAttempt(bytes32,bytes32,uint64,bool,uint24)",
+    "hex_signature": "0xbbef6b6d",
+    "bytes_signature": "»ïkm"
+  },
+  {
+    "id": 1216417,
+    "created_at": "2026-09-22T10:46:00.302489Z",
+    "text_signature": "getMachinePathListSafeApprovalArtifact(uint256,uint256,bytes32)",
+    "hex_signature": "0x42b46389",
+    "bytes_signature": "B´c"
+  },
+  {
+    "id": 1216416,
+    "created_at": "2026-09-22T10:46:00.300306Z",
+    "text_signature": "isMachinePathListSafeApproved(uint256,uint256,bytes32)",
+    "hex_signature": "0x489fec55",
+    "bytes_signature": "HìU"
+  },
+  {
+    "id": 1216415,
+    "created_at": "2026-09-22T10:46:00.297891Z",
+    "text_signature": "getMachinePathListApprovals(uint256,uint256)",
+    "hex_signature": "0xfd41976f",
+    "bytes_signature": "ýAo"
+  },
+  {
+    "id": 1216414,
+    "created_at": "2026-09-22T10:46:00.291140Z",
+    "text_signature": "approveMachinePathList(uint256,uint256,bytes32)",
+    "hex_signature": "0x1def5f18",
+    "bytes_signature": "\u001dï_\u0018"
+  },
+  {
+    "id": 1216413,
+    "created_at": "2026-09-22T10:46:00.267701Z",
+    "text_signature": "setNewTeeGovernanceSafe(uint256,address)",
+    "hex_signature": "0x0e8d6fd5",
+    "bytes_signature": "\u000eoÕ"
+  },
+  {
+    "id": 1216412,
+    "created_at": "2026-09-22T10:46:00.055826Z",
+    "text_signature": "_isWhitespace(bytes1)",
+    "hex_signature": "0x9af0ebec",
+    "bytes_signature": "ðëì"
+  },
+  {
+    "id": 1216411,
+    "created_at": "2026-09-22T10:46:00.052995Z",
+    "text_signature": "_readSourceConfig(uint256)",
+    "hex_signature": "0x52717b10",
+    "bytes_signature": "Rq{\u0010"
+  },
+  {
+    "id": 1216410,
+    "created_at": "2026-09-22T10:46:00.050801Z",
+    "text_signature": "_configLabel()",
+    "hex_signature": "0x928d55ac",
+    "bytes_signature": "U¬"
+  },
+  {
+    "id": 1216409,
+    "created_at": "2026-09-22T10:46:00.048700Z",
+    "text_signature": "_networkName(uint256)",
+    "hex_signature": "0x4aa6c3df",
+    "bytes_signature": "J¦Ãß"
+  },
+  {
+    "id": 1216408,
+    "created_at": "2026-09-22T10:46:00.046529Z",
+    "text_signature": "_requireExpectedDeployer(address,address)",
+    "hex_signature": "0xc87649a6",
+    "bytes_signature": "ÈvI¦"
+  },
+  {
+    "id": 1216407,
+    "created_at": "2026-09-22T10:46:00.044649Z",
+    "text_signature": "_requireFactory()",
+    "hex_signature": "0x4c0fcf7a",
+    "bytes_signature": "L\u000fÏz"
+  },
+  {
+    "id": 1216406,
+    "created_at": "2026-09-22T10:46:00.042412Z",
+    "text_signature": "_frozenFactoryInitCode()",
+    "hex_signature": "0xb7a3c040",
+    "bytes_signature": "·£À@"
+  },
+  {
+    "id": 1216405,
+    "created_at": "2026-09-22T10:46:00.040194Z",
+    "text_signature": "_verifyRelay(address,address,address,address,uint256,uint256,uint32,uint32)",
+    "hex_signature": "0x9931ca39",
+    "bytes_signature": "1Ê9"
+  },
+  {
+    "id": 1216404,
+    "created_at": "2026-09-22T10:46:00.038049Z",
+    "text_signature": "_predictedRelayAddress(address,uint256)",
+    "hex_signature": "0x25f4fa6c",
+    "bytes_signature": "%ôúl"
+  },
+  {
+    "id": 1216403,
+    "created_at": "2026-09-22T10:46:00.036028Z",
+    "text_signature": "_isCanonicalSource(uint256)",
+    "hex_signature": "0xa1c08245",
+    "bytes_signature": "¡ÀE"
+  },
+  {
+    "id": 1216402,
+    "created_at": "2026-09-22T10:46:00.033476Z",
+    "text_signature": "_relayProxySalt(uint256)",
+    "hex_signature": "0x1895ec73",
+    "bytes_signature": "\u0018ìs"
+  },
+  {
+    "id": 1216401,
+    "created_at": "2026-09-22T10:46:00.030024Z",
+    "text_signature": "_buildSnapshot(uint256,address)",
+    "hex_signature": "0xc2a81203",
+    "bytes_signature": "Â¨\u0012\u0003"
+  },
+  {
+    "id": 1216400,
+    "created_at": "2026-09-22T10:46:00.025802Z",
+    "text_signature": "_buildHomeConfig(address,address,uint256)",
+    "hex_signature": "0xd56e93ec",
+    "bytes_signature": "Õnì"
+  },
+  {
+    "id": 1216399,
+    "created_at": "2026-09-22T10:46:00.014323Z",
+    "text_signature": "_requireAddressUpdaterHandedOver(address)",
+    "hex_signature": "0x0a7542bd",
+    "bytes_signature": "\nuB½"
+  },
+  {
+    "id": 1216398,
+    "created_at": "2026-09-22T10:46:00.011764Z",
+    "text_signature": "_verifyAddressUpdaterHandover()",
+    "hex_signature": "0xe3f3eb25",
+    "bytes_signature": "ãóë%"
+  },
+  {
+    "id": 1216397,
+    "created_at": "2026-09-22T10:46:00.001706Z",
+    "text_signature": "_wireFdc2RequestFeeConfigurations()",
+    "hex_signature": "0xa215ded9",
+    "bytes_signature": "¢\u0015ÞÙ"
+  },
+  {
+    "id": 1216396,
+    "created_at": "2026-09-22T10:45:59.982523Z",
+    "text_signature": "check_p3_reachability_canonicalAccepts(uint16,uint16,bytes32)",
+    "hex_signature": "0xebe1f657",
+    "bytes_signature": "ëáöW"
+  },
+  {
+    "id": 1216395,
+    "created_at": "2026-09-22T10:45:59.980247Z",
+    "text_signature": "check_p3_highS_cannotAccept(uint16,uint16,bytes32)",
+    "hex_signature": "0xb58cbf1f",
+    "bytes_signature": "µ¿\u001f"
+  },
+  {
+    "id": 1216394,
+    "created_at": "2026-09-22T10:45:59.977199Z",
+    "text_signature": "_deploy(uint16,uint16)",
+    "hex_signature": "0xa9d543a4",
+    "bytes_signature": "©ÕC¤"
+  },
+  {
+    "id": 1216393,
+    "created_at": "2026-09-22T10:45:59.973643Z",
+    "text_signature": "_eff(uint16)",
+    "hex_signature": "0x1b765b7e",
+    "bytes_signature": "\u001bv[~"
+  },
+  {
+    "id": 1216392,
+    "created_at": "2026-09-22T10:45:59.969288Z",
+    "text_signature": "check_reach_setter_canCall()",
+    "hex_signature": "0xec866946",
+    "bytes_signature": "ìiF"
+  },
+  {
+    "id": 1216391,
+    "created_at": "2026-09-22T10:45:59.966667Z",
+    "text_signature": "check_setSigningPolicy_onlySetter(address)",
+    "hex_signature": "0xef2a8d7c",
+    "bytes_signature": "ï*|"
+  },
+  {
+    "id": 1216390,
+    "created_at": "2026-09-22T10:45:59.963713Z",
+    "text_signature": "_setterConfig()",
+    "hex_signature": "0x3e47fc69",
+    "bytes_signature": ">Güi"
+  },
+  {
+    "id": 1216389,
+    "created_at": "2026-09-22T10:45:59.960717Z",
+    "text_signature": "check_reach_oldRelay_freeDelegation()",
+    "hex_signature": "0xfcb204f6",
+    "bytes_signature": "ü²\u0004ö"
+  },
+  {
+    "id": 1216388,
+    "created_at": "2026-09-22T10:45:59.958519Z",
+    "text_signature": "check_oldRelay_unfinalizedSourceRejected(uint128)",
+    "hex_signature": "0x74c2dd0b",
+    "bytes_signature": "tÂÝ\u000b"
+  },
+  {
+    "id": 1216387,
+    "created_at": "2026-09-22T10:45:59.956516Z",
+    "text_signature": "check_oldRelay_positiveFeeSourceFailsClosed(uint96,uint128)",
+    "hex_signature": "0xc360929f",
+    "bytes_signature": "Ã`"
+  },
+  {
+    "id": 1216386,
+    "created_at": "2026-09-22T10:45:59.953729Z",
+    "text_signature": "check_oldRelay_zeroValueFullRefund(uint128)",
+    "hex_signature": "0x64aa2223",
+    "bytes_signature": "dª\"#"
+  },
+  {
+    "id": 1216385,
+    "created_at": "2026-09-22T10:45:59.950865Z",
+    "text_signature": "test_fvOldRelayFinalizationAndValueFlow()",
+    "hex_signature": "0xb628b786",
+    "bytes_signature": "¶(·"
+  },
+  {
+    "id": 1216384,
+    "created_at": "2026-09-22T10:45:59.946654Z",
+    "text_signature": "_randomRoot()",
+    "hex_signature": "0xc1c5c4e7",
+    "bytes_signature": "ÁÅÄç"
+  },
+  {
+    "id": 1216383,
+    "created_at": "2026-09-22T10:45:59.944710Z",
+    "text_signature": "_randomLeaf()",
+    "hex_signature": "0x6e24d192",
+    "bytes_signature": "n$Ñ"
+  },
+  {
+    "id": 1216382,
+    "created_at": "2026-09-22T10:45:59.941987Z",
+    "text_signature": "_policyFingerprint()",
+    "hex_signature": "0xb02cbcc0",
+    "bytes_signature": "°,¼À"
+  },
+  {
+    "id": 1216381,
+    "created_at": "2026-09-22T10:45:59.939813Z",
+    "text_signature": "_governanceFingerprint()",
+    "hex_signature": "0x93219f5a",
+    "bytes_signature": "!Z"
+  },
+  {
+    "id": 1216380,
+    "created_at": "2026-09-22T10:45:59.937361Z",
+    "text_signature": "_stateDataWord()",
+    "hex_signature": "0x75d565f7",
+    "bytes_signature": "uÕe÷"
+  },
+  {
+    "id": 1216379,
+    "created_at": "2026-09-22T10:45:59.934919Z",
+    "text_signature": "_secureRandomWord(uint256)",
+    "hex_signature": "0xe5eb09bc",
+    "bytes_signature": "åë\t¼"
+  },
+  {
+    "id": 1216378,
+    "created_at": "2026-09-22T10:45:59.931723Z",
+    "text_signature": "_randomNumberAt(uint256)",
+    "hex_signature": "0xc0c6a6c2",
+    "bytes_signature": "ÀÆ¦Â"
+  },
+  {
+    "id": 1216377,
+    "created_at": "2026-09-22T10:45:59.929258Z",
+    "text_signature": "_storeMerkleRoot(uint256,uint256,bytes32)",
+    "hex_signature": "0x35684c67",
+    "bytes_signature": "5hLg"
+  },
+  {
+    "id": 1216376,
+    "created_at": "2026-09-22T10:45:59.926869Z",
+    "text_signature": "_merkleRootAt(uint256,uint256)",
+    "hex_signature": "0x7e5ab356",
+    "bytes_signature": "~Z³V"
+  },
+  {
+    "id": 1216375,
+    "created_at": "2026-09-22T10:45:59.923782Z",
+    "text_signature": "_mapLocation(uint256,uint256)",
+    "hex_signature": "0xf56f1c72",
+    "bytes_signature": "õo\u001cr"
+  },
+  {
+    "id": 1216374,
+    "created_at": "2026-09-22T10:45:59.917430Z",
+    "text_signature": "check_reach_ctor_relayModeTokenConfigDeploys()",
+    "hex_signature": "0xfef2824e",
+    "bytes_signature": "þòN"
+  },
+  {
+    "id": 1216373,
+    "created_at": "2026-09-22T10:45:59.915197Z",
+    "text_signature": "check_reach_ctor_compatibleOldRelayDeploys()",
+    "hex_signature": "0x78f23214",
+    "bytes_signature": "xò2\u0014"
+  },
+  {
+    "id": 1216372,
+    "created_at": "2026-09-22T10:45:59.912643Z",
+    "text_signature": "check_reach_ctor_validDeploys()",
+    "hex_signature": "0x47671d4c",
+    "bytes_signature": "Gg\u001dL"
+  },
+  {
+    "id": 1216371,
+    "created_at": "2026-09-22T10:45:59.909810Z",
+    "text_signature": "check_ctor_setterMode_rejectsRelayModeOldExactly()",
+    "hex_signature": "0x2156db34",
+    "bytes_signature": "!VÛ4"
+  },
+  {
+    "id": 1216370,
+    "created_at": "2026-09-22T10:45:59.907315Z",
+    "text_signature": "check_ctor_relayMode_rejectsOldRelayExactly()",
+    "hex_signature": "0xaf8b0961",
+    "bytes_signature": "¯\ta"
+  },
+  {
+    "id": 1216369,
+    "created_at": "2026-09-22T10:45:59.904686Z",
+    "text_signature": "check_ctor_setterMode_rejectsFeeExemptionExactly(address)",
+    "hex_signature": "0x9358df0c",
+    "bytes_signature": "Xß\f"
+  },
+  {
+    "id": 1216368,
+    "created_at": "2026-09-22T10:45:59.902201Z",
+    "text_signature": "check_ctor_setterMode_rejectsFeeConfigExactly(uint256)",
+    "hex_signature": "0x0e5af6ec",
+    "bytes_signature": "\u000eZöì"
+  }
+]
