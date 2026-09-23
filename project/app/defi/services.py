@@ -4,7 +4,7 @@ import json
 import re
 
 from project.app.defi.function_signatures import FunctionSignature, parse_signature
-from project.app.defi.tokens import COINGECKO_PLATFORMS, Token
+from project.app.defi.tokens import PLATFORM_CHAINS, Token
 
 # `description` is left out, so a re-load refreshes the signature and keeps a written note.
 _UPDATED_FIELDS = ["hex_signature", "name", "inputs"]
@@ -62,8 +62,8 @@ def _text(value):
 def load_tokens(entries, limit=None):
     """Store the contracts of up to ``limit`` of ``entries``, in order, and answer how many that was.
 
-    Each entry is one CoinGecko coin, stored as a row per address it has on a
-    chain in ``COINGECKO_PLATFORMS``; a coin with none (a native coin, or one
+    Each entry is one coin, stored as a row per address it has on a
+    chain in ``PLATFORM_CHAINS``; a coin with none (a native coin, or one
     only on Solana) stores nothing. A chain and an address name one row, so
     loading an entry again updates the rows it first wrote, and when two
     entries claim one address the earlier entry keeps it.
@@ -74,7 +74,7 @@ def load_tokens(entries, limit=None):
     rows = {}
     for entry in entries[:limit]:
         for platform, address in entry["all_platforms"].items():
-            chain = COINGECKO_PLATFORMS.get(platform)
+            chain = PLATFORM_CHAINS.get(platform)
             address = (address or "").lower()
             # Sei's platform lists some tokens by their Cosmos address, which no EVM call reaches.
             if chain is None or not _EVM_ADDRESS_RE.match(address):

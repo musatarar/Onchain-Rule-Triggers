@@ -1,6 +1,6 @@
 """Load the token catalog from raw_data/.
 
-Run after `manage.py migrate`. The file is a JSON list of CoinGecko coins, highest
+Run after `manage.py migrate`. The file is a JSON list of coins, highest
 market cap first. Idempotent: a chain and an address name one row, so a re-run
 updates what it stored rather than adding to it.
 """
@@ -22,7 +22,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--path",
             default=DEFAULT_PATH,
-            help="JSON list of CoinGecko coin entries (default raw_data/tokens.json).",
+            help="JSON list of coin entries (default raw_data/tokens.json).",
         )
         parser.add_argument(
             "--limit",

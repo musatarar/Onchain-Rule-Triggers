@@ -39,9 +39,9 @@ class ChainId(models.IntegerChoices):
     SCROLL = 534352, "Scroll"
 
 
-# CoinGecko's platform slug for each chain above. A platform missing here is
+# The raw data's platform slug for each chain above. A platform missing here is
 # either not an EVM chain (Solana, Tron, TON) or one without a known chain id.
-COINGECKO_PLATFORMS = {
+PLATFORM_CHAINS = {
     "ethereum": ChainId.ETHEREUM,
     "optimistic-ethereum": ChainId.OPTIMISM,
     "cronos": ChainId.CRONOS,
@@ -75,7 +75,7 @@ COINGECKO_PLATFORMS = {
 
 
 class Token(models.Model):
-    """One token contract: a CoinGecko coin's address on one chain.
+    """One token contract: a coin's address on one chain.
 
     A coin deployed on several chains is several rows sharing a
     ``coingecko_id``; a chain and an address name exactly one row.
