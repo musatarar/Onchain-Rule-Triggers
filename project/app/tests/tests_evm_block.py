@@ -7,6 +7,7 @@ from decimal import Decimal
 from django.db import connection
 from django.test import TestCase
 
+from project.app.defi.chains import ChainId
 from project.app.evm_block import services
 from project.app.models import Block, FunctionSignature, Transaction, Withdrawal
 
@@ -117,7 +118,7 @@ def block(**overrides):
 
 class StoreBlocksTests(TestCase):
     def test_stores_a_block_with_its_quantities_decoded(self):
-        self.assertEqual(services.store_blocks([block()]), 1)
+        self.assertEqual(services.store_blocks([block()], ChainId.ETHEREUM), 1)
 
         stored = Block.objects.get(hash=BLOCK_HASH)
         self.assertEqual(stored.number, 18_000_000)
@@ -132,18 +133,22 @@ class StoreBlocksTests(TestCase):
         self.assertEqual(stored.nonce, "0x0000000000000000")
         self.assertEqual(stored.uncles, [])
 
-    def test_stores_the_blocks_transactions_and_withdrawals_against_it(self):
-        services.store_blocks([block()])
+    def test_stores_the_blocks_chain_and_number_on_its_transactions_and_withdrawals(self):
+        services.store_blocks([block()], ChainId.ETHEREUM)
 
-        stored = Block.objects.get(hash=BLOCK_HASH)
+        self.assertEqual(Block.objects.get().chain, ChainId.ETHEREUM)
+        in_block = {"chain": ChainId.ETHEREUM, "block_number": 18_000_000}
         self.assertEqual(
-            list(stored.transactions.values_list("hash", flat=True)),
+            list(Transaction.objects.filter(**in_block).values_list("hash", flat=True)),
             [DYNAMIC_FEE_HASH, LEGACY_HASH],
         )
-        self.assertEqual(list(stored.withdrawals.values_list("index", flat=True)), [15_440_780])
+        self.assertEqual(
+            list(Withdrawal.objects.filter(**in_block).values_list("index", flat=True)),
+            [15_440_780],
+        )
 
     def test_a_dynamic_fee_transaction_keeps_its_fee_caps(self):
-        services.store_blocks([block()])
+        services.store_blocks([block()], ChainId.ETHEREUM)
 
         stored = Transaction.objects.get(hash=DYNAMIC_FEE_HASH)
         self.assertEqual(stored.type, 2)
@@ -160,7 +165,7 @@ class StoreBlocksTests(TestCase):
         self.assertEqual(stored.block_timestamp, Block.objects.get().timestamp)
 
     def test_a_legacy_transaction_leaves_the_fields_it_lacks_empty(self):
-        services.store_blocks([block()])
+        services.store_blocks([block()], ChainId.ETHEREUM)
 
         stored = Transaction.objects.get(hash=LEGACY_HASH)
         self.assertEqual(stored.type, 0)
@@ -171,12 +176,12 @@ class StoreBlocksTests(TestCase):
         self.assertIsNone(stored.y_parity)
 
     def test_a_contract_creation_has_no_recipient(self):
-        services.store_blocks([block(transactions=[legacy_transaction(to=None)])])
+        services.store_blocks([block(transactions=[legacy_transaction(to=None)])], ChainId.ETHEREUM)
 
         self.assertIsNone(Transaction.objects.get().to_address)
 
     def test_a_withdrawal_is_stored_in_gwei(self):
-        services.store_blocks([block()])
+        services.store_blocks([block()], ChainId.ETHEREUM)
 
         stored = Withdrawal.objects.get()
         self.assertEqual(stored.validator_index, 673_611)
@@ -187,18 +192,19 @@ class StoreBlocksTests(TestCase):
         raw = block(withdrawals=[])
         del raw["baseFeePerGas"], raw["withdrawalsRoot"], raw["withdrawals"]
 
-        services.store_blocks([raw])
+        services.store_blocks([raw], ChainId.ETHEREUM)
 
         stored = Block.objects.get()
         self.assertIsNone(stored.base_fee_per_gas)
         self.assertIsNone(stored.withdrawals_root)
-        self.assertFalse(stored.withdrawals.exists())
+        self.assertFalse(Withdrawal.objects.exists())
 
     def test_storing_a_block_again_updates_it_rather_than_adding_rows(self):
-        services.store_blocks([block()])
+        services.store_blocks([block()], ChainId.ETHEREUM)
 
         services.store_blocks(
-            [block(gasUsed="0x1", transactions=[legacy_transaction(value="0x2")])]
+            [block(gasUsed="0x1", transactions=[legacy_transaction(value="0x2")])],
+            ChainId.ETHEREUM,
         )
 
         self.assertEqual(Block.objects.get().gas_used, 1)
@@ -208,9 +214,38 @@ class StoreBlocksTests(TestCase):
 
     def test_a_block_listing_transactions_by_hash_only_is_refused_whole(self):
         with self.assertRaisesMessage(ValueError, "full transaction objects"):
-            services.store_blocks([block(transactions=[LEGACY_HASH])])
+            services.store_blocks([block(transactions=[LEGACY_HASH])], ChainId.ETHEREUM)
 
         self.assertFalse(Block.objects.exists())
+
+    def test_a_chain_outside_the_catalogued_ones_is_refused(self):
+        with self.assertRaises(ValueError):
+            services.store_blocks([block()], 31337)
+
+        self.assertFalse(Block.objects.exists())
+
+    def test_a_transaction_names_the_blocks_chain_even_when_it_signed_none(self):
+        pre_eip_155 = legacy_transaction(v="0x1b")
+        del pre_eip_155["chainId"]
+
+        services.store_blocks([block(transactions=[pre_eip_155])], ChainId.ETHEREUM)
+
+        stored = Transaction.objects.get()
+        self.assertIsNone(stored.chain_id)
+        self.assertEqual(stored.chain, ChainId.ETHEREUM)
+
+    def test_one_withdrawal_index_on_two_chains_is_two_withdrawals(self):
+        services.store_blocks([block()], ChainId.ETHEREUM)
+        gnosis = block(
+            hash="0x" + "11" * 32, transactions=[], withdrawals=[withdrawal(amount="0x1")]
+        )
+
+        services.store_blocks([gnosis], ChainId.GNOSIS)
+
+        self.assertEqual(
+            list(Withdrawal.objects.values_list("chain", "amount")),
+            [(ChainId.ETHEREUM, 15_404_368), (ChainId.GNOSIS, 1)],
+        )
 
     @unittest.skipUnless(
         connection.vendor == "postgresql", "SQLite keeps 15 significant digits of a decimal"
@@ -218,7 +253,9 @@ class StoreBlocksTests(TestCase):
     def test_a_wei_amount_past_64_bits_is_stored_exactly(self):
         value = 2**255 + 1
 
-        services.store_blocks([block(transactions=[legacy_transaction(value=hex(value))])])
+        services.store_blocks(
+            [block(transactions=[legacy_transaction(value=hex(value))])], ChainId.ETHEREUM
+        )
 
         self.assertEqual(Transaction.objects.get().value, Decimal(value))
 
@@ -318,7 +355,8 @@ class StoredTransactionFunctionTests(TestCase):
         calldata = TRANSFER_SELECTOR + TRANSFER_ARGUMENTS
 
         services.store_blocks(
-            [block(transactions=[dynamic_fee_transaction(input=calldata), legacy_transaction()])]
+            [block(transactions=[dynamic_fee_transaction(input=calldata), legacy_transaction()])],
+            ChainId.ETHEREUM,
         )
 
         called = Transaction.objects.get(hash=DYNAMIC_FEE_HASH)
@@ -332,7 +370,9 @@ class StoredTransactionFunctionTests(TestCase):
         self.assertIsNone(unknown.decoded_function)
 
     def test_a_plain_transfer_stores_no_function(self):
-        services.store_blocks([block(transactions=[legacy_transaction(input="0x")])])
+        services.store_blocks(
+            [block(transactions=[legacy_transaction(input="0x")])], ChainId.ETHEREUM
+        )
 
         stored = Transaction.objects.get()
         self.assertIsNone(stored.function)
@@ -343,7 +383,8 @@ class StoredTransactionFunctionTests(TestCase):
         catalog(1, "transfer", ["address", "uint256"])
 
         services.store_blocks(
-            [block(transactions=[legacy_transaction(to=None, input=TRANSFER_SELECTOR + "00")])]
+            [block(transactions=[legacy_transaction(to=None, input=TRANSFER_SELECTOR + "00")])],
+            ChainId.ETHEREUM,
         )
 
         stored = Transaction.objects.get()
@@ -354,7 +395,12 @@ class StoredTransactionFunctionTests(TestCase):
     def test_a_catalog_entry_removed_later_leaves_the_transaction_undecoded(self):
         transfer = catalog(1, "transfer", ["address", "uint256"])
         services.store_blocks(
-            [block(transactions=[legacy_transaction(input=TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)])]
+            [
+                block(
+                    transactions=[legacy_transaction(input=TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)]
+                )
+            ],
+            ChainId.ETHEREUM,
         )
 
         transfer.delete()

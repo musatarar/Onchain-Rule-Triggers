@@ -6,10 +6,15 @@ and are stored as numbers: a count or index that fits 64 bits is a
 difficulty) is a 78-digit ``DecimalField``, which Postgres holds exactly and
 SQLite rounds to 15 significant digits. Hashes, addresses and byte strings stay
 as the ``0x`` text they arrived as.
+
+Every row names its ``chain``, since a node's response never does. A
+transaction or withdrawal carries its block's number rather than a link to the
+block row, so ``chain`` and ``block_number`` together say which block it is in.
 """
 
 from django.db import models
 
+from project.app.defi.chains import ChainId
 from project.app.defi.function_signatures import FunctionSignature
 
 HASH_LENGTH = 66  # "0x" and 32 bytes
@@ -23,12 +28,12 @@ def _uint256(**options):
 class Block(models.Model):
     """One block. A reorg can put two blocks at one ``number``, so the hash is the key.
 
-    ``transactions`` and ``withdrawals`` are the rows that point back here.
     A block from before London has no base fee, and one from before Shanghai no
     withdrawals root, so both are nullable.
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
+    chain = models.IntegerField(choices=ChainId.choices)  # 1
     parent_hash = models.CharField(max_length=HASH_LENGTH)
     sha3_uncles = models.CharField(max_length=HASH_LENGTH)
     miner = models.CharField(max_length=ADDRESS_LENGTH)
@@ -37,7 +42,7 @@ class Block(models.Model):
     receipts_root = models.CharField(max_length=HASH_LENGTH)
     logs_bloom = models.TextField()
     difficulty = _uint256()
-    number = models.BigIntegerField(db_index=True)
+    number = models.BigIntegerField()
     gas_limit = models.BigIntegerField()
     gas_used = models.BigIntegerField()
     timestamp = models.DateTimeField()
@@ -50,10 +55,11 @@ class Block(models.Model):
     uncles = models.JSONField(default=list, blank=True)  # uncle block hashes
 
     class Meta:
-        ordering = ["-number"]
+        ordering = ["chain", "-number"]
+        indexes = [models.Index(fields=["chain", "number"], name="block_chain_number_idx")]
 
     def __str__(self):
-        return f"block {self.number} {self.hash}"
+        return f"block {self.number} {self.hash} ({self.get_chain_display()})"
 
 
 class Transaction(models.Model):
@@ -61,7 +67,8 @@ class Transaction(models.Model):
 
     A field only some transaction types carry is nullable: legacy transactions
     have no fee caps, access list or ``y_parity``, a pre-EIP-155 one has no
-    ``chain_id``, and a contract creation has no ``to_address``.
+    ``chain_id``, and a contract creation has no ``to_address``. ``chain`` is the
+    chain the block was read from, so it is there whatever the transaction signed.
 
     ``function`` and ``inputs`` are ``input`` split as a call, raw: the
     selector, and the calldata after it (see
@@ -72,7 +79,7 @@ class Transaction(models.Model):
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
-    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name="transactions")
+    chain = models.IntegerField(choices=ChainId.choices)
     block_number = models.BigIntegerField()
     block_timestamp = models.DateTimeField()
     transaction_index = models.BigIntegerField()
@@ -103,26 +110,40 @@ class Transaction(models.Model):
     v = models.BigIntegerField()
 
     class Meta:
-        ordering = ["block_number", "transaction_index"]
+        ordering = ["chain", "block_number", "transaction_index"]
+        indexes = [
+            models.Index(fields=["chain", "block_number"], name="transaction_chain_block_idx")
+        ]
 
     def __str__(self):
         return self.hash
 
 
 class Withdrawal(models.Model):
-    """One validator withdrawal. ``index`` counts every withdrawal on the chain, so it is the key.
+    """One validator withdrawal.
 
-    ``amount`` is in gwei, as the chain reports it.
+    ``index`` counts every withdrawal on one chain, and each chain counts from
+    zero, so a chain and an index name exactly one row. ``amount`` is in gwei,
+    as the chain reports it.
     """
 
-    index = models.BigIntegerField(primary_key=True)
-    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name="withdrawals")
+    chain = models.IntegerField(choices=ChainId.choices)
+    index = models.BigIntegerField()
+    block_number = models.BigIntegerField()
     validator_index = models.BigIntegerField()
     address = models.CharField(max_length=ADDRESS_LENGTH)
     amount = models.BigIntegerField()
 
     class Meta:
-        ordering = ["index"]
+        ordering = ["chain", "index"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["chain", "index"], name="withdrawal_chain_index_unique"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["chain", "block_number"], name="withdrawal_chain_block_idx")
+        ]
 
     def __str__(self):
         return f"withdrawal {self.index}"

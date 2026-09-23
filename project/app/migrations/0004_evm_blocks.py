@@ -18,6 +18,42 @@ class Migration(migrations.Migration):
                     "hash",
                     models.CharField(max_length=66, primary_key=True, serialize=False),
                 ),
+                (
+                    "chain",
+                    models.IntegerField(
+                        choices=[
+                            (1, "Ethereum"),
+                            (10, "OP Mainnet"),
+                            (25, "Cronos"),
+                            (56, "BNB Smart Chain"),
+                            (100, "Gnosis"),
+                            (130, "Unichain"),
+                            (137, "Polygon PoS"),
+                            (143, "Monad"),
+                            (146, "Sonic"),
+                            (196, "X Layer"),
+                            (250, "Fantom"),
+                            (324, "ZKsync Era"),
+                            (369, "PulseChain"),
+                            (480, "World Chain"),
+                            (999, "HyperEVM"),
+                            (1329, "Sei"),
+                            (2020, "Ronin"),
+                            (2741, "Abstract"),
+                            (2818, "Morph"),
+                            (5000, "Mantle"),
+                            (8453, "Base"),
+                            (42161, "Arbitrum One"),
+                            (42220, "Celo"),
+                            (43114, "Avalanche C-Chain"),
+                            (57073, "Ink"),
+                            (59144, "Linea"),
+                            (80094, "Berachain"),
+                            (81457, "Blast"),
+                            (534352, "Scroll"),
+                        ]
+                    ),
+                ),
                 ("parent_hash", models.CharField(max_length=66)),
                 ("sha3_uncles", models.CharField(max_length=66)),
                 ("miner", models.CharField(max_length=42)),
@@ -26,7 +62,7 @@ class Migration(migrations.Migration):
                 ("receipts_root", models.CharField(max_length=66)),
                 ("logs_bloom", models.TextField()),
                 ("difficulty", models.DecimalField(decimal_places=0, max_digits=78)),
-                ("number", models.BigIntegerField(db_index=True)),
+                ("number", models.BigIntegerField()),
                 ("gas_limit", models.BigIntegerField()),
                 ("gas_used", models.BigIntegerField()),
                 ("timestamp", models.DateTimeField()),
@@ -47,27 +83,7 @@ class Migration(migrations.Migration):
                 ("uncles", models.JSONField(blank=True, default=list)),
             ],
             options={
-                "ordering": ["-number"],
-            },
-        ),
-        migrations.CreateModel(
-            name="Withdrawal",
-            fields=[
-                ("index", models.BigIntegerField(primary_key=True, serialize=False)),
-                ("validator_index", models.BigIntegerField()),
-                ("address", models.CharField(max_length=42)),
-                ("amount", models.BigIntegerField()),
-                (
-                    "block",
-                    models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE,
-                        related_name="withdrawals",
-                        to="app.block",
-                    ),
-                ),
-            ],
-            options={
-                "ordering": ["index"],
+                "ordering": ["chain", "-number"],
             },
         ),
         migrations.CreateModel(
@@ -76,6 +92,42 @@ class Migration(migrations.Migration):
                 (
                     "hash",
                     models.CharField(max_length=66, primary_key=True, serialize=False),
+                ),
+                (
+                    "chain",
+                    models.IntegerField(
+                        choices=[
+                            (1, "Ethereum"),
+                            (10, "OP Mainnet"),
+                            (25, "Cronos"),
+                            (56, "BNB Smart Chain"),
+                            (100, "Gnosis"),
+                            (130, "Unichain"),
+                            (137, "Polygon PoS"),
+                            (143, "Monad"),
+                            (146, "Sonic"),
+                            (196, "X Layer"),
+                            (250, "Fantom"),
+                            (324, "ZKsync Era"),
+                            (369, "PulseChain"),
+                            (480, "World Chain"),
+                            (999, "HyperEVM"),
+                            (1329, "Sei"),
+                            (2020, "Ronin"),
+                            (2741, "Abstract"),
+                            (2818, "Morph"),
+                            (5000, "Mantle"),
+                            (8453, "Base"),
+                            (42161, "Arbitrum One"),
+                            (42220, "Celo"),
+                            (43114, "Avalanche C-Chain"),
+                            (57073, "Ink"),
+                            (59144, "Linea"),
+                            (80094, "Berachain"),
+                            (81457, "Blast"),
+                            (534352, "Scroll"),
+                        ]
+                    ),
                 ),
                 ("block_number", models.BigIntegerField()),
                 ("block_timestamp", models.DateTimeField()),
@@ -113,27 +165,102 @@ class Migration(migrations.Migration):
                 ("s", models.CharField(max_length=66)),
                 ("y_parity", models.BigIntegerField(blank=True, null=True)),
                 ("v", models.BigIntegerField()),
-                (
-                    "block",
-                    models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE,
-                        related_name="transactions",
-                        to="app.block",
-                    ),
-                ),
-                (
-                    "decoded_function",
-                    models.ForeignKey(
-                        blank=True,
-                        null=True,
-                        on_delete=django.db.models.deletion.SET_NULL,
-                        related_name="transactions",
-                        to="app.functionsignature",
-                    ),
-                ),
             ],
             options={
-                "ordering": ["block_number", "transaction_index"],
+                "ordering": ["chain", "block_number", "transaction_index"],
             },
+        ),
+        migrations.CreateModel(
+            name="Withdrawal",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "chain",
+                    models.IntegerField(
+                        choices=[
+                            (1, "Ethereum"),
+                            (10, "OP Mainnet"),
+                            (25, "Cronos"),
+                            (56, "BNB Smart Chain"),
+                            (100, "Gnosis"),
+                            (130, "Unichain"),
+                            (137, "Polygon PoS"),
+                            (143, "Monad"),
+                            (146, "Sonic"),
+                            (196, "X Layer"),
+                            (250, "Fantom"),
+                            (324, "ZKsync Era"),
+                            (369, "PulseChain"),
+                            (480, "World Chain"),
+                            (999, "HyperEVM"),
+                            (1329, "Sei"),
+                            (2020, "Ronin"),
+                            (2741, "Abstract"),
+                            (2818, "Morph"),
+                            (5000, "Mantle"),
+                            (8453, "Base"),
+                            (42161, "Arbitrum One"),
+                            (42220, "Celo"),
+                            (43114, "Avalanche C-Chain"),
+                            (57073, "Ink"),
+                            (59144, "Linea"),
+                            (80094, "Berachain"),
+                            (81457, "Blast"),
+                            (534352, "Scroll"),
+                        ]
+                    ),
+                ),
+                ("index", models.BigIntegerField()),
+                ("block_number", models.BigIntegerField()),
+                ("validator_index", models.BigIntegerField()),
+                ("address", models.CharField(max_length=42)),
+                ("amount", models.BigIntegerField()),
+            ],
+            options={
+                "ordering": ["chain", "index"],
+                "indexes": [
+                    models.Index(
+                        fields=["chain", "block_number"],
+                        name="withdrawal_chain_block_idx",
+                    )
+                ],
+            },
+        ),
+        migrations.AddConstraint(
+            model_name="withdrawal",
+            constraint=models.UniqueConstraint(
+                fields=("chain", "index"), name="withdrawal_chain_index_unique"
+            ),
+        ),
+        migrations.AddField(
+            model_name="transaction",
+            name="decoded_function",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="transactions",
+                to="app.functionsignature",
+            ),
+        ),
+        migrations.AddIndex(
+            model_name="block",
+            index=models.Index(
+                fields=["chain", "number"], name="block_chain_number_idx"
+            ),
+        ),
+        migrations.AddIndex(
+            model_name="transaction",
+            index=models.Index(
+                fields=["chain", "block_number"], name="transaction_chain_block_idx"
+            ),
         ),
     ]

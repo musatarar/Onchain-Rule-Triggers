@@ -7,6 +7,7 @@ import eth_abi
 from django.db import transaction as db_transaction
 from eth_abi.exceptions import DecodingError, ParseError
 
+from project.app.defi.chains import ChainId
 from project.app.defi.function_signatures import FunctionSignature
 from project.app.defi.services import signatures_for_selector
 from project.app.evm_block.models import Block, Transaction, Withdrawal
@@ -24,33 +25,42 @@ class TransactionFunction(NamedTuple):
 
 NO_CALL = TransactionFunction(None, None, None)
 
-# Every column but the key, so storing a block again refreshes the row it first wrote.
-_BLOCK_FIELDS = [field.name for field in Block._meta.concrete_fields if not field.primary_key]
-_TRANSACTION_FIELDS = [
-    field.name for field in Transaction._meta.concrete_fields if not field.primary_key
-]
-_WITHDRAWAL_FIELDS = [
-    field.name for field in Withdrawal._meta.concrete_fields if not field.primary_key
-]
+# What names a row; every other column is refreshed when a block is stored again.
+_WITHDRAWAL_KEY = ["chain", "index"]
 
 
-def store_blocks(blocks):
-    """Store every block in ``blocks`` with its transactions and withdrawals; answer how many.
+def _refreshed(model, key):
+    return [
+        field.name
+        for field in model._meta.concrete_fields
+        if not field.primary_key and field.name not in key
+    ]
 
-    Each block is an ``eth_getBlockByNumber`` result fetched with full
-    transaction objects. A block is keyed by its hash, a transaction by its
-    hash and a withdrawal by its index, so storing one again updates it.
-    Each transaction's ``function``, ``inputs`` and ``decoded_function`` are
+
+_BLOCK_FIELDS = _refreshed(Block, ["hash"])
+_TRANSACTION_FIELDS = _refreshed(Transaction, ["hash"])
+_WITHDRAWAL_FIELDS = _refreshed(Withdrawal, _WITHDRAWAL_KEY)
+
+
+def store_blocks(blocks, chain):
+    """Store every block in ``blocks``, read from ``chain``, with its transactions and withdrawals.
+
+    Answers how many blocks. Each is an ``eth_getBlockByNumber`` result fetched
+    with full transaction objects; a response never names its chain, so the
+    caller does, as a :class:`~project.app.defi.chains.ChainId` value. A block
+    is keyed by its hash, a transaction by its hash and a withdrawal by its
+    chain and index, so storing one again updates it. Each transaction's ``function``, ``inputs`` and ``decoded_function`` are
     read as :func:`get_transaction_function` reads them, from one catalog
     query.
     """
+    chain = ChainId(chain)  # an id outside the catalogued chains is a ValueError
     known = _signatures_by_selector(
         _selector(entry.get("input"))
         for raw in blocks
         for entry in raw.get("transactions", [])
         if isinstance(entry, dict)
     )
-    parsed = [_parsed(raw, lambda selector: known.get(selector, [])) for raw in blocks]
+    parsed = [_parsed(raw, chain, lambda selector: known.get(selector, [])) for raw in blocks]
     with db_transaction.atomic():
         Block.objects.bulk_create(
             [block for block, _, _ in parsed],
@@ -68,7 +78,7 @@ def store_blocks(blocks):
             [row for _, _, withdrawals in parsed for row in withdrawals],
             update_conflicts=True,
             update_fields=_WITHDRAWAL_FIELDS,
-            unique_fields=["index"],
+            unique_fields=_WITHDRAWAL_KEY,
         )
     return len(parsed)
 
@@ -134,10 +144,11 @@ def _signatures_by_selector(selectors):
     return known
 
 
-def _parsed(raw, candidates):
+def _parsed(raw, chain, candidates):
     """One raw block as unsaved rows: ``(block, transactions, withdrawals)``."""
     block = Block(
         hash=raw["hash"],
+        chain=chain,
         parent_hash=raw["parentHash"],
         sha3_uncles=raw["sha3Uncles"],
         miner=raw["miner"],
@@ -161,8 +172,9 @@ def _parsed(raw, candidates):
     transactions = [_transaction(entry, block, candidates) for entry in raw.get("transactions", [])]
     withdrawals = [
         Withdrawal(
+            chain=block.chain,
             index=_quantity(entry["index"]),
-            block=block,
+            block_number=block.number,
             validator_index=_quantity(entry["validatorIndex"]),
             address=entry["address"],
             amount=_quantity(entry["amount"]),
@@ -183,7 +195,7 @@ def _transaction(entry, block, candidates):
     call = NO_CALL if entry.get("to") is None else _call(entry["input"], candidates)
     return Transaction(
         hash=entry["hash"],
-        block=block,
+        chain=block.chain,
         block_number=block.number,
         block_timestamp=block.timestamp,
         transaction_index=_quantity(entry["transactionIndex"]),
