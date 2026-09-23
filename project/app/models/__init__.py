@@ -2,6 +2,7 @@
 
 from project.app.actions.models import ActionJob
 from project.app.defi.function_signatures import FunctionSignature
+from project.app.defi.tokens import Token
 from project.app.rules.models import ConditionNode, Rule
 
 from .auth import LoginToken
@@ -16,4 +17,5 @@ __all__ = [
     "LoginToken",
     "Rule",
     "Shape",
+    "Token",
 ]

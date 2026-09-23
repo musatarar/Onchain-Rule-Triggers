@@ -1,6 +1,6 @@
 """Move every rule's legacy ``conditions`` JSON payload into ConditionNode rows.
 
-Run once after `manage.py migrate` applies 0003. Idempotent: a rule whose
+Run once after `manage.py migrate` applies 0004. Idempotent: a rule whose
 payload was moved has it cleared, so a re-run skips it. Each rule is written
 through the rules services, so the tree is validated against its owner's
 current shape like any other write; a rule that no longer validates keeps its

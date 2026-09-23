@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
-        ("app", "0002_function_signatures"),
+        ("app", "0003_tokens"),
         # RenameModel renames the model's content type through the historical
         # ContentType, which must be the one without the dropped `name` column.
         ("contenttypes", "0002_remove_content_type_name"),
