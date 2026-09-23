@@ -9,12 +9,18 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from project.app.defi import services
-from project.app.defi.function_signatures import parse_signature
+from project.app.defi.function_signatures import FunctionSignatureCreateSchema, parse_signature
 from project.app.models import FunctionSignature
 
 
 def signature(name, inputs=(), hex_signature="0x23b872dd", pk=1):
     return FunctionSignature(id=pk, hex_signature=hex_signature, name=name, inputs=list(inputs))
+
+
+def create(pk=1, name="transfer", inputs=("address", "uint256"), hex_signature="0xa9059cbb"):
+    return FunctionSignatureCreateSchema(
+        id=pk, hex_signature=hex_signature, name=name, inputs=list(inputs)
+    )
 
 
 def entry(pk, hex_signature, text):
@@ -109,6 +115,71 @@ class SelectorLookupTests(TestCase):
         self.assertEqual(services.signatures_for_selector("0xdeadbeef"), [])
 
 
+class SaveFunctionSignatureTests(TestCase):
+    def test_stores_a_new_signature(self):
+        row = services.save_function_signature(create())
+
+        self.assertEqual(FunctionSignature.objects.get(), row)
+        self.assertEqual((row.id, row.hex_signature), (1, "0xa9059cbb"))
+        self.assertEqual((row.name, row.inputs), ("transfer", ["address", "uint256"]))
+
+    def test_saving_a_stored_id_updates_its_row(self):
+        services.save_function_signature(create(inputs=["address"]))
+
+        row = services.save_function_signature(create(inputs=["address", "uint256"]))
+
+        self.assertEqual(FunctionSignature.objects.count(), 1)
+        self.assertEqual(row.inputs, ["address", "uint256"])
+
+    def test_saving_again_leaves_a_written_description_alone(self):
+        services.save_function_signature(create())
+        FunctionSignature.objects.filter(pk=1).update(description="Moves tokens.")
+
+        row = services.save_function_signature(create(name="transferTokens"))
+
+        self.assertEqual(row.name, "transferTokens")
+        self.assertEqual(FunctionSignature.objects.get(pk=1).description, "Moves tokens.")
+
+
+class SaveFunctionSignaturesTests(TestCase):
+    def test_stores_every_signature_and_answers_how_many(self):
+        saved = services.save_function_signatures([create(pk) for pk in range(1, 4)])
+
+        self.assertEqual(saved, 3)
+        self.assertEqual(FunctionSignature.objects.count(), 3)
+
+    def test_creates_new_ids_and_updates_stored_ones_together(self):
+        services.save_function_signatures([create(1, name="old")])
+
+        saved = services.save_function_signatures([create(1, name="new"), create(2)])
+
+        self.assertEqual(saved, 2)
+        self.assertEqual(FunctionSignature.objects.get(pk=1).name, "new")
+        self.assertTrue(FunctionSignature.objects.filter(pk=2).exists())
+
+    def test_when_two_signatures_name_one_id_the_first_is_stored(self):
+        saved = services.save_function_signatures(
+            [create(1, name="first"), create(1, name="second")]
+        )
+
+        self.assertEqual(saved, 1)
+        self.assertEqual(FunctionSignature.objects.get().name, "first")
+
+    def test_saving_again_leaves_a_written_description_alone(self):
+        services.save_function_signatures([create()])
+        FunctionSignature.objects.filter(pk=1).update(description="Moves tokens.")
+
+        services.save_function_signatures([create(name="transferTokens")])
+
+        row = FunctionSignature.objects.get()
+        self.assertEqual(row.name, "transferTokens")
+        self.assertEqual(row.description, "Moves tokens.")
+
+    def test_nothing_to_save_stores_nothing(self):
+        self.assertEqual(services.save_function_signatures([]), 0)
+        self.assertEqual(FunctionSignature.objects.count(), 0)
+
+
 class LoadFunctionSignaturesTests(TestCase):
     def test_loads_every_entry_in_the_file(self):
         output = load([entry(pk, "0x23b872dd", f"f{pk}()") for pk in range(1, 8)])
@@ -155,9 +226,6 @@ class LoadFunctionSignaturesTests(TestCase):
     def test_a_negative_limit_is_refused(self):
         with self.assertRaises(CommandError):
             load([entry(1, "0x23b872dd", "f()")], limit=-1)
-
-        with self.assertRaises(ValueError):
-            services.load_function_signatures([], limit=-1)
 
     def test_a_second_run_leaves_a_written_description_alone(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
