@@ -1,6 +1,7 @@
-"""The signature catalog: what one four-byte selector might decode to, and how entries get in."""
+"""The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from project.app.defi.function_signatures import FunctionSignature, parse_signature
+from project.app.defi.tokens import Token, TokenUpdateSchema
 
 # `description` is left out, so a re-load refreshes the signature and keeps a written note.
 _UPDATED_FIELDS = ["hex_signature", "name", "inputs"]
@@ -43,3 +44,49 @@ def load_function_signatures(entries, limit=None):
         rows, update_conflicts=True, update_fields=_UPDATED_FIELDS, unique_fields=["id"]
     )
     return len(rows)
+
+
+def _update_token(row, token):
+    """Set ``row``'s fields from the ``TokenUpdateSchema`` view of ``token``."""
+    for field, value in TokenUpdateSchema.model_validate(token.model_dump()).model_dump().items():
+        setattr(row, field, value)
+
+
+def save_token(token):
+    """Store the ``TokenCreateSchema`` ``token``; answer its row.
+
+    A new chain and address is created from it; a stored one is updated with
+    its ``TokenUpdateSchema`` fields.
+    """
+    row = Token.objects.filter(chain=token.chain, address=token.address).first()
+    if row is None:
+        return Token.objects.create(**token.model_dump())
+    _update_token(row, token)
+    row.save(update_fields=list(TokenUpdateSchema.model_fields))
+    return row
+
+
+def save_tokens(tokens):
+    """Store many ``TokenCreateSchema`` tokens as ``save_token`` would; answer how many.
+
+    When two tokens name one chain and address, the first one given is the one saved.
+    """
+    by_key = {}
+    for token in tokens:
+        by_key.setdefault((token.chain, token.address), token)
+    stored = {
+        (row.chain, row.address): row
+        for row in Token.objects.filter(address__in={address for _, address in by_key})
+    }
+
+    created, updated = [], []
+    for key, token in by_key.items():
+        row = stored.get(key)
+        if row is None:
+            created.append(Token(**token.model_dump()))
+        else:
+            _update_token(row, token)
+            updated.append(row)
+    Token.objects.bulk_create(created)
+    Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
+    return len(by_key)
