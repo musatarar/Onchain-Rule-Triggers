@@ -1,9 +1,9 @@
 """Load the function signature catalog from raw_data/.
 
 Run after `manage.py migrate`. The file is function signatures aggregated into a JSON list of
-results, each stored as the name and inputs its ``text_signature`` parses to.
-Idempotent: each entry's own id is its row's primary key, so a re-run updates
-what it stored rather than adding to it.
+results, each stored as its ``text_signature`` with the name and inputs that parses to.
+Idempotent: a ``hex_signature`` names one function, so a re-run updates what it
+stored rather than adding to it.
 """
 
 import json
@@ -12,20 +12,24 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from project.app.defi import services
-from project.app.defi.function_signatures import FunctionSignatureCreateSchema, parse_signature
+from project.app.defi.function_signatures import (
+    SmartContractFunctionCreateSchema,
+    parse_input,
+    parse_signature,
+)
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "function_signatures.json"
 
 
 def signatures_from_entries(entries):
-    """The signatures ``entries`` list, in file order, each as its text parses."""
+    """The functions ``entries`` list, in file order, each as its text parses."""
     for entry in entries:
         parsed = parse_signature(entry["text_signature"])
-        yield FunctionSignatureCreateSchema(
-            id=entry["id"],
-            hex_signature=entry["hex_signature"],
-            name=parsed.name,
-            inputs=parsed.inputs,
+        yield SmartContractFunctionCreateSchema(
+            signature_hash=entry["hex_signature"],
+            function_name=parsed.name,
+            full_signature=entry["text_signature"],
+            inputs=[parse_input(argument) for argument in parsed.inputs],
         )
 
 
@@ -54,7 +58,7 @@ class Command(BaseCommand):
         except FileNotFoundError as exc:
             raise CommandError(f"No signature file at {options['path']}.") from exc
 
-        loaded = services.save_function_signatures(
+        loaded = services.save_smart_contract_functions(
             signatures_from_entries(entries[: options["limit"]])
         )
         self.stdout.write(f"Loaded {loaded} of {len(entries)} signature(s).")

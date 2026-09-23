@@ -1,6 +1,12 @@
 """The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
-from project.app.defi.function_signatures import FunctionSignature, FunctionSignatureUpdateSchema
+from django.db import transaction
+
+from project.app.defi.function_signatures import (
+    FunctionInput,
+    SmartContractFunction,
+    SmartContractFunctionUpdateSchema,
+)
 from project.app.defi.tokens import Token, TokenUpdateSchema
 
 
@@ -10,52 +16,93 @@ def _update(row, update_schema, data):
         setattr(row, field, value)
 
 
-def signatures_for_selector(hex_signature):
-    """Every stored signature a selector decodes to, earliest entry first.
+def _create_inputs(functions):
+    """Store the ``FunctionInputSchema`` inputs of each ``(row, inputs)`` in ``functions``.
 
-    A selector is a truncated hash, so this answers with candidates: which one
-    the calldata actually supports is the caller's to decide.
+    A tuple's components are stored under it, one level of nesting at a time,
+    so each tuple has its id before a component names it.
     """
-    return list(
-        FunctionSignature.objects.filter(hex_signature=(hex_signature or "").lower()).order_by("id")
-    )
+    level = [(function, None, inputs) for function, inputs in functions]
+    while level:
+        rows, below = [], []
+        for function, parent, inputs in level:
+            for position, schema in enumerate(inputs):
+                row = FunctionInput(
+                    function=function,
+                    parent_input=parent,
+                    param_type=schema.param_type,
+                    position_index=position,
+                )
+                rows.append(row)
+                if schema.components:
+                    below.append((function, row, schema.components))
+        FunctionInput.objects.bulk_create(rows)
+        level = below
 
 
-def save_function_signature(signature):
-    """Store the ``FunctionSignatureCreateSchema`` ``signature``; answer its row.
+def function_for_selector(signature_hash):
+    """The stored function a selector decodes to, or None.
 
-    A new id is created from it; a stored one is updated with its
-    ``FunctionSignatureUpdateSchema`` fields.
+    A selector is a truncated hash, so this is the one function the catalog
+    keeps for it: whether the calldata fits it is the caller's to decide.
     """
-    row = FunctionSignature.objects.filter(id=signature.id).first()
-    if row is None:
-        return FunctionSignature.objects.create(**signature.model_dump())
-    _update(row, FunctionSignatureUpdateSchema, signature)
-    row.save(update_fields=list(FunctionSignatureUpdateSchema.model_fields))
-    return row
+    return SmartContractFunction.objects.filter(
+        signature_hash=(signature_hash or "").lower()
+    ).first()
 
 
-def save_function_signatures(signatures):
-    """Store many ``FunctionSignatureCreateSchema`` signatures as ``save_function_signature`` would.
+def save_smart_contract_function(function):
+    """Store the ``SmartContractFunctionCreateSchema`` ``function``; answer its row.
 
-    Answers how many. When two signatures name one id, the first one given is the one saved.
+    A new selector is created from it, inputs and all; a stored one is updated
+    with its ``SmartContractFunctionUpdateSchema`` fields, and gets its inputs
+    anew only when its full signature changed.
     """
-    by_id = {}
-    for signature in signatures:
-        by_id.setdefault(signature.id, signature)
-    stored = FunctionSignature.objects.in_bulk(list(by_id))
-
-    created, updated = [], []
-    for pk, signature in by_id.items():
-        row = stored.get(pk)
+    with transaction.atomic():
+        row = SmartContractFunction.objects.filter(signature_hash=function.signature_hash).first()
         if row is None:
-            created.append(FunctionSignature(**signature.model_dump()))
-        else:
-            _update(row, FunctionSignatureUpdateSchema, signature)
+            row = SmartContractFunction.objects.create(**function.model_dump(exclude={"inputs"}))
+            _create_inputs([(row, function.inputs)])
+            return row
+        if row.full_signature != function.full_signature:
+            row.inputs.all().delete()
+            _create_inputs([(row, function.inputs)])
+        _update(row, SmartContractFunctionUpdateSchema, function)
+        row.save(update_fields=list(SmartContractFunctionUpdateSchema.model_fields))
+        return row
+
+
+def save_smart_contract_functions(functions):
+    """Store many ``SmartContractFunctionCreateSchema`` functions as ``save_smart_contract_function`` would.
+
+    Answers how many. When two functions name one selector, the first one given is the one saved.
+    """
+    by_hash = {}
+    for function in functions:
+        by_hash.setdefault(function.signature_hash, function)
+
+    with transaction.atomic():
+        stored = SmartContractFunction.objects.in_bulk(list(by_hash), field_name="signature_hash")
+        created, updated, replaced, inputs = [], [], [], []
+        for signature_hash, function in by_hash.items():
+            row = stored.get(signature_hash)
+            if row is None:
+                row = SmartContractFunction(**function.model_dump(exclude={"inputs"}))
+                created.append(row)
+                inputs.append((row, function.inputs))
+                continue
+            if row.full_signature != function.full_signature:
+                replaced.append(row)
+                inputs.append((row, function.inputs))
+            _update(row, SmartContractFunctionUpdateSchema, function)
             updated.append(row)
-    FunctionSignature.objects.bulk_create(created)
-    FunctionSignature.objects.bulk_update(updated, list(FunctionSignatureUpdateSchema.model_fields))
-    return len(by_id)
+        SmartContractFunction.objects.bulk_create(created)
+        SmartContractFunction.objects.bulk_update(
+            updated, list(SmartContractFunctionUpdateSchema.model_fields)
+        )
+        FunctionInput.objects.filter(function__in=replaced).delete()
+        _create_inputs(inputs)
+    return len(by_hash)
 
 
 def save_token(token):

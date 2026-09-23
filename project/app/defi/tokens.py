@@ -4,7 +4,7 @@ from django.db import models
 from pydantic import BaseModel, field_validator
 
 from project.app.defi.chains import ChainId
-from project.app.defi.function_signatures import FunctionSignature
+from project.app.defi.function_signatures import SmartContractFunction
 
 
 class TokenCreateSchema(BaseModel):
@@ -42,7 +42,7 @@ class Token(models.Model):
     address = models.CharField(max_length=42)  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
     # Learned about the contract later: in neither schema, so a save never sets or clears them.
     contract_is_verified = models.BooleanField(null=True, default=None)
-    functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
+    functions = models.ManyToManyField(SmartContractFunction, blank=True, related_name="tokens")
 
     class Meta:
         ordering = ["chain", "address"]

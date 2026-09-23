@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from project.app.defi import services
 from project.app.defi.chains import ChainId
 from project.app.defi.tokens import TokenCreateSchema
-from project.app.models import FunctionSignature, Token
+from project.app.models import SmartContractFunction, Token
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 # Sei lists some tokens by their Cosmos address, which is no EVM address.
@@ -93,8 +93,10 @@ class SaveTokenTests(TestCase):
 
     def test_saving_again_leaves_verification_and_functions_alone(self):
         row = services.save_token(token())
-        transfer = FunctionSignature.objects.create(
-            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
+        transfer = SmartContractFunction.objects.create(
+            signature_hash="0xa9059cbb",
+            function_name="transfer",
+            full_signature="transfer(address,uint256)",
         )
         row.contract_is_verified = True
         row.save()
@@ -132,8 +134,10 @@ class SaveTokensTests(TestCase):
 
     def test_saving_again_leaves_verification_and_functions_alone(self):
         services.save_tokens([token()])
-        transfer = FunctionSignature.objects.create(
-            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
+        transfer = SmartContractFunction.objects.create(
+            signature_hash="0xa9059cbb",
+            function_name="transfer",
+            full_signature="transfer(address,uint256)",
         )
         row = Token.objects.get()
         row.contract_is_verified = True
