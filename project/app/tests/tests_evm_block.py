@@ -8,11 +8,16 @@ from django.db import connection
 from django.test import TestCase
 
 from project.app.evm_block import services
-from project.app.models import Block, Transaction, Withdrawal
+from project.app.models import Block, FunctionSignature, Transaction, Withdrawal
 
 BLOCK_HASH = "0x95b198e154acbfc64109dfd22d8224fe927fd8dfdedfae01587674482ba4baf3"
 DYNAMIC_FEE_HASH = "0x16e199673891df518e25db2ef5320155da82a3dd71a677e7d84363251885d133"
 LEGACY_HASH = "0x97e8589b6b8526108fe01f5c99be03bd29e48e67df8d9a8ea171b823711dc346"
+TRANSFER_SELECTOR = "0xa9059cbb"
+TRANSFER_ARGUMENTS = (
+    "000000000000000000000000d7a0b38496064412a8d6b1f77bc30ada93e7b7a5"
+    "0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+)
 SIGNATURE = "0x485b18d5fdc11f0e76b8a6c24978fea8cd37707ee5d67ef4170fa401db8a28d1"
 
 
@@ -216,3 +221,80 @@ class StoreBlocksTests(TestCase):
         services.store_blocks([block(transactions=[legacy_transaction(value=hex(value))])])
 
         self.assertEqual(Transaction.objects.get().value, Decimal(value))
+
+
+def catalog(pk, name, inputs, hex_signature=TRANSFER_SELECTOR):
+    return FunctionSignature.objects.create(
+        id=pk, hex_signature=hex_signature, name=name, inputs=inputs
+    )
+
+
+class GetTransactionFunctionTests(TestCase):
+    def test_reads_the_selector_as_its_signature_and_the_rest_as_inputs(self):
+        catalog(1, "transfer", ["address", "uint256"])
+
+        function, inputs = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
+
+        self.assertEqual(function, "transfer(address,uint256)")
+        self.assertEqual(inputs, TRANSFER_ARGUMENTS)
+
+    def test_a_selector_the_catalog_does_not_know_still_has_inputs(self):
+        function, inputs = services.get_transaction_function(TRANSFER_SELECTOR + TRANSFER_ARGUMENTS)
+
+        self.assertIsNone(function)
+        self.assertEqual(inputs, TRANSFER_ARGUMENTS)
+
+    def test_a_shared_selector_reads_as_the_earliest_catalog_entry(self):
+        catalog(9, "many_msg_babbage", ["bytes1"])
+        catalog(2, "transfer", ["address", "uint256"])
+
+        function, _ = services.get_transaction_function(TRANSFER_SELECTOR)
+
+        self.assertEqual(function, "transfer(address,uint256)")
+
+    def test_a_selector_in_capitals_matches_the_catalog(self):
+        catalog(1, "transfer", ["address", "uint256"])
+
+        function, inputs = services.get_transaction_function("0xA9059CBB")
+
+        self.assertEqual(function, "transfer(address,uint256)")
+        self.assertEqual(inputs, "")
+
+    def test_calldata_too_short_for_a_selector_is_no_call(self):
+        self.assertEqual(services.get_transaction_function("0x"), (None, None))
+        self.assertEqual(services.get_transaction_function("0xa905"), (None, None))
+
+
+class StoredTransactionFunctionTests(TestCase):
+    def test_storing_a_block_reads_each_transactions_function(self):
+        catalog(1, "transfer", ["address", "uint256"])
+        calldata = TRANSFER_SELECTOR + TRANSFER_ARGUMENTS
+
+        services.store_blocks(
+            [block(transactions=[dynamic_fee_transaction(input=calldata), legacy_transaction()])]
+        )
+
+        called = Transaction.objects.get(hash=DYNAMIC_FEE_HASH)
+        self.assertEqual(called.function, "transfer(address,uint256)")
+        self.assertEqual(called.inputs, TRANSFER_ARGUMENTS)
+        unknown = Transaction.objects.get(hash=LEGACY_HASH)
+        self.assertIsNone(unknown.function)
+        self.assertEqual(unknown.inputs, "")
+
+    def test_a_plain_transfer_stores_no_function(self):
+        services.store_blocks([block(transactions=[legacy_transaction(input="0x")])])
+
+        stored = Transaction.objects.get()
+        self.assertIsNone(stored.function)
+        self.assertIsNone(stored.inputs)
+
+    def test_a_contract_creations_init_code_is_not_read_as_a_call(self):
+        catalog(1, "transfer", ["address", "uint256"])
+
+        services.store_blocks(
+            [block(transactions=[legacy_transaction(to=None, input=TRANSFER_SELECTOR + "00")])]
+        )
+
+        stored = Transaction.objects.get()
+        self.assertIsNone(stored.function)
+        self.assertIsNone(stored.inputs)

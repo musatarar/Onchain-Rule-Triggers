@@ -60,6 +60,13 @@ class Transaction(models.Model):
     A field only some transaction types carry is nullable: legacy transactions
     have no fee caps, access list or ``y_parity``, a pre-EIP-155 one has no
     ``chain_id``, and a contract creation has no ``to_address``.
+
+    ``function`` and ``inputs`` are ``input`` read as a call: the text
+    signature its selector decodes to, and the calldata after the selector (see
+    :func:`~project.app.evm_block.services.get_transaction_function`).
+    ``function`` is ``None`` where the catalog knows no signature for the
+    selector, and both are ``None`` for a plain transfer or a contract
+    creation, neither of which is a call.
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -79,6 +86,8 @@ class Transaction(models.Model):
     max_priority_fee_per_gas = _uint256(null=True, blank=True)
     access_list = models.JSONField(null=True, blank=True)
     input = models.TextField()
+    function = models.TextField(null=True, blank=True)  # "transfer(address,uint256)"
+    inputs = models.JSONField(null=True, blank=True)  # the calldata after the selector
     r = models.CharField(max_length=HASH_LENGTH)
     s = models.CharField(max_length=HASH_LENGTH)
     y_parity = models.BigIntegerField(null=True, blank=True)
