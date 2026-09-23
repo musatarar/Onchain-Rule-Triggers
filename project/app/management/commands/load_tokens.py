@@ -15,7 +15,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from project.app.defi import services
 from project.app.defi.chains import PLATFORM_CHAINS
-from project.app.defi.tokens import TokenSchema
+from project.app.defi.tokens import TokenCreateSchema
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "tokens.json"
 
@@ -35,7 +35,7 @@ def tokens_from_entries(entries):
             chain = PLATFORM_CHAINS.get(platform)
             if chain is None or not _EVM_ADDRESS_RE.match(address or ""):
                 continue
-            yield TokenSchema(
+            yield TokenCreateSchema(
                 name=_text(entry["name"]),
                 coingecko_id=_text(entry["id"]),
                 chain=chain,

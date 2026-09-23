@@ -1,7 +1,7 @@
 """The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from project.app.defi.function_signatures import FunctionSignature, parse_signature
-from project.app.defi.tokens import TOKEN_KEY, Token, TokenSchema
+from project.app.defi.tokens import Token, TokenUpdateSchema
 
 # `description` is left out, so a re-load refreshes the signature and keeps a written note.
 _UPDATED_FIELDS = ["hex_signature", "name", "inputs"]
@@ -46,30 +46,47 @@ def load_function_signatures(entries, limit=None):
     return len(rows)
 
 
-def save_token(token):
-    """Store the ``TokenSchema`` ``token``, or update the row already at its chain and address.
+def _update_token(row, token):
+    """Set ``row``'s fields from the ``TokenUpdateSchema`` view of ``token``."""
+    for field, value in TokenUpdateSchema.model_validate(token.model_dump()).model_dump().items():
+        setattr(row, field, value)
 
-    Answers the stored row.
+
+def save_token(token):
+    """Store the ``TokenCreateSchema`` ``token``; answer its row.
+
+    A new chain and address is created from it; a stored one is updated with
+    its ``TokenUpdateSchema`` fields.
     """
-    row, _ = Token.objects.update_or_create(
-        chain=token.chain, address=token.address, defaults=token.updated_fields()
-    )
+    row = Token.objects.filter(chain=token.chain, address=token.address).first()
+    if row is None:
+        return Token.objects.create(**token.model_dump())
+    _update_token(row, token)
+    row.save(update_fields=list(TokenUpdateSchema.model_fields))
     return row
 
 
 def save_tokens(tokens):
-    """Store the ``TokenSchema`` ``tokens`` in one statement, updating rows already at their chains and addresses.
+    """Store many ``TokenCreateSchema`` tokens as ``save_token`` would; answer how many.
 
-    Answers how many rows that was. When two tokens name one chain and
-    address, the first one given is the one stored.
+    When two tokens name one chain and address, the first one given is the one saved.
     """
-    rows = {}
+    by_key = {}
     for token in tokens:
-        rows.setdefault((token.chain, token.address), Token(**token.model_dump()))
-    Token.objects.bulk_create(
-        list(rows.values()),
-        update_conflicts=True,
-        update_fields=TokenSchema.updated_field_names(),
-        unique_fields=list(TOKEN_KEY),
-    )
-    return len(rows)
+        by_key.setdefault((token.chain, token.address), token)
+    stored = {
+        (row.chain, row.address): row
+        for row in Token.objects.filter(address__in={address for _, address in by_key})
+    }
+
+    created, updated = [], []
+    for key, token in by_key.items():
+        row = stored.get(key)
+        if row is None:
+            created.append(Token(**token.model_dump()))
+        else:
+            _update_token(row, token)
+            updated.append(row)
+    Token.objects.bulk_create(created)
+    Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
+    return len(by_key)
