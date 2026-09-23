@@ -10,6 +10,8 @@ as the ``0x`` text they arrived as.
 
 from django.db import models
 
+from project.app.defi.function_signatures import FunctionSignature
+
 HASH_LENGTH = 66  # "0x" and 32 bytes
 ADDRESS_LENGTH = 42  # "0x" and 20 bytes
 
@@ -65,8 +67,8 @@ class Transaction(models.Model):
     selector, and the calldata after it (see
     :func:`~project.app.evm_block.services.get_transaction_function`). Both are
     ``None`` for a plain transfer or a contract creation, neither of which is a
-    call. ``decoded_function_name`` is the name the catalog decodes the selector
-    to, and ``None`` where it knows none.
+    call. ``decoded_function`` is the catalog entry the selector decodes to, and
+    ``None`` where it knows none.
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -88,7 +90,13 @@ class Transaction(models.Model):
     input = models.TextField()
     function = models.TextField(null=True, blank=True)  # "0xa9059cbb"
     inputs = models.JSONField(null=True, blank=True)  # the calldata after the selector
-    decoded_function_name = models.TextField(null=True, blank=True)  # "transfer"
+    decoded_function = models.ForeignKey(
+        FunctionSignature,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="transactions",
+    )
     r = models.CharField(max_length=HASH_LENGTH)
     s = models.CharField(max_length=HASH_LENGTH)
     y_parity = models.BigIntegerField(null=True, blank=True)

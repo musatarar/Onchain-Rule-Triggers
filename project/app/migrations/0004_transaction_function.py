@@ -1,6 +1,7 @@
-"""A transaction's input read as a call: both columns nullable, so the add is metadata-only."""
+"""A transaction's input read as a call: its raw selector and calldata, and the catalog entry it decodes to."""
 
 from django.db import migrations, models
+import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
@@ -10,6 +11,17 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.AddField(
+            model_name="transaction",
+            name="decoded_function",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="transactions",
+                to="app.functionsignature",
+            ),
+        ),
         migrations.AddField(
             model_name="transaction",
             name="function",
