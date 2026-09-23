@@ -5,8 +5,8 @@ rows, one per node, each pointing at its parent. In memory and on the wire the
 same tree is nested dicts, one per node, whose keys are the node's columns:
 
     {"node_type": "GROUP", "logical_op": "OR", "children": [
-        {"node_type": "CONDITION", "field_name": "deals_closed", "operator": ">",
-         "comparand": 20},
+        {"node_type": "CONDITION", "source": "transactions",
+         "field_name": "deals_closed", "operator": ">", "comparand": 20},
         {"node_type": "GROUP", "logical_op": "AND", "children": [...]},
     ]}
 
@@ -52,6 +52,15 @@ NODE_GROUP = "GROUP"
 NODE_CONDITION = "CONDITION"
 NODE_TYPES = (NODE_GROUP, NODE_CONDITION)
 
+# The onchain data a condition is about: its node's ``source`` column. A tag
+# for now: the field is still resolved against the owner's shape, and the
+# engine does not read it. (Not the lead/derived/notes/events sources above,
+# which say how a shape field is read.)
+BLOCKS = "blocks"
+TRANSACTIONS = "transactions"
+WITHDRAWALS = "withdrawals"
+CONDITION_SOURCES = (BLOCKS, TRANSACTIONS, WITHDRAWALS)
+
 # A group holds when all (AND) or any (OR) of its children do.
 AND = "AND"
 OR = "OR"
@@ -77,7 +86,7 @@ FIELD_NAME_MAX_CHARS = 255
 # a tree, so a pathological payload is refused instead of exhausting the stack.
 MAX_DEPTH = 32
 
-LEAF_KEYS = frozenset({"node_type", "field_name", "operator", "comparand"})
+LEAF_KEYS = frozenset({"node_type", "source", "field_name", "operator", "comparand"})
 GROUP_KEYS = frozenset({"node_type", "logical_op", "children"})
 
 # An inference predicate renders into one line of a larger prompt. These
@@ -119,10 +128,11 @@ def fields_by_name(shape):
     return named
 
 
-def _cond(field, operator, comparand=None):
+def _cond(field, operator, comparand=None, source=TRANSACTIONS):
     """One condition node."""
     condition = {
         "node_type": NODE_CONDITION,
+        "source": source,
         "field_name": field,
         "operator": operator,
     }
@@ -166,6 +176,7 @@ def _subtree(node, children):
         }
     condition = {
         "node_type": NODE_CONDITION,
+        "source": node.source,
         "field_name": node.field_name,
         "operator": node.operator,
     }
@@ -230,6 +241,11 @@ def _validate_leaf(leaf, path, fields):
     unknown = set(leaf) - LEAF_KEYS
     if unknown:
         raise ValidationError(f"{path} has unknown key(s): {_listed(unknown)}.")
+    source = leaf.get("source")
+    if source not in CONDITION_SOURCES:
+        raise ValidationError(
+            f"{path}.source must be one of {_listed(CONDITION_SOURCES)}, got {source!r}."
+        )
     field = leaf.get("field_name")
     if not isinstance(field, str) or len(field) > FIELD_NAME_MAX_CHARS:
         raise ValidationError(

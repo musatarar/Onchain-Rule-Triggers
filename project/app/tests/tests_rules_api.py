@@ -158,10 +158,10 @@ class RuleApiTests(RulesApiTestCase):
     def test_a_condition_tree_round_trips_through_the_api(self):
         # (deals_closed > 20) OR (stage == "active_trial" AND state != "CA")
         tree = _any_of(
-            _cond("deals_closed", ">", 20),
+            _cond("deals_closed", ">", 20, source="blocks"),
             _all_of(
-                _cond("stage", "==", "active_trial"),
-                _cond("state", "!=", "CA"),
+                _cond("stage", "==", "active_trial", source="transactions"),
+                _cond("state", "!=", "CA", source="withdrawals"),
             ),
         )
         created = self.client.post(

@@ -4,7 +4,7 @@ import io
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from project.app.models import ConditionNode, Rule
@@ -176,9 +176,9 @@ class BackfillTests(RulesServiceTestCase):
         fields.setdefault("kind", Rule.KIND_DETERMINISTIC)
         return Rule.objects.create(legacy_conditions=payload or self.LEGACY, **fields)
 
-    def _backfill(self):
+    def _backfill(self, source="transactions"):
         out = io.StringIO()
-        call_command("backfill_condition_nodes", stdout=out)
+        call_command("backfill_condition_nodes", "--source", source, stdout=out)
         return out.getvalue()
 
     def test_a_legacy_payload_becomes_rows_and_is_cleared(self):
@@ -196,6 +196,23 @@ class BackfillTests(RulesServiceTestCase):
                 ),
             ),
         )
+
+    def test_every_moved_condition_is_tagged_with_the_named_source(self):
+        rule = self._legacy_rule()
+        self._backfill("withdrawals")
+        sources = set(
+            Rule.objects.get(pk=rule.pk)
+            .conditions.filter(node_type="CONDITION")
+            .values_list("source", flat=True)
+        )
+        self.assertEqual(sources, {"withdrawals"})
+
+    def test_the_source_must_be_named_and_known(self):
+        self._legacy_rule()
+        for args in ((), ("--source", "lead")):
+            with self.subTest(args=args), self.assertRaises(CommandError):
+                call_command("backfill_condition_nodes", *args, stdout=io.StringIO())
+        self.assertFalse(ConditionNode.objects.exists())
 
     def test_a_rerun_moves_nothing_twice(self):
         self._legacy_rule()

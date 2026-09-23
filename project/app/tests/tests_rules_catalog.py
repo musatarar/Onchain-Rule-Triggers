@@ -250,18 +250,24 @@ class ConditionNodeTests(TestCase):
         rule = self._rule()
         rows = list(
             rule.conditions.values_list(
-                "parent_id", "node_type", "logical_op", "field_name", "operator", "comparand"
+                "parent_id",
+                "node_type",
+                "logical_op",
+                "source",
+                "field_name",
+                "operator",
+                "comparand",
             )
         )
         root, deals, group, stage, state = rule.conditions.values_list("id", flat=True)
         self.assertEqual(
             rows,
             [
-                (None, "GROUP", "OR", None, None, None),
-                (root, "CONDITION", None, "deals_closed", ">", 20),
-                (root, "GROUP", "AND", None, None, None),
-                (group, "CONDITION", None, "stage", "==", "active_trial"),
-                (group, "CONDITION", None, "state", "!=", "CA"),
+                (None, "GROUP", "OR", None, None, None, None),
+                (root, "CONDITION", None, "transactions", "deals_closed", ">", 20),
+                (root, "GROUP", "AND", None, None, None, None),
+                (group, "CONDITION", None, "transactions", "stage", "==", "active_trial"),
+                (group, "CONDITION", None, "transactions", "state", "!=", "CA"),
             ],
         )
 
@@ -298,6 +304,27 @@ class ConditionNodeTests(TestCase):
         self.assertIsNone(rule.condition_tree())
         self.assertFalse(rule.has_conditions())
 
+    def test_each_condition_keeps_its_own_source(self):
+        tree = _any_of(
+            _cond("deals_closed", ">", 20, source=utils.BLOCKS),
+            _all_of(
+                _cond("stage", "==", "active_trial", source=utils.TRANSACTIONS),
+                _cond("state", "!=", "CA", source=utils.WITHDRAWALS),
+            ),
+        )
+        rule = self._rule(tree)
+        self.assertEqual(
+            list(rule.conditions.values_list("node_type", "source")),
+            [
+                ("GROUP", None),
+                ("CONDITION", "blocks"),
+                ("GROUP", None),
+                ("CONDITION", "transactions"),
+                ("CONDITION", "withdrawals"),
+            ],
+        )
+        self.assertEqual(Rule.objects.get(pk=rule.pk).condition_tree(), tree)
+
     def test_a_comparand_keeps_its_type(self):
         tree = _all_of(
             _cond("deals_closed", ">", 2.5),
@@ -318,14 +345,23 @@ class ConditionNodeTests(TestCase):
         for columns in (
             {"node_type": "GROUP", "logical_op": "AND", "field_name": "deals_closed"},
             {"node_type": "GROUP", "logical_op": "XOR"},
-            {"node_type": "CONDITION", "field_name": "deals_closed"},
+            {"node_type": "CONDITION", "source": "blocks", "field_name": "deals_closed"},
+            {"node_type": "CONDITION", "field_name": "deals_closed", "operator": ">"},
             {
                 "node_type": "CONDITION",
-                "logical_op": "AND",
+                "source": "lead",
                 "field_name": "deals_closed",
                 "operator": ">",
             },
-            {"node_type": "RULE", "field_name": "x", "operator": ">"},
+            {"node_type": "GROUP", "logical_op": "AND", "source": "blocks"},
+            {
+                "node_type": "CONDITION",
+                "logical_op": "AND",
+                "source": "blocks",
+                "field_name": "deals_closed",
+                "operator": ">",
+            },
+            {"node_type": "RULE", "source": "blocks", "field_name": "x", "operator": ">"},
         ):
             with self.subTest(columns=columns):
                 with self.assertRaises(IntegrityError), transaction.atomic():
@@ -340,3 +376,4 @@ class ConditionNodeTests(TestCase):
         # Meta cannot see utils, so its literals are restated there.
         self.assertEqual(utils.NODE_TYPES, ("GROUP", "CONDITION"))
         self.assertEqual(utils.LOGICAL_OPS, ("AND", "OR"))
+        self.assertEqual(utils.CONDITION_SOURCES, ("blocks", "transactions", "withdrawals"))

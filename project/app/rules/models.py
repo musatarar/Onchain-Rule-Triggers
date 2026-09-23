@@ -174,7 +174,8 @@ class ConditionNode(models.Model):
 
     A ``GROUP`` node joins its children with ``logical_op`` (AND / OR); a
     ``CONDITION`` node compares one field (``field_name``, a name the owner's
-    shape declares) against ``comparand`` with ``operator``. The root is the
+    shape declares) against ``comparand`` with ``operator``, and names the
+    onchain ``source`` it is about: blocks, transactions or withdrawals. The root is the
     rule's one group with no parent, and groups nest to any depth up to
     :data:`~project.app.rules.utils.MAX_DEPTH`. Every node carries its ``rule``
     as well as its parent, so a rule's whole tree is one query
@@ -195,6 +196,11 @@ class ConditionNode(models.Model):
         (utils.NODE_CONDITION, "Condition"),
     ]
     LOGICAL_OP_CHOICES = [(utils.AND, "All of"), (utils.OR, "Any of")]
+    SOURCE_CHOICES = [
+        (utils.BLOCKS, "Blocks"),
+        (utils.TRANSACTIONS, "Transactions"),
+        (utils.WITHDRAWALS, "Withdrawals"),
+    ]
 
     rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="conditions")
     # NULL for the root group.
@@ -205,6 +211,7 @@ class ConditionNode(models.Model):
     # GROUP only.
     logical_op = models.CharField(max_length=3, choices=LOGICAL_OP_CHOICES, null=True, blank=True)
     # CONDITION only.
+    source = models.CharField(max_length=12, choices=SOURCE_CHOICES, null=True, blank=True)
     field_name = models.CharField(max_length=utils.FIELD_NAME_MAX_CHARS, null=True, blank=True)
     operator = models.CharField(max_length=10, null=True, blank=True)
     comparand = models.JSONField(null=True, blank=True)
@@ -223,12 +230,16 @@ class ConditionNode(models.Model):
                         field_name__isnull=True,
                         operator__isnull=True,
                         comparand__isnull=True,
+                        source__isnull=True,
                     )
                     | Q(
                         node_type="CONDITION",
                         logical_op__isnull=True,
                         field_name__isnull=False,
                         operator__isnull=False,
+                        # NULL IN (...) is NULL, which a CHECK lets through.
+                        source__isnull=False,
+                        source__in=("blocks", "transactions", "withdrawals"),
                     )
                 ),
                 name="cnode_columns_fit_type",
@@ -246,5 +257,5 @@ class ConditionNode(models.Model):
             return f"{self.logical_op} group {self.pk} of rule {self.rule_id}"
         return (
             f"condition {self.pk} of rule {self.rule_id}: "
-            f"{self.field_name} {self.operator} {self.comparand!r}"
+            f"{self.source}.{self.field_name} {self.operator} {self.comparand!r}"
         )

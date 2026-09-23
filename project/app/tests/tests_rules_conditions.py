@@ -56,6 +56,11 @@ class ValidPayloadTests(SimpleTestCase):
             )
         )
 
+    def test_each_onchain_source_is_accepted(self):
+        for source in (utils.BLOCKS, utils.TRANSACTIONS, utils.WITHDRAWALS):
+            with self.subTest(source=source):
+                _validate(_payload(_cond("deals_closed", ">", 20, source=source)))
+
     def test_one_level_of_grouping_is_allowed(self):
         _validate(_payload(LEAD, utils._any_of(NOTES)))
 
@@ -125,8 +130,13 @@ class SchemaRejectionTests(SimpleTestCase):
     def test_an_unknown_field_is_refused(self):
         self._refused(_payload(_cond("favourite_colour", "==", "blue")))
 
-    def test_a_source_key_is_refused(self):
-        self._refused(_payload(dict(LEAD, source="lead")))
+    def test_a_source_outside_the_three_onchain_sources_is_refused(self):
+        for source in ("lead", "notes", "BLOCKS", "", None):
+            with self.subTest(source=source):
+                self._refused(_payload(dict(LEAD, source=source)))
+
+    def test_a_condition_without_a_source_is_refused(self):
+        self._refused(_payload({k: v for k, v in LEAD.items() if k != "source"}))
 
     def test_an_unknown_key_on_a_condition_is_refused(self):
         leaf = dict(LEAD, sneaky="payload")
