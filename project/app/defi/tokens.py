@@ -39,41 +39,6 @@ class ChainId(models.IntegerChoices):
     SCROLL = 534352, "Scroll"
 
 
-# The raw data's platform slug for each chain above. A platform missing here is
-# either not an EVM chain (Solana, Tron, TON) or one without a known chain id.
-PLATFORM_CHAINS = {
-    "ethereum": ChainId.ETHEREUM,
-    "optimistic-ethereum": ChainId.OPTIMISM,
-    "cronos": ChainId.CRONOS,
-    "binance-smart-chain": ChainId.BNB_SMART_CHAIN,
-    "xdai": ChainId.GNOSIS,
-    "unichain": ChainId.UNICHAIN,
-    "polygon-pos": ChainId.POLYGON,
-    "monad": ChainId.MONAD,
-    "sonic": ChainId.SONIC,
-    "x-layer": ChainId.X_LAYER,
-    "fantom": ChainId.FANTOM,
-    "zksync": ChainId.ZKSYNC,
-    "pulsechain": ChainId.PULSECHAIN,
-    "world-chain": ChainId.WORLD_CHAIN,
-    "hyperevm": ChainId.HYPEREVM,
-    "sei-v2": ChainId.SEI,
-    "ronin": ChainId.RONIN,
-    "abstract": ChainId.ABSTRACT,
-    "morph-l2": ChainId.MORPH,
-    "mantle": ChainId.MANTLE,
-    "base": ChainId.BASE,
-    "arbitrum-one": ChainId.ARBITRUM_ONE,
-    "celo": ChainId.CELO,
-    "avalanche": ChainId.AVALANCHE,
-    "ink": ChainId.INK,
-    "linea": ChainId.LINEA,
-    "berachain": ChainId.BERACHAIN,
-    "blast": ChainId.BLAST,
-    "scroll": ChainId.SCROLL,
-}
-
-
 class Token(models.Model):
     """One token contract: a coin's address on one chain.
 
@@ -85,7 +50,7 @@ class Token(models.Model):
     coingecko_id = models.CharField(max_length=255, db_index=True)  # "tether"
     chain = models.IntegerField(choices=ChainId.choices)  # 1
     address = models.CharField(max_length=42)  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
-    # Never loaded: both are learned about the contract later, and a re-load leaves them alone.
+    # Learned about the contract later: saving a token never sets them and never clears them.
     contract_is_verified = models.BooleanField(null=True, default=None)
     functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
 

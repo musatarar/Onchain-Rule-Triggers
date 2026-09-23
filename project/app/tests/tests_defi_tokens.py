@@ -1,4 +1,4 @@
-"""The token catalog: which of a coin's platforms become rows, and how the loader fills them."""
+"""The token catalog: how tokens are saved, and which of a file's coin platforms become tokens."""
 
 import io
 import json
@@ -34,6 +34,10 @@ def address(n):
     return f"0x{n:040x}"
 
 
+def token(name="Tether", coingecko_id="tether", chain=ChainId.ETHEREUM, at=USDT):
+    return Token(name=name, coingecko_id=coingecko_id, chain=chain, address=at)
+
+
 def load(entries, **options):
     """Run the command against ``entries`` written to a raw_data-style file; answer its output."""
     with tempfile.TemporaryDirectory() as directory:
@@ -43,6 +47,95 @@ def load(entries, **options):
         out = io.StringIO()
         call_command("load_tokens", path=path, stdout=out, **options)
     return out.getvalue()
+
+
+class SaveTokenTests(TestCase):
+    def test_stores_a_new_token(self):
+        row = services.save_token(token())
+
+        self.assertEqual(Token.objects.get(), row)
+        self.assertEqual((row.name, row.coingecko_id), ("Tether", "tether"))
+        self.assertEqual((row.chain, row.address), (ChainId.ETHEREUM, USDT))
+
+    def test_saving_a_stored_chain_and_address_updates_its_row(self):
+        services.save_token(token(name="Tether"))
+
+        row = services.save_token(token(name="Tether USD"))
+
+        self.assertEqual(Token.objects.count(), 1)
+        self.assertEqual(row.name, "Tether USD")
+
+    def test_the_same_address_on_another_chain_is_another_row(self):
+        services.save_token(token(chain=ChainId.ETHEREUM))
+        services.save_token(token(chain=ChainId.BASE))
+
+        self.assertEqual(Token.objects.count(), 2)
+
+    def test_an_address_is_stored_lowercase(self):
+        services.save_token(token(at="0x" + USDT[2:].upper()))
+        services.save_token(token(at=USDT))
+
+        self.assertEqual(list(Token.objects.values_list("address", flat=True)), [USDT])
+
+    def test_saving_again_leaves_verification_and_functions_alone(self):
+        row = services.save_token(token())
+        transfer = FunctionSignature.objects.create(
+            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
+        )
+        row.contract_is_verified = True
+        row.save()
+        row.functions.add(transfer)
+
+        row = services.save_token(token(name="Tether USD"))
+
+        self.assertTrue(row.contract_is_verified)
+        self.assertEqual(list(row.functions.all()), [transfer])
+        self.assertEqual(list(transfer.tokens.all()), [row])
+
+
+class SaveTokensTests(TestCase):
+    def test_stores_every_token_and_answers_how_many(self):
+        saved = services.save_tokens([token(at=address(n)) for n in range(1, 4)])
+
+        self.assertEqual(saved, 3)
+        self.assertEqual(Token.objects.count(), 3)
+
+    def test_a_stored_chain_and_address_is_updated_not_duplicated(self):
+        services.save_tokens([token(name="Tether")])
+
+        services.save_tokens([token(name="Tether USD")])
+
+        self.assertEqual(Token.objects.count(), 1)
+        self.assertEqual(Token.objects.get().name, "Tether USD")
+
+    def test_when_two_tokens_name_one_address_the_first_is_stored(self):
+        saved = services.save_tokens(
+            [token(coingecko_id="first"), token(coingecko_id="second", at="0x" + USDT[2:].upper())]
+        )
+
+        self.assertEqual(saved, 1)
+        self.assertEqual(Token.objects.get().coingecko_id, "first")
+
+    def test_saving_again_leaves_verification_and_functions_alone(self):
+        services.save_tokens([token()])
+        transfer = FunctionSignature.objects.create(
+            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
+        )
+        row = Token.objects.get()
+        row.contract_is_verified = True
+        row.save()
+        row.functions.add(transfer)
+
+        services.save_tokens([token(name="Tether USD")])
+
+        row = Token.objects.get()
+        self.assertEqual(row.name, "Tether USD")
+        self.assertTrue(row.contract_is_verified)
+        self.assertEqual(list(row.functions.all()), [transfer])
+
+    def test_nothing_to_save_stores_nothing(self):
+        self.assertEqual(services.save_tokens([]), 0)
+        self.assertEqual(Token.objects.count(), 0)
 
 
 class LoadTokensTests(TestCase):
@@ -92,7 +185,7 @@ class LoadTokensTests(TestCase):
         self.assertEqual(Token.objects.count(), 0)
 
     def test_an_address_is_stored_lowercase(self):
-        load([coin("tether", ethereum=USDT.upper().replace("0X", "0x"))])
+        load([coin("tether", ethereum="0x" + USDT[2:].upper())])
 
         self.assertEqual(Token.objects.get().address, USDT)
 
@@ -130,9 +223,6 @@ class LoadTokensTests(TestCase):
         with self.assertRaises(CommandError):
             load([coin("tether", ethereum=USDT)], limit=-1)
 
-        with self.assertRaises(ValueError):
-            services.load_tokens([], limit=-1)
-
     def test_a_second_run_updates_rather_than_duplicates(self):
         load([coin("tether", name="Tether", ethereum=USDT)])
 
@@ -140,23 +230,6 @@ class LoadTokensTests(TestCase):
 
         self.assertEqual(Token.objects.count(), 1)
         self.assertEqual(Token.objects.get().name, "Tether USD")
-
-    def test_a_second_run_leaves_verification_and_functions_alone(self):
-        load([coin("tether", ethereum=USDT)])
-        transfer = FunctionSignature.objects.create(
-            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
-        )
-        row = Token.objects.get()
-        row.contract_is_verified = True
-        row.save()
-        row.functions.add(transfer)
-
-        load([coin("tether", ethereum=USDT)])
-
-        row = Token.objects.get()
-        self.assertTrue(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [transfer])
-        self.assertEqual(list(transfer.tokens.all()), [row])
 
     def test_a_missing_file_is_reported(self):
         with self.assertRaises(CommandError):
