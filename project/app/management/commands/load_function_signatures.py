@@ -1,7 +1,6 @@
 """Load the function signature catalog from raw_data/.
 
-Run after `manage.py migrate`. The file is pages 2-8 of
-https://www.4byte.directory/api/v1/signatures/, aggregated into one JSON list of
+Run after `manage.py migrate`. The file function signatures aggregated into a JSON list of
 results. Idempotent: each entry's own id is its row's primary key, so a re-run
 updates what it stored rather than adding to it.
 """
