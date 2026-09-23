@@ -1,6 +1,11 @@
 """Storing EVM blocks: the hex a node returns, as block, transaction and withdrawal rows."""
 
+import contextlib
 import datetime
+import io
+import json
+import os
+import tempfile
 import unittest
 from decimal import Decimal
 
@@ -10,6 +15,7 @@ from django.test import TestCase
 from project.app.defi.chains import ChainId
 from project.app.evm_block import services
 from project.app.models import Block, FunctionSignature, Transaction, Withdrawal
+from scripts.load_blocks import load_blocks
 
 BLOCK_HASH = "0x95b198e154acbfc64109dfd22d8224fe927fd8dfdedfae01587674482ba4baf3"
 DYNAMIC_FEE_HASH = "0x16e199673891df518e25db2ef5320155da82a3dd71a677e7d84363251885d133"
@@ -406,3 +412,40 @@ class StoredTransactionFunctionTests(TestCase):
         transfer.delete()
 
         self.assertIsNone(Transaction.objects.get().decoded_function)
+
+
+class LoadBlocksScriptTests(TestCase):
+    def load(self, blocks=None, **options):
+        """Run the script's loader, on ``blocks`` written to a file when given; answer its output."""
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(out):
+            if blocks is not None:
+                options["path"] = os.path.join(directory, "blocks.json")
+                with open(options["path"], "w", encoding="utf-8") as raw:
+                    json.dump(blocks, raw)
+            load_blocks(**options)
+        return out.getvalue()
+
+    def test_loads_the_sample_blocks_as_ethereum(self):
+        output = self.load()
+
+        self.assertEqual(output, "Loaded 5 block(s) on Ethereum.\n")
+        self.assertEqual(
+            list(Block.objects.order_by("number").values_list("chain", "number")),
+            [(ChainId.ETHEREUM, 18_000_000 + offset) for offset in range(5)],
+        )
+        self.assertEqual(Transaction.objects.count(), 613)
+        self.assertEqual(Withdrawal.objects.count(), 80)
+
+    def test_loads_another_file_as_the_chain_it_names(self):
+        output = self.load([block()], chain=ChainId.GNOSIS)
+
+        self.assertEqual(output, "Loaded 1 block(s) on Gnosis.\n")
+        self.assertEqual(Block.objects.get().chain, ChainId.GNOSIS)
+
+    def test_loading_twice_adds_nothing(self):
+        self.load([block()])
+        self.load([block()])
+
+        self.assertEqual(Block.objects.count(), 1)
+        self.assertEqual(Transaction.objects.count(), 2)
