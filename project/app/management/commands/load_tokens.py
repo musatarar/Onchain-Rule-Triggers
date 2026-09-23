@@ -14,43 +14,10 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from project.app.defi import services
-from project.app.defi.tokens import ChainId, Token
+from project.app.defi.chains import PLATFORM_CHAINS
+from project.app.defi.tokens import Token
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "tokens.json"
-
-# Each platform slug in the file, as the chain it names. A platform missing here is
-# either not an EVM chain (Solana, Tron, TON) or one without a known chain id.
-PLATFORM_CHAINS = {
-    "ethereum": ChainId.ETHEREUM,
-    "optimistic-ethereum": ChainId.OPTIMISM,
-    "cronos": ChainId.CRONOS,
-    "binance-smart-chain": ChainId.BNB_SMART_CHAIN,
-    "xdai": ChainId.GNOSIS,
-    "unichain": ChainId.UNICHAIN,
-    "polygon-pos": ChainId.POLYGON,
-    "monad": ChainId.MONAD,
-    "sonic": ChainId.SONIC,
-    "x-layer": ChainId.X_LAYER,
-    "fantom": ChainId.FANTOM,
-    "zksync": ChainId.ZKSYNC,
-    "pulsechain": ChainId.PULSECHAIN,
-    "world-chain": ChainId.WORLD_CHAIN,
-    "hyperevm": ChainId.HYPEREVM,
-    "sei-v2": ChainId.SEI,
-    "ronin": ChainId.RONIN,
-    "abstract": ChainId.ABSTRACT,
-    "morph-l2": ChainId.MORPH,
-    "mantle": ChainId.MANTLE,
-    "base": ChainId.BASE,
-    "arbitrum-one": ChainId.ARBITRUM_ONE,
-    "celo": ChainId.CELO,
-    "avalanche": ChainId.AVALANCHE,
-    "ink": ChainId.INK,
-    "linea": ChainId.LINEA,
-    "berachain": ChainId.BERACHAIN,
-    "blast": ChainId.BLAST,
-    "scroll": ChainId.SCROLL,
-}
 
 # Sei lists some tokens by their Cosmos address, which no EVM call reaches.
 _EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
