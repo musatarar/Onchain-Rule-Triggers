@@ -1,9 +1,18 @@
-"""The signature catalog: what one four-byte selector might decode to, and how entries get in."""
+"""The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
+
+import json
+import re
 
 from project.app.defi.function_signatures import FunctionSignature, parse_signature
+from project.app.defi.tokens import COINGECKO_PLATFORMS, Token
 
 # `description` is left out, so a re-load refreshes the signature and keeps a written note.
 _UPDATED_FIELDS = ["hex_signature", "name", "inputs"]
+
+# `contract_is_verified` and `functions` are left out, so a re-load keeps what was learned.
+_TOKEN_UPDATED_FIELDS = ["name", "coingecko_id"]
+
+_EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-f]{40}$")
 
 
 def signatures_for_selector(hex_signature):
@@ -41,5 +50,48 @@ def load_function_signatures(entries, limit=None):
         )
     FunctionSignature.objects.bulk_create(
         rows, update_conflicts=True, update_fields=_UPDATED_FIELDS, unique_fields=["id"]
+    )
+    return len(rows)
+
+
+def _text(value):
+    """A field the source wrote as a JSON literal (``true``, ``69420``) back as its text."""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def load_tokens(entries, limit=None):
+    """Store the contracts of up to ``limit`` of ``entries``, in order, and answer how many that was.
+
+    Each entry is one CoinGecko coin, stored as a row per address it has on a
+    chain in ``COINGECKO_PLATFORMS``; a coin with none (a native coin, or one
+    only on Solana) stores nothing. A chain and an address name one row, so
+    loading an entry again updates the rows it first wrote, and when two
+    entries claim one address the earlier entry keeps it.
+    """
+    if limit is not None and limit < 0:
+        raise ValueError("limit is a number of entries: it cannot be negative.")
+
+    rows = {}
+    for entry in entries[:limit]:
+        for platform, address in entry["all_platforms"].items():
+            chain = COINGECKO_PLATFORMS.get(platform)
+            address = (address or "").lower()
+            # Sei's platform lists some tokens by their Cosmos address, which no EVM call reaches.
+            if chain is None or not _EVM_ADDRESS_RE.match(address):
+                continue
+            rows.setdefault(
+                (chain, address),
+                Token(
+                    name=_text(entry["name"]),
+                    coingecko_id=_text(entry["id"]),
+                    chain=chain,
+                    address=address,
+                ),
+            )
+    Token.objects.bulk_create(
+        list(rows.values()),
+        update_conflicts=True,
+        update_fields=_TOKEN_UPDATED_FIELDS,
+        unique_fields=["chain", "address"],
     )
     return len(rows)
