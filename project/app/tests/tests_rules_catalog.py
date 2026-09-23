@@ -1,7 +1,8 @@
-"""User-defined rules catalog: ``OutreachRule``.
+"""User-defined rules catalog: ``Rule`` and its ``ConditionNode`` tree.
 
-Pins the rules-catalog schema: the deterministic/inference kind <-> payload
-pairing, the conditions vocabulary, and the clean sweep on owner delete.
+Pins the rules-catalog schema: the deterministic/inference kind <-> predicate
+pairing, the conditions vocabulary, the node table's own constraints, and the
+clean sweep on owner delete.
 """
 
 import re
@@ -11,7 +12,10 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from project.app.models import OutreachRule
+from project.app.models import ConditionNode, Rule
+from project.app.rules import utils
+from project.app.rules.utils import _all_of, _any_of, _cond
+from project.app.tests.tests_rule_utils import plant_rule, unsaved_rule
 from project.app.tests.tests_shape_utils import shape_for
 
 
@@ -22,35 +26,25 @@ def _user(username="planner@lockedin.example"):
     return user
 
 
-def _deterministic_conditions(field="deals_closed", operator=">", threshold=20):
+def _deterministic_conditions(field="deals_closed", operator=">", comparand=20):
     """The brief's worked example: ``deals_closed > 20 -> reward_power_user``."""
-    return {
-        "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
-        "operator": "all_of",
-        "conditions": [
-            {"field": field, "operator": operator, "threshold": threshold, "source": "lead"}
-        ],
-    }
+    return _all_of(_cond(field, operator, comparand, source="lead"))
 
 
 def _gate():
     """The optional structured gate an inference rule can put before the model."""
-    return {
-        "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
-        "operator": "all_of",
-        "conditions": [{"field": "signed_up_date", "operator": "exists", "source": "lead"}],
-    }
+    return _all_of(_cond("signed_up_date", "exists", source="lead"))
 
 
-class OutreachRuleTests(TestCase):
+class RuleTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.user = _user()
 
     def _inference_rule(self, **kwargs):
         kwargs.setdefault("name", "Offer help when they ask for it")
-        kwargs.setdefault("kind", OutreachRule.KIND_INFERENCE)
-        kwargs.setdefault("conditions", {})
+        kwargs.setdefault("kind", Rule.KIND_INFERENCE)
+        kwargs.setdefault("conditions", None)
         kwargs.setdefault(
             "inference_prompt", "the hubspot notes show they need help with something"
         )
@@ -59,24 +53,24 @@ class OutreachRuleTests(TestCase):
     def _rule(self, **kwargs):
         kwargs.setdefault("owner", self.user)
         kwargs.setdefault("name", "Reward power users")
-        kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _deterministic_conditions())
-        return OutreachRule.objects.create(**kwargs)
+        return plant_rule(**kwargs)
 
     def test_the_two_example_rules_from_the_brief_round_trip(self):
         deterministic = self._rule()
         inference = self._rule(
             name="Offer help when they ask for it",
-            kind=OutreachRule.KIND_INFERENCE,
+            kind=Rule.KIND_INFERENCE,
             conditions=_gate(),
             inference_prompt="the hubspot notes show they need help with something",
         )
         deterministic.full_clean()
         inference.full_clean()
-        deterministic.refresh_from_db()
-        self.assertEqual(deterministic.conditions, _deterministic_conditions())
-        inference.refresh_from_db()
-        self.assertEqual(inference.kind, OutreachRule.KIND_INFERENCE)
+        deterministic = Rule.objects.get(pk=deterministic.pk)
+        self.assertEqual(deterministic.condition_tree(), _deterministic_conditions())
+        inference = Rule.objects.get(pk=inference.pk)
+        self.assertEqual(inference.kind, Rule.KIND_INFERENCE)
 
     def test_an_inference_rule_builds_its_prompt_naming_its_own_id(self):
         rule = self._inference_rule()
@@ -96,10 +90,10 @@ class OutreachRuleTests(TestCase):
             "line one\rline two",
         ):
             with self.subTest(predicate=predicate):
-                rule = OutreachRule(
+                rule = unsaved_rule(
                     owner=self.user,
                     name="forging",
-                    kind=OutreachRule.KIND_INFERENCE,
+                    kind=Rule.KIND_INFERENCE,
                     conditions=_gate(),
                     inference_prompt=predicate,
                 )
@@ -112,20 +106,19 @@ class OutreachRuleTests(TestCase):
             self._rule().build_inference_prompt()
 
     def test_a_deterministic_rule_needs_conditions_and_no_inference_prompt(self):
-        empty = OutreachRule(
+        empty = unsaved_rule(
             owner=self.user,
             name="no payload",
-            kind=OutreachRule.KIND_DETERMINISTIC,
-            conditions={},
+            kind=Rule.KIND_DETERMINISTIC,
         )
         with self.assertRaises(ValidationError) as ctx:
             empty.full_clean()
         self.assertIn("conditions", ctx.exception.message_dict)
 
-        both = OutreachRule(
+        both = unsaved_rule(
             owner=self.user,
             name="both payloads",
-            kind=OutreachRule.KIND_DETERMINISTIC,
+            kind=Rule.KIND_DETERMINISTIC,
             conditions=_deterministic_conditions(),
             inference_prompt="also an inference?",
         )
@@ -134,10 +127,10 @@ class OutreachRuleTests(TestCase):
         self.assertIn("inference_prompt", ctx.exception.message_dict)
 
     def test_an_inference_rule_needs_its_predicate(self):
-        blank = OutreachRule(
+        blank = unsaved_rule(
             owner=self.user,
             name="no predicate",
-            kind=OutreachRule.KIND_INFERENCE,
+            kind=Rule.KIND_INFERENCE,
             conditions=_gate(),
             inference_prompt="   ",
         )
@@ -146,35 +139,34 @@ class OutreachRuleTests(TestCase):
         self.assertIn("inference_prompt", ctx.exception.message_dict)
 
     def test_an_inference_rule_may_stand_on_its_predicate_alone(self):
-        ungated = OutreachRule(
+        ungated = unsaved_rule(
             owner=self.user,
             name="reads the notes and nothing else",
-            kind=OutreachRule.KIND_INFERENCE,
-            conditions={},
+            kind=Rule.KIND_INFERENCE,
             inference_prompt="the notes say they need help",
         )
         ungated.full_clean()
 
     def test_conditions_on_an_inference_rule_are_still_validated(self):
-        gated = OutreachRule(
+        gated = unsaved_rule(
             owner=self.user,
             name="gated on nonsense",
-            kind=OutreachRule.KIND_INFERENCE,
-            conditions={"version": 1, "operator": "all_of", "conditions": [{"lol": 1}]},
+            kind=Rule.KIND_INFERENCE,
+            conditions=_all_of({"lol": 1}),
             inference_prompt="the notes say they need help",
         )
         with self.assertRaises(ValidationError) as ctx:
             gated.full_clean()
         self.assertIn("conditions", ctx.exception.message_dict)
-        gated.conditions = _gate()
+        gated.stage_conditions(_gate())
         gated.full_clean()
 
     def test_an_owner_with_no_shape_has_no_vocabulary_to_write_conditions_against(self):
         shapeless = get_user_model().objects.create_user(username="fresh@lockedin.example")
-        rule = OutreachRule(
+        rule = unsaved_rule(
             owner=shapeless,
             name="named a column nobody declared",
-            kind=OutreachRule.KIND_DETERMINISTIC,
+            kind=Rule.KIND_DETERMINISTIC,
             conditions=_deterministic_conditions(),
         )
         with self.assertRaises(ValidationError) as ctx:
@@ -182,33 +174,24 @@ class OutreachRuleTests(TestCase):
         self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_a_rule_naming_a_column_the_shape_does_not_declare_is_refused(self):
-        rule = OutreachRule(
+        rule = unsaved_rule(
             owner=self.user,
             name="reads a column that was renamed away",
-            kind=OutreachRule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(field="favourite_colour", threshold=1),
+            kind=Rule.KIND_DETERMINISTIC,
+            conditions=_deterministic_conditions(field="favourite_colour", comparand=1),
         )
         with self.assertRaises(ValidationError) as ctx:
             rule.full_clean()
         self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_a_deterministic_rule_reading_only_the_notes_is_refused(self):
-        notes_only = OutreachRule(
+        notes_only = unsaved_rule(
             owner=self.user,
             name="CRM text alone",
-            kind=OutreachRule.KIND_DETERMINISTIC,
-            conditions={
-                "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
-                "operator": "all_of",
-                "conditions": [
-                    {
-                        "field": "hubspot_notes",
-                        "operator": "contains",
-                        "threshold": "waiting on budget",
-                        "source": "notes",
-                    }
-                ],
-            },
+            kind=Rule.KIND_DETERMINISTIC,
+            conditions=_all_of(
+                _cond("hubspot_notes", "contains", "waiting on budget", source="notes")
+            ),
         )
         with self.assertRaises(ValidationError) as ctx:
             notes_only.full_clean()
@@ -219,11 +202,11 @@ class OutreachRuleTests(TestCase):
             self._rule(name="mystery", kind="vibes")
 
     def test_an_overlong_inference_prompt_fails_validation(self):
-        rule = OutreachRule(
+        rule = unsaved_rule(
             owner=self.user,
             name="too long",
-            kind=OutreachRule.KIND_INFERENCE,
-            inference_prompt="x" * (OutreachRule.INFERENCE_PROMPT_MAX_CHARS + 1),
+            kind=Rule.KIND_INFERENCE,
+            inference_prompt="x" * (Rule.INFERENCE_PROMPT_MAX_CHARS + 1),
         )
         with self.assertRaises(ValidationError) as ctx:
             rule.full_clean()
@@ -231,11 +214,116 @@ class OutreachRuleTests(TestCase):
 
     def test_deleting_a_user_sweeps_their_rules_with_them(self):
         user = _user("leaver@lockedin.example")
-        OutreachRule.objects.create(
+        rule = plant_rule(
             owner=user,
             name="goes with its owner",
-            kind=OutreachRule.KIND_DETERMINISTIC,
+            kind=Rule.KIND_DETERMINISTIC,
             conditions=_deterministic_conditions(),
         )
         user.delete()
-        self.assertFalse(OutreachRule.objects.filter(name="goes with its owner").exists())
+        self.assertFalse(Rule.objects.filter(name="goes with its owner").exists())
+        self.assertFalse(ConditionNode.objects.filter(rule_id=rule.pk).exists())
+
+
+class ConditionNodeTests(TestCase):
+    """The tree's rows: one per node, each pointing at its parent."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = _user()
+
+    def _example_tree(self):
+        # (deals_closed > 20) OR (stage == "active_trial" AND state != "CA")
+        return _any_of(
+            _cond("deals_closed", ">", 20, source="lead"),
+            _all_of(
+                _cond("stage", "==", "active_trial", source="lead"),
+                _cond("state", "!=", "CA", source="lead"),
+            ),
+        )
+
+    def _rule(self, conditions=None):
+        return plant_rule(
+            owner=self.user,
+            name="tree",
+            kind=Rule.KIND_DETERMINISTIC,
+            conditions=conditions or self._example_tree(),
+        )
+
+    def test_a_tree_is_stored_one_row_per_node_under_its_parent(self):
+        rule = self._rule()
+        rows = list(
+            rule.conditions.values_list(
+                "parent_id", "node_type", "logical_op", "field_name", "operator", "comparand"
+            )
+        )
+        root, deals, group, stage, state = rule.conditions.values_list("id", flat=True)
+        self.assertEqual(
+            rows,
+            [
+                (None, "GROUP", "OR", None, None, None),
+                (root, "CONDITION", None, "deals_closed", ">", 20),
+                (root, "GROUP", "AND", None, None, None),
+                (group, "CONDITION", None, "stage", "==", "active_trial"),
+                (group, "CONDITION", None, "state", "!=", "CA"),
+            ],
+        )
+
+    def test_the_rows_read_back_as_the_tree_they_were_written_from(self):
+        rule = Rule.objects.prefetch_related("conditions").get(pk=self._rule().pk)
+        with self.assertNumQueries(0):
+            self.assertEqual(rule.condition_tree(), self._example_tree())
+
+    def test_a_rule_with_no_rows_has_no_tree(self):
+        rule = plant_rule(
+            owner=self.user,
+            name="ungated",
+            kind=Rule.KIND_INFERENCE,
+            inference_prompt="the notes say they need help",
+        )
+        self.assertIsNone(rule.condition_tree())
+        self.assertFalse(rule.has_conditions())
+
+    def test_a_comparand_keeps_its_type(self):
+        tree = _all_of(
+            _cond("deals_closed", ">", 2.5, source="lead"),
+            _cond("state", "in", ["ID", "TX"], source="lead"),
+            _cond("signed_up_date", "exists", source="lead"),
+        )
+        rule = Rule.objects.get(pk=self._rule(tree).pk)
+        self.assertEqual(rule.condition_tree(), tree)
+
+    def test_a_second_root_is_rejected_by_the_db(self):
+        rule = self._rule()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ConditionNode.objects.create(rule=rule, node_type="GROUP", logical_op="AND")
+
+    def test_a_node_whose_columns_do_not_fit_its_type_is_rejected_by_the_db(self):
+        rule = self._rule()
+        root = rule.conditions.get(parent=None)
+        for columns in (
+            {"node_type": "GROUP", "logical_op": "AND", "field_name": "deals_closed"},
+            {"node_type": "GROUP", "logical_op": "XOR"},
+            {"node_type": "CONDITION", "source": "lead", "field_name": "deals_closed"},
+            {
+                "node_type": "CONDITION",
+                "logical_op": "AND",
+                "source": "lead",
+                "field_name": "deals_closed",
+                "operator": ">",
+            },
+            {"node_type": "RULE", "source": "lead", "field_name": "x", "operator": ">"},
+        ):
+            with self.subTest(columns=columns):
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    ConditionNode.objects.create(rule=rule, parent=root, **columns)
+
+    def test_deleting_a_group_takes_its_children_with_it(self):
+        rule = self._rule()
+        rule.conditions.get(parent=None).delete()
+        self.assertFalse(rule.conditions.exists())
+
+    def test_the_node_vocabulary_matches_the_constraint_literals(self):
+        # Meta cannot see utils, so its literals are restated there.
+        self.assertEqual(utils.NODE_TYPES, ("GROUP", "CONDITION"))
+        self.assertEqual(utils.LOGICAL_OPS, ("AND", "OR"))

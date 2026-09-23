@@ -22,7 +22,7 @@ from project.app.actions.models import ActionJob
 from project.app.models.lead import Event, Lead
 from project.app.rules import inference, schema
 from project.app.rules import services as rules_services
-from project.app.rules.models import OutreachRule
+from project.app.rules.models import Rule
 from project.app.services import prompts
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def rules_for_lead(lead):
     An unowned lead has no rules, so its job resolves to no match.
     """
     if lead.owner_id is None:
-        return OutreachRule.objects.none()
+        return Rule.objects.none()
     return rules_services.enabled_rules_for(lead.owner_id)
 
 
@@ -187,7 +187,7 @@ def _resolve(job, today):
     matched = [
         rule
         for rule in rules
-        if rule.kind == OutreachRule.KIND_DETERMINISTIC and _holds(rule, lead, today, unevaluable)
+        if rule.kind == Rule.KIND_DETERMINISTIC and _holds(rule, lead, today, unevaluable)
     ]
 
     if matched:
@@ -203,8 +203,8 @@ def _resolve(job, today):
     candidates = [
         rule
         for rule in rules
-        if rule.kind == OutreachRule.KIND_INFERENCE
-        and (not rule.conditions or _holds(rule, lead, today, unevaluable))
+        if rule.kind == Rule.KIND_INFERENCE
+        and (not rule.has_conditions() or _holds(rule, lead, today, unevaluable))
     ]
     if not _transition(job, ActionJob.STATUS_PROCESSING, ActionJob.STATUS_INFERRING):
         return job
@@ -252,11 +252,11 @@ def _decision(job, rules, matched, unevaluable, section=None):
 
 
 def _holds(rule, lead, today, unevaluable):
-    """Whether the rule's conditions hold. A payload this engine cannot
-    evaluate never fires and is recorded on the job instead of firing or
-    passing silently."""
+    """Whether the rule's condition tree holds. A tree this engine cannot
+    evaluate -- or one not yet backfilled into rows -- never fires and is
+    recorded on the job instead of firing or passing silently."""
     try:
-        return evaluate.matches(rule.conditions, lead, today)
+        return evaluate.matches(rule.condition_tree(), lead, today)
     except evaluate.ConditionError:
         logger.warning("rule %s carries conditions this engine cannot evaluate", rule.pk)
         unevaluable.append(rule.pk)

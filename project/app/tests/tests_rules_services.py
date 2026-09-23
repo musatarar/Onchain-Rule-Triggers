@@ -1,12 +1,16 @@
 """Rules-entity business logic: owner-scoped reads and validated writes."""
 
+import io
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.test import TestCase
 
-from project.app.models import OutreachRule
+from project.app.models import ConditionNode, Rule
 from project.app.rules import services
-from project.app.rules.utils import _all_of, _cond
+from project.app.rules.utils import _all_of, _any_of, _cond
+from project.app.tests.tests_rule_utils import plant_rule
 from project.app.tests.tests_shape_utils import shape_for
 
 
@@ -20,9 +24,9 @@ class RulesServiceTestCase(TestCase):
 
     def _rule(self, name, owner=None, **kwargs):
         kwargs.setdefault("owner", owner or self.user)
-        kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _all_of(_cond("deals_closed", ">", 20)))
-        return OutreachRule.objects.create(name=name, **kwargs)
+        return plant_rule(name=name, **kwargs)
 
 
 class OwnerScopedReadTests(RulesServiceTestCase):
@@ -42,12 +46,12 @@ class OwnerScopedReadTests(RulesServiceTestCase):
 
 
 class ValidatedWriteTests(RulesServiceTestCase):
-    def test_creating_a_rule_binds_the_owner_and_validates_the_payload(self):
+    def test_creating_a_rule_binds_the_owner_and_validates_the_tree(self):
         rule = services.create_rule(
             self.user,
             {
                 "name": "Nudge them",
-                "kind": OutreachRule.KIND_DETERMINISTIC,
+                "kind": Rule.KIND_DETERMINISTIC,
                 "conditions": _all_of(_cond("deals_closed", ">", 20)),
             },
         )
@@ -58,7 +62,7 @@ class ValidatedWriteTests(RulesServiceTestCase):
                 self.user,
                 {
                     "name": "No payload",
-                    "kind": OutreachRule.KIND_DETERMINISTIC,
+                    "kind": Rule.KIND_DETERMINISTIC,
                     "conditions": {},
                 },
             )
@@ -73,4 +77,146 @@ class ValidatedWriteTests(RulesServiceTestCase):
     def test_deleting_a_rule_removes_it(self):
         rule = self._rule("Nudge them")
         services.delete_rule(rule)
-        self.assertFalse(OutreachRule.objects.filter(pk=rule.pk).exists())
+        self.assertFalse(Rule.objects.filter(pk=rule.pk).exists())
+
+
+class ConditionTreeWriteTests(RulesServiceTestCase):
+    TREE = _any_of(
+        _cond("deals_closed", ">", 20, source="lead"),
+        _all_of(
+            _cond("stage", "==", "active_trial", source="lead"),
+            _cond("state", "!=", "CA", source="lead"),
+        ),
+    )
+
+    def _stored_tree(self, rule):
+        return Rule.objects.get(pk=rule.pk).condition_tree()
+
+    def _create(self, conditions=None):
+        return services.create_rule(
+            self.user,
+            {
+                "name": "Nudge them",
+                "kind": Rule.KIND_DETERMINISTIC,
+                "conditions": conditions or self.TREE,
+            },
+        )
+
+    def test_creating_a_rule_stores_its_tree_as_rows(self):
+        rule = self._create()
+        self.assertEqual(rule.conditions.count(), 5)
+        self.assertEqual(self._stored_tree(rule), self.TREE)
+        # The instance handed back reads the rows it just wrote.
+        self.assertEqual(rule.condition_tree(), self.TREE)
+
+    def test_a_new_tree_replaces_the_stored_one_whole(self):
+        rule = self._create()
+        replacement = _all_of(_cond("deals_closed", ">", 3, source="lead"))
+        services.update_rule(rule, {"conditions": replacement})
+        self.assertEqual(self._stored_tree(rule), replacement)
+        self.assertEqual(ConditionNode.objects.filter(rule=rule).count(), 2)
+
+    def test_an_update_without_a_tree_keeps_the_stored_one(self):
+        rule = self._create()
+        services.update_rule(rule, {"name": "Renamed"})
+        self.assertEqual(self._stored_tree(rule), self.TREE)
+
+    def test_a_refused_tree_leaves_the_stored_one_as_it_was(self):
+        rule = self._create()
+        with self.assertRaises(ValidationError) as ctx:
+            services.update_rule(
+                rule, {"conditions": _all_of(_cond("favourite_colour", "==", "blue"))}
+            )
+        self.assertIn("conditions", ctx.exception.message_dict)
+        self.assertEqual(self._stored_tree(rule), self.TREE)
+
+    def test_an_inference_rule_can_drop_its_gate(self):
+        rule = services.create_rule(
+            self.user,
+            {
+                "name": "Offer help",
+                "kind": Rule.KIND_INFERENCE,
+                "inference_prompt": "the notes say they need help",
+                "conditions": self.TREE,
+            },
+        )
+        services.update_rule(rule, {"conditions": None})
+        self.assertFalse(rule.conditions.exists())
+        self.assertIsNone(self._stored_tree(rule))
+
+    def test_a_shape_write_reads_the_stored_trees(self):
+        rule = self._create()
+        renamed = shape_for(get_user_model().objects.create_user(username="x@lockedin.example"))
+        renamed.lead_columns = [{"name": "closed_deals", "type": "number", "lead_authored": False}]
+        refused = services.rules_refused_by(self.user, renamed)
+        self.assertEqual([refused_rule for refused_rule, _ in refused], [rule])
+
+
+class BackfillTests(RulesServiceTestCase):
+    """``backfill_condition_nodes`` moves legacy JSON payloads into rows."""
+
+    LEGACY = {
+        "version": 1,
+        "operator": "any_of",
+        "conditions": [
+            {"field": "deals_closed", "operator": ">", "threshold": 20, "source": "lead"},
+            {
+                "operator": "all_of",
+                "conditions": [
+                    {"field": "stage", "operator": "==", "threshold": "trial", "source": "lead"},
+                    {"field": "signed_up_date", "operator": "exists", "source": "lead"},
+                ],
+            },
+        ],
+    }
+
+    def _legacy_rule(self, payload=None, **fields):
+        fields.setdefault("owner", self.user)
+        fields.setdefault("name", "from before")
+        fields.setdefault("kind", Rule.KIND_DETERMINISTIC)
+        return Rule.objects.create(legacy_conditions=payload or self.LEGACY, **fields)
+
+    def _backfill(self):
+        out = io.StringIO()
+        call_command("backfill_condition_nodes", stdout=out)
+        return out.getvalue()
+
+    def test_a_legacy_payload_becomes_rows_and_is_cleared(self):
+        rule = self._legacy_rule()
+        self.assertIn("Moved the conditions of 1 rule(s)", self._backfill())
+        rule = Rule.objects.get(pk=rule.pk)
+        self.assertEqual(rule.legacy_conditions, {})
+        self.assertEqual(
+            rule.condition_tree(),
+            _any_of(
+                _cond("deals_closed", ">", 20, source="lead"),
+                _all_of(
+                    _cond("stage", "==", "trial", source="lead"),
+                    _cond("signed_up_date", "exists", source="lead"),
+                ),
+            ),
+        )
+
+    def test_a_rerun_moves_nothing_twice(self):
+        self._legacy_rule()
+        self._backfill()
+        self.assertIn("Moved the conditions of 0 rule(s)", self._backfill())
+        self.assertEqual(ConditionNode.objects.count(), 5)
+
+    def test_a_payload_the_shape_no_longer_covers_keeps_its_payload_and_is_listed(self):
+        stale = {
+            "version": 1,
+            "operator": "all_of",
+            "conditions": [{"field": "favourite_colour", "operator": "exists", "source": "lead"}],
+        }
+        rule = self._legacy_rule(stale, name="stale")
+        out = self._backfill()
+        self.assertIn(f"Rule {rule.pk} ('stale') kept its payload", out)
+        rule = Rule.objects.get(pk=rule.pk)
+        self.assertEqual(rule.legacy_conditions, stale)
+        self.assertFalse(rule.conditions.exists())
+
+    def test_a_rule_awaiting_backfill_still_counts_as_gated(self):
+        rule = self._legacy_rule(kind=Rule.KIND_INFERENCE, inference_prompt="they need help")
+        self.assertIsNone(rule.condition_tree())
+        self.assertTrue(rule.has_conditions())

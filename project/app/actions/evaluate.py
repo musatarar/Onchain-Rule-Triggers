@@ -1,4 +1,4 @@
-"""The deterministic pass: one stored ``conditions`` payload against one lead.
+"""The deterministic pass: one rule's condition tree against one lead.
 
 :mod:`project.app.rules.utils` owns the vocabulary, reading it off the lead
 owner's declared shape. A field it names that nothing here resolves is refused
@@ -13,53 +13,56 @@ from project.app.services import prompts, sanitize
 
 
 class ConditionError(Exception):
-    """A payload this engine cannot evaluate -- it names something unknown."""
+    """A tree this engine cannot evaluate -- it names something unknown."""
 
 
-def matches(payload, lead, today):
-    """Whether ``lead`` satisfies a validated ``conditions`` payload.
+def matches(tree, lead, today):
+    """Whether ``lead`` satisfies a validated condition tree
+    (:func:`project.app.rules.utils.tree_from_nodes`).
 
-    Raises :class:`ConditionError` on a payload the lead's shape no longer
+    Raises :class:`ConditionError` on a tree the lead's shape no longer
     covers; the caller records that rather than letting it fire or silently
     pass.
     """
-    if not payload:
-        raise ConditionError("An empty conditions payload has no verdict.")
+    if not tree:
+        raise ConditionError("An empty condition tree has no verdict.")
     shape = getattr(lead, "shape", None)
     if shape is None:
         raise ConditionError("This lead's owner declares no shape, so nothing resolves.")
-    # Derived once for the whole payload: every leaf asks the same shape.
+    # Derived once for the whole tree: every leaf asks the same shape.
     fields = utils.fields_by_source(shape)
-    return _group(payload.get("operator"), payload.get("conditions"), lead, shape, fields, today)
+    return _node(tree, lead, shape, fields, today)
 
 
-def _group(operator, children, lead, shape, fields, today):
+def _node(node, lead, shape, fields, today):
+    node_type = node.get("node_type")
+    if node_type == utils.NODE_CONDITION:
+        return _leaf(node, lead, shape, fields, today)
+    if node_type != utils.NODE_GROUP:
+        raise ConditionError(f"Unknown node type {node_type!r}.")
+    logical_op = node.get("logical_op")
+    children = node.get("children")
     if not children:
-        raise ConditionError(f"A {operator!r} group with no conditions has no verdict.")
-    if operator not in utils.GROUP_OPERATORS:
-        raise ConditionError(f"Unknown group operator {operator!r}.")
-    check = all if operator == "all_of" else any
-    return check(
-        _group(child.get("operator"), child.get("conditions"), lead, shape, fields, today)
-        if "field" not in child
-        else _leaf(child, lead, shape, fields, today)
-        for child in children
-    )
+        raise ConditionError(f"A {logical_op!r} group with no children has no verdict.")
+    if logical_op not in utils.LOGICAL_OPS:
+        raise ConditionError(f"Unknown logical operator {logical_op!r}.")
+    check = all if logical_op == utils.AND else any
+    return check(_node(child, lead, shape, fields, today) for child in children)
 
 
 def _leaf(leaf, lead, shape, fields, today):
     source = leaf.get("source")
-    field = leaf.get("field")
+    field = leaf.get("field_name")
     field_type = fields.get(source, {}).get(field)
     if field_type is None:
         raise ConditionError(f"Unknown field {field!r} on source {source!r}.")
-    threshold = leaf.get("threshold")
+    comparand = leaf.get("comparand")
     if source == utils.SOURCE_NOTES and field_type == utils.TEXT:
-        threshold = _lowered(threshold)
+        comparand = _lowered(comparand)
     return _compare(
         _value(source, field, lead, shape, today),
         leaf.get("operator"),
-        threshold,
+        comparand,
         field_type,
     )
 
@@ -86,13 +89,13 @@ def _value(source, field, lead, shape, today):
     raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")
 
 
-def _lowered(threshold):
-    """A notes-text threshold in the case its stored value is folded to."""
-    if isinstance(threshold, str):
-        return threshold.lower()
-    if isinstance(threshold, list):
-        return [item.lower() if isinstance(item, str) else item for item in threshold]
-    return threshold
+def _lowered(comparand):
+    """A notes-text comparand in the case its stored value is folded to."""
+    if isinstance(comparand, str):
+        return comparand.lower()
+    if isinstance(comparand, list):
+        return [item.lower() if isinstance(item, str) else item for item in comparand]
+    return comparand
 
 
 def _blank(value):
@@ -100,38 +103,38 @@ def _blank(value):
     return value is None or value == ""
 
 
-def _compare(value, operator, threshold, field_type):
+def _compare(value, operator, comparand, field_type):
     if operator == "exists":
         return not _blank(value)
     if operator == "absent":
         return _blank(value)
     if operator == "contains":
-        return _contains(value, threshold)
+        return _contains(value, comparand)
     if _blank(value):
         return False
     if operator == "in":
-        return value in [_coerce(item, field_type) for item in threshold]
-    threshold = _coerce(threshold, field_type)
+        return value in [_coerce(item, field_type) for item in comparand]
+    comparand = _coerce(comparand, field_type)
     if operator == "==":
-        return value == threshold
+        return value == comparand
     if operator == "!=":
-        return value != threshold
+        return value != comparand
     if operator == ">":
-        return value > threshold
+        return value > comparand
     if operator == ">=":
-        return value >= threshold
+        return value >= comparand
     if operator == "<":
-        return value < threshold
+        return value < comparand
     if operator == "<=":
-        return value <= threshold
+        return value <= comparand
     raise ConditionError(f"Unknown operator {operator!r}.")
 
 
-def _contains(value, threshold):
-    return threshold.strip().lower() in str(value or "").lower()
+def _contains(value, comparand):
+    return comparand.strip().lower() in str(value or "").lower()
 
 
-def _coerce(threshold, field_type):
-    if field_type == utils.DATE and isinstance(threshold, str):
-        return datetime.date.fromisoformat(threshold)
-    return threshold
+def _coerce(comparand, field_type):
+    if field_type == utils.DATE and isinstance(comparand, str):
+        return datetime.date.fromisoformat(comparand)
+    return comparand

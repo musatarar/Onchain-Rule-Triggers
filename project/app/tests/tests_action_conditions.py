@@ -1,4 +1,4 @@
-"""The deterministic pass: a stored conditions payload against one lead. Pure
+"""The deterministic pass: a rule's condition tree against one lead. Pure
 Python -- leads are SimpleNamespace stubs carrying the demo shape."""
 
 import datetime
@@ -7,15 +7,15 @@ from types import SimpleNamespace
 
 from project.app.actions import evaluate
 from project.app.rules import utils
-from project.app.rules.utils import _all_of
+from project.app.rules.utils import _all_of, _any_of
 from project.app.tests.tests_shape_utils import shape
 
 TODAY = datetime.date(2026, 6, 12)
 SHAPE = shape()
 
 
-def _cond(field, operator, threshold=None, source=None):
-    return utils._cond(field, operator, threshold, source=source, shape=SHAPE)
+def _cond(field, operator, comparand=None, source=None):
+    return utils._cond(field, operator, comparand, source=source, shape=SHAPE)
 
 
 def _event(type_, ts, **data):
@@ -48,7 +48,7 @@ class LeadSourceTests(unittest.TestCase):
         self.assertTrue(evaluate.matches(payload, _lead(deals_closed=3), TODAY))
         self.assertFalse(evaluate.matches(payload, _lead(deals_closed=2), TODAY))
 
-    def test_a_date_threshold_is_compared_as_a_date_not_a_string(self):
+    def test_a_date_comparand_is_compared_as_a_date_not_a_string(self):
         payload = _all_of(_cond("signed_up_date", "<", "2026-01-01"))
         self.assertTrue(evaluate.matches(payload, _lead(signed_up_date="2025-12-31"), TODAY))
         self.assertFalse(evaluate.matches(payload, _lead(signed_up_date="2026-01-02"), TODAY))
@@ -134,8 +134,8 @@ def _authored_lead(**data):
     return SimpleNamespace(id="lead_y", data=dict(data), shape=AUTHORED_SHAPE, events=[])
 
 
-def _authored_cond(field, operator, threshold=None):
-    return utils._cond(field, operator, threshold, source="notes")
+def _authored_cond(field, operator, comparand=None):
+    return utils._cond(field, operator, comparand, source="notes")
 
 
 class NotesSourceTests(unittest.TestCase):
@@ -214,48 +214,39 @@ class GroupTests(unittest.TestCase):
         self.assertFalse(evaluate.matches(_all_of(hit, miss), _lead(), TODAY))
         self.assertTrue(
             evaluate.matches(
-                {"version": utils.SCHEMA_VERSION, "operator": "any_of", "conditions": [hit, miss]},
+                _any_of(hit, miss),
                 _lead(),
                 TODAY,
             )
         )
 
     def test_a_nested_group_is_evaluated_as_its_own_branch(self):
-        payload = {
-            "version": utils.SCHEMA_VERSION,
-            "operator": "all_of",
-            "conditions": [
-                _cond("deals_closed", ">", 2),
-                {
-                    "operator": "any_of",
-                    "conditions": [
-                        _cond("quotes_submitted", ">", 100),
-                        _cond("quotes_created", ">", 1),
-                    ],
-                },
-            ],
-        }
+        payload = _all_of(
+            _cond("deals_closed", ">", 2),
+            _any_of(_cond("quotes_submitted", ">", 100), _cond("quotes_created", ">", 1)),
+        )
         self.assertTrue(evaluate.matches(payload, _lead(), TODAY))
 
     def test_an_unknown_field_is_refused_rather_than_silently_missing(self):
-        payload = _all_of(
-            {"field": "favourite_colour", "operator": "==", "source": "lead", "threshold": "red"}
-        )
+        payload = _all_of(_cond("favourite_colour", "==", "red", source="lead"))
         with self.assertRaises(evaluate.ConditionError):
             evaluate.matches(payload, _lead(), TODAY)
 
     def test_an_operator_the_engine_does_not_implement_is_refused(self):
-        payload = _all_of(
-            {"field": "deals_closed", "operator": "~=", "source": "lead", "threshold": 2}
-        )
+        payload = _all_of(_cond("deals_closed", "~=", 2))
         with self.assertRaises(evaluate.ConditionError):
             evaluate.matches(payload, _lead(), TODAY)
 
-    def test_an_unknown_group_operator_is_refused(self):
+    def test_an_unknown_node_type_is_refused(self):
+        payload = _all_of(dict(_cond("deals_closed", ">", 2), node_type="RULE"))
+        with self.assertRaises(evaluate.ConditionError):
+            evaluate.matches(payload, _lead(), TODAY)
+
+    def test_an_unknown_logical_operator_is_refused(self):
         payload = {
-            "version": utils.SCHEMA_VERSION,
-            "operator": "none_of",
-            "conditions": [_cond("deals_closed", ">", 2)],
+            "node_type": utils.NODE_GROUP,
+            "logical_op": "XOR",
+            "children": [_cond("deals_closed", ">", 2)],
         }
         with self.assertRaises(evaluate.ConditionError):
             evaluate.matches(payload, _lead(), TODAY)
@@ -276,7 +267,7 @@ class GroupTests(unittest.TestCase):
             evaluate.matches({}, _lead(), TODAY)
 
     def test_an_empty_group_has_no_verdict_rather_than_firing_on_everything(self):
-        payload = {"version": utils.SCHEMA_VERSION, "operator": "all_of", "conditions": []}
+        payload = _all_of()
         with self.assertRaises(evaluate.ConditionError):
             evaluate.matches(payload, _lead(), TODAY)
 

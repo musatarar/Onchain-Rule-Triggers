@@ -13,17 +13,18 @@ from django.utils import timezone
 
 from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
-from project.app.models import Event, Lead, OutreachRule
+from project.app.models import Event, Lead, Rule
 from project.app.rules import inference, schema, utils
 from project.app.rules import utils as rules_utils
 from project.app.rules.utils import _all_of
+from project.app.tests.tests_rule_utils import plant_conditions, plant_rule
 from project.app.tests.tests_shape_utils import shape, shape_for
 
 SHAPE = shape()
 
 
-def _cond(field, operator, threshold=None, source=None):
-    return rules_utils._cond(field, operator, threshold, source=source, shape=SHAPE)
+def _cond(field, operator, comparand=None, source=None):
+    return rules_utils._cond(field, operator, comparand, source=source, shape=SHAPE)
 
 
 TODAY = datetime.date(2026, 6, 12)
@@ -75,9 +76,9 @@ class EngineTestCase(TestCase):
 
     def _rule(self, name, **kwargs):
         kwargs.setdefault("owner", self.owner)
-        kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _all_of(_cond("deals_closed", ">", 2)))
-        return OutreachRule.objects.create(name=name, **kwargs)
+        return plant_rule(name=name, **kwargs)
 
     def _run(self, job):
         self.assertTrue(services.claim(job))
@@ -317,12 +318,7 @@ class DeterministicPassTests(EngineTestCase):
             "Says they have seats to fill",
             conditions=_all_of(
                 _cond("deals_closed", ">", 2),
-                {
-                    "field": "self_reported_seats",
-                    "operator": ">",
-                    "source": "notes",
-                    "threshold": 5,
-                },
+                _cond("self_reported_seats", ">", 5, source="notes"),
             ),
         )
         job = services.enqueue_lead(self._lead(self_reported_seats=7))
@@ -338,20 +334,7 @@ class DeterministicPassTests(EngineTestCase):
     def test_a_rule_the_engine_cannot_evaluate_is_recorded_instead_of_firing(self):
         rule = self._rule("stale vocabulary")
         # Written before the field it names left the vocabulary.
-        OutreachRule.objects.filter(pk=rule.pk).update(
-            conditions={
-                "version": utils.SCHEMA_VERSION,
-                "operator": "all_of",
-                "conditions": [
-                    {
-                        "field": "favourite_colour",
-                        "operator": "==",
-                        "source": "lead",
-                        "threshold": "red",
-                    }
-                ],
-            }
-        )
+        plant_conditions(rule, _all_of(_cond("favourite_colour", "==", "red", source="lead")))
         job = services.enqueue_lead(self._lead())
 
         self._run(job)
@@ -406,8 +389,8 @@ class InferencePassTests(EngineTestCase):
     def _inference_rule(self, name, **kwargs):
         return self._rule(
             name,
-            kind=OutreachRule.KIND_INFERENCE,
-            conditions=kwargs.pop("conditions", {}),
+            kind=Rule.KIND_INFERENCE,
+            conditions=kwargs.pop("conditions", None),
             inference_prompt=kwargs.pop("inference_prompt", "the notes say they need help"),
             **kwargs,
         )
@@ -452,19 +435,8 @@ class InferencePassTests(EngineTestCase):
 
     def test_both_passes_unevaluable_rules_land_in_one_list(self):
         deterministic = self._rule("stale vocabulary")
-        OutreachRule.objects.filter(pk=deterministic.pk).update(
-            conditions={
-                "version": utils.SCHEMA_VERSION,
-                "operator": "all_of",
-                "conditions": [
-                    {
-                        "field": "favourite_colour",
-                        "operator": "==",
-                        "source": "lead",
-                        "threshold": "red",
-                    }
-                ],
-            }
+        plant_conditions(
+            deterministic, _all_of(_cond("favourite_colour", "==", "red", source="lead"))
         )
         inferred = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())
@@ -495,6 +467,22 @@ class InferencePassTests(EngineTestCase):
         self.assertEqual(list(candidates), [])
         job.refresh_from_db()
         self.assertEqual(job.decision["unevaluable_rule_ids"], [])
+
+    def test_an_inference_rule_awaiting_backfill_is_not_asked_ungated(self):
+        # Its gate is still the legacy payload, which the engine does not read.
+        rule = self._inference_rule("gated before the move")
+        Rule.objects.filter(pk=rule.pk).update(
+            legacy_conditions={"version": 1, "operator": "all_of", "conditions": []}
+        )
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", return_value=_section()) as infer:
+            self._run(job)
+
+        candidates, _lead, _today = infer.call_args.args
+        self.assertEqual(list(candidates), [])
+        job.refresh_from_db()
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
 
     def test_a_match_from_the_pass_finishes_the_job_as_matched_inferred(self):
         rule = self._inference_rule("they need help")
@@ -530,8 +518,8 @@ class DryRunTests(EngineTestCase):
     def _inference_rule(self, name="they need help"):
         return self._rule(
             name,
-            kind=OutreachRule.KIND_INFERENCE,
-            conditions={},
+            kind=Rule.KIND_INFERENCE,
+            conditions=None,
             inference_prompt="the notes say they need help",
         )
 

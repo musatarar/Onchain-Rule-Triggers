@@ -1,5 +1,5 @@
-"""The ``conditions`` payload contract: schema, vocabulary, and the rule that a
-rule may never fire on lead-controlled text alone.
+"""The condition tree contract: schema, vocabulary, and the rule that a rule
+may never fire on lead-controlled text alone.
 
 Pure — no database. What is stored here is what the evaluator must resolve, so
 anything this accepts is a promise and anything it rejects never reaches a row.
@@ -15,16 +15,16 @@ from project.app.tests.tests_shape_utils import shape
 SHAPE = shape()
 
 
-def _cond(field, operator, threshold=None, source=None):
-    return utils._cond(field, operator, threshold, source=source, shape=SHAPE)
+def _cond(field, operator, comparand=None, source=None):
+    return utils._cond(field, operator, comparand, source=source, shape=SHAPE)
 
 
 def _validate(payload, against=SHAPE):
     utils.validate_conditions(payload, against)
 
 
-def _payload(*conditions, operator="all_of", version=utils.SCHEMA_VERSION):
-    return {"version": version, "operator": operator, "conditions": list(conditions)}
+def _payload(*children, logical_op=utils.AND):
+    return {"node_type": utils.NODE_GROUP, "logical_op": logical_op, "children": list(children)}
 
 
 LEAD = _cond("deals_closed", ">", 20)
@@ -53,7 +53,16 @@ class ValidPayloadTests(SimpleTestCase):
         )
 
     def test_one_level_of_grouping_is_allowed(self):
-        _validate(_payload(LEAD, {"operator": "any_of", "conditions": [NOTES]}))
+        _validate(_payload(LEAD, utils._any_of(NOTES)))
+
+    def test_the_ops_read_as_in_the_example_tree(self):
+        # (deals_closed > 20) OR (stage == "active_trial" AND state != "CA")
+        _validate(
+            utils._any_of(
+                LEAD,
+                utils._all_of(_cond("stage", "==", "active_trial"), _cond("state", "!=", "CA")),
+            )
+        )
 
 
 class CorroboratorTests(SimpleTestCase):
@@ -77,14 +86,12 @@ class CorroboratorTests(SimpleTestCase):
     def test_an_any_of_branch_that_notes_alone_could_satisfy_is_refused(self):
         # `any_of` means the notes branch fires the rule by itself, so the
         # sibling lead condition corroborates nothing.
-        self._refused(_payload(NOTES, LEAD, operator="any_of"))
+        self._refused(_payload(NOTES, LEAD, logical_op=utils.OR))
 
     def test_an_any_of_of_groups_needs_a_corroborator_in_every_branch(self):
-        corroborated = {"operator": "all_of", "conditions": [NOTES, LEAD]}
-        self._refused(
-            _payload(corroborated, {"operator": "all_of", "conditions": [NOTES]}, operator="any_of")
-        )
-        _validate(_payload(corroborated, corroborated, operator="any_of"))
+        corroborated = utils._all_of(NOTES, LEAD)
+        self._refused(_payload(corroborated, utils._all_of(NOTES), logical_op=utils.OR))
+        _validate(_payload(corroborated, corroborated, logical_op=utils.OR))
 
     def test_hubspot_notes_cannot_be_read_as_a_lead_field(self):
         # Otherwise a notes-only payload would launder through a trusted source.
@@ -97,30 +104,30 @@ class SchemaRejectionTests(SimpleTestCase):
         with self.assertRaises(ValidationError):
             _validate(payload)
 
-    def test_payloads_that_are_not_a_versioned_object_are_refused(self):
-        for payload in ("yes", [1, 2, 3], 42, None, {}, {"lol": 1}):
+    def test_trees_that_are_not_a_group_object_are_refused(self):
+        for payload in ("yes", [1, 2, 3], 42, None, {}, {"lol": 1}, LEAD):
             with self.subTest(payload=payload):
                 self._refused(payload)
 
-    def test_a_future_schema_version_is_refused(self):
-        self._refused(_payload(LEAD, version=utils.SCHEMA_VERSION + 1))
+    def test_an_unknown_logical_operator_is_refused(self):
+        self._refused(_payload(LEAD, logical_op="XOR"))
+        self._refused(_payload(LEAD, logical_op="all_of"))
 
-    def test_an_unknown_group_operator_is_refused(self):
-        self._refused(_payload(LEAD, operator="xor"))
+    def test_an_unknown_node_type_is_refused(self):
+        self._refused(_payload(dict(LEAD, node_type="RULE")))
+        self._refused(_payload({k: v for k, v in LEAD.items() if k != "node_type"}))
+
+    def test_an_unknown_key_on_a_group_is_refused(self):
+        self._refused(dict(_payload(LEAD), version=1))
+
+    def test_a_field_name_longer_than_its_column_is_refused(self):
+        self._refused(_payload(_cond("x" * (utils.FIELD_NAME_MAX_CHARS + 1), "==", "a")))
 
     def test_an_empty_condition_list_is_refused(self):
         self._refused(_payload())
 
     def test_groups_nest_one_level_only(self):
-        self._refused(
-            _payload(
-                LEAD,
-                {
-                    "operator": "any_of",
-                    "conditions": [{"operator": "all_of", "conditions": [LEAD]}],
-                },
-            )
-        )
+        self._refused(_payload(LEAD, utils._any_of(utils._all_of(LEAD))))
 
     def test_an_unknown_field_or_source_is_refused(self):
         self._refused(_payload(_cond("favourite_colour", "==", "blue")))
@@ -135,24 +142,15 @@ class SchemaRejectionTests(SimpleTestCase):
         self._refused(_payload(_cond("deals_closed", "contains", "20")))
         self._refused(_payload(_cond("signed_up_date", "contains", "2026")))
 
-    def test_a_threshold_of_the_wrong_type_is_refused(self):
+    def test_a_comparand_of_the_wrong_type_is_refused(self):
         self._refused(_payload(_cond("deals_closed", ">", "twenty")))
         self._refused(_payload(_cond("deals_closed", ">", True)))
         self._refused(_payload(_cond("signed_up_date", ">", "last tuesday")))
         self._refused(_payload(_cond("days_since_last_login_date", ">", "21", source="derived")))
 
-    def test_a_missing_or_surplus_threshold_is_refused(self):
-        self._refused(_payload({"field": "deals_closed", "operator": ">", "source": "lead"}))
-        self._refused(
-            _payload(
-                {
-                    "field": "signed_up_date",
-                    "operator": "exists",
-                    "source": "lead",
-                    "threshold": "2026-01-01",
-                }
-            )
-        )
+    def test_a_missing_or_surplus_comparand_is_refused(self):
+        self._refused(_payload(_cond("deals_closed", ">")))
+        self._refused(_payload(dict(_cond("signed_up_date", "exists"), comparand="2026-01-01")))
 
     def test_a_phrase_too_short_to_mean_anything_is_refused(self):
         self._refused(_payload(_cond("hubspot_notes", "contains", "up", source="notes"), LEAD))
@@ -242,12 +240,7 @@ class VocabularyTests(SimpleTestCase):
         _validate(
             _payload(
                 _cond("deals_closed", ">", 1),
-                {
-                    "field": "self_reported_seats",
-                    "operator": ">",
-                    "source": utils.SOURCE_NOTES,
-                    "threshold": 5,
-                },
+                utils._cond("self_reported_seats", ">", 5, source=utils.SOURCE_NOTES),
             ),
             typed,
         )
