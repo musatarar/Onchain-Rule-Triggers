@@ -6,6 +6,7 @@ from project.app.evm.function_signatures import (
     FunctionInput,
     FunctionSignature,
     FunctionSignatureUpdateSchema,
+    InputCreateSchema,
     parse_signature,
 )
 from project.app.evm.tokens import Token, TokenUpdateSchema
@@ -43,27 +44,29 @@ def signatures_for_texts(texts):
     return {text: row for text, row in by_text.items() if text in texts}
 
 
-def _replace_inputs(signatures_by_id):
-    """Store each signature id's inputs, in order, in place of the inputs it had."""
-    FunctionInput.objects.filter(function_signature_id__in=list(signatures_by_id)).delete()
+def _replace_inputs(inputs_by_id):
+    """Store each signature id's ``InputCreateSchema`` inputs, in order, in place of its old ones."""
+    FunctionInput.objects.filter(function_signature_id__in=list(inputs_by_id)).delete()
     FunctionInput.objects.bulk_create(
-        FunctionInput(function_signature_id=pk, index=index, type=input_type, name=name)
-        for pk, signature in signatures_by_id.items()
-        for index, (input_type, name) in enumerate(
-            zip(signature.inputs, signature.input_names or [None] * len(signature.inputs))
-        )
+        FunctionInput(function_signature_id=pk, index=index, type=given.type, name=given.name)
+        for pk, inputs in inputs_by_id.items()
+        for index, given in enumerate(inputs)
     )
 
 
-def _inputs_changed(row, signature):
-    """Whether ``signature`` gives ``row`` other input types, or names them otherwise.
+def _inputs_to_store(row, signature):
+    """The inputs to store in place of ``row``'s, or None when its own still stand.
 
-    Names it does not give are no change, so a name recorded on a stored input
-    outlives a save that gives only the same types.
+    Other types replace them outright. The same types keep each recorded name
+    ``signature`` leaves unnamed, so a save that names no inputs changes nothing.
     """
-    if row.input_types() != signature.inputs:
-        return True
-    return signature.input_names is not None and row.input_names() != signature.input_names
+    if row.input_types() != [given.type for given in signature.inputs]:
+        return signature.inputs
+    merged = [
+        InputCreateSchema(type=given.type, name=given.name if given.name is not None else stored)
+        for given, stored in zip(signature.inputs, row.input_names())
+    ]
+    return None if [given.name for given in merged] == row.input_names() else merged
 
 
 def save_function_signature(signature):
@@ -81,7 +84,7 @@ def save_function_signatures(signatures):
     A new id is created from its signature; a stored one is updated with its
     ``FunctionSignatureUpdateSchema`` fields. Inputs are replaced only where
     their types or given names changed, so a name recorded on a stored input
-    outlives a save that gives the same types and no names. When two
+    outlives a save that gives the same types and leaves it unnamed. When two
     signatures name one id, the first one given is the one saved.
     """
     by_id = {}
@@ -93,15 +96,14 @@ def save_function_signatures(signatures):
     for pk, signature in by_id.items():
         row = stored.get(pk)
         if row is None:
-            created.append(
-                FunctionSignature(**signature.model_dump(exclude={"inputs", "input_names"}))
-            )
-            new_inputs[pk] = signature
+            created.append(FunctionSignature(**signature.model_dump(exclude={"inputs"})))
+            new_inputs[pk] = signature.inputs
             continue
         _update(row, FunctionSignatureUpdateSchema, signature)
         updated.append(row)
-        if _inputs_changed(row, signature):
-            new_inputs[pk] = signature
+        inputs = _inputs_to_store(row, signature)
+        if inputs is not None:
+            new_inputs[pk] = inputs
     with transaction.atomic():
         FunctionSignature.objects.bulk_create(created)
         FunctionSignature.objects.bulk_update(

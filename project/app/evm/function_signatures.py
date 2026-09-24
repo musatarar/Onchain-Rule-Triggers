@@ -3,7 +3,7 @@
 import re
 
 from django.db import models
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 # "transferFrom(address,address,uint256)": the name, then everything it takes.
 _SIGNATURE_RE = re.compile(r"^([^(]*)\((.*)\)$", re.DOTALL)
@@ -53,26 +53,21 @@ def parse_signature(text):
     return Signature(name=name.strip(), inputs=_inputs(arguments))
 
 
-class FunctionSignatureCreateSchema(BaseModel):
-    """A catalog entry that is not stored yet, its ``inputs`` the types it takes in order.
+class InputCreateSchema(BaseModel):
+    """One parameter of a signature that is not stored yet: its type, and its name if known."""
 
-    ``input_names`` names those inputs position by position; None when the
-    source gave only the types, as a text signature does.
-    """
+    type: str  # "address", "uint256"
+    # "recipient"; None when the source gave only the type, as a text signature does.
+    name: str | None = None
+
+
+class FunctionSignatureCreateSchema(BaseModel):
+    """A catalog entry that is not stored yet, its ``inputs`` the parameters it takes in order."""
 
     id: int
     hex_signature: str
     name: str
-    inputs: list[str]
-    input_names: list[str] | None = None
-
-    @model_validator(mode="after")
-    def _one_name_per_input(self):
-        if self.input_names is not None and len(self.input_names) != len(self.inputs):
-            raise ValueError(
-                f"{len(self.input_names)} input name(s) given for {len(self.inputs)} input(s)."
-            )
-        return self
+    inputs: list[InputCreateSchema]
 
 
 class FunctionSignatureUpdateSchema(BaseModel):

@@ -13,7 +13,11 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from project.app.evm import services
-from project.app.evm.function_signatures import FunctionSignatureCreateSchema, parse_signature
+from project.app.evm.function_signatures import (
+    FunctionSignatureCreateSchema,
+    InputCreateSchema,
+    parse_signature,
+)
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "function_signatures.json"
 
@@ -22,12 +26,22 @@ def signatures_from_entries(entries):
     """The signatures ``entries`` list, in file order, each as its text parses and names."""
     for entry in entries:
         parsed = parse_signature(entry["text_signature"])
+        names = entry.get("input_names")
+        if names is None:
+            names = [None] * len(parsed.inputs)
+        if len(names) != len(parsed.inputs):
+            raise CommandError(
+                f"Entry {entry['id']} names {len(names)} input(s) "
+                f"of the {len(parsed.inputs)} in {entry['text_signature']}."
+            )
         yield FunctionSignatureCreateSchema(
             id=entry["id"],
             hex_signature=entry["hex_signature"],
             name=parsed.name,
-            inputs=parsed.inputs,
-            input_names=entry.get("input_names"),
+            inputs=[
+                InputCreateSchema(type=input_type, name=name)
+                for input_type, name in zip(parsed.inputs, names)
+            ],
         )
 
 
