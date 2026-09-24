@@ -11,7 +11,11 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
 from project.app.defi import services
-from project.app.defi.function_signatures import FunctionSignatureCreateSchema, parse_signature
+from project.app.defi.function_signatures import (
+    FunctionSignatureCreateSchema,
+    InputsNotFetched,
+    parse_signature,
+)
 from project.app.models import FunctionInput, FunctionSignature
 
 
@@ -148,20 +152,38 @@ class FunctionInputTests(TestCase):
     def test_a_signature_is_decoded_once_every_input_has_a_name(self):
         signature("transfer", ["address", "uint256"])
         FunctionInput.objects.filter(index=0).update(name="to")
-        self.assertFalse(FunctionSignature.objects.get().is_decoded)
+        self.assertFalse(FunctionSignature.objects.with_inputs().get().is_decoded)
 
         FunctionInput.objects.filter(index=1).update(name="value")
 
-        self.assertTrue(FunctionSignature.objects.get().is_decoded)
+        self.assertTrue(FunctionSignature.objects.with_inputs().get().is_decoded)
 
     def test_a_blank_name_leaves_a_signature_undecoded(self):
         signature("transfer", ["address"])
         FunctionInput.objects.update(name="")
 
-        self.assertFalse(FunctionSignature.objects.get().is_decoded)
+        self.assertFalse(FunctionSignature.objects.with_inputs().get().is_decoded)
 
     def test_a_signature_taking_nothing_is_decoded(self):
         self.assertTrue(signature("totalSupply").is_decoded)
+
+    def test_reading_inputs_not_fetched_with_the_signature_fails_loudly(self):
+        signature("transfer", ["address"])
+        row = FunctionSignature.objects.get()
+
+        with self.assertNumQueries(0):
+            with self.assertRaises(InputsNotFetched):
+                row.input_types()
+            with self.assertRaises(InputsNotFetched):
+                row.is_decoded
+            with self.assertRaises(InputsNotFetched):
+                row.pretty_signature()
+
+    def test_a_signature_without_its_inputs_still_prints(self):
+        signature("transfer", ["address"], "0xa9059cbb")
+
+        with self.assertNumQueries(1):
+            self.assertEqual(str(FunctionSignature.objects.get()), "0xa9059cbb transfer(...)")
 
     def test_a_signature_reads_with_its_input_types(self):
         self.assertEqual(
@@ -279,7 +301,7 @@ class LoadFunctionSignaturesTests(TestCase):
     def test_stores_the_id_hex_name_and_inputs_of_each_entry(self):
         load([entry(1216430, "0xc1c3d3d9", "fill((address,uint256)[],bytes)")])
 
-        row = FunctionSignature.objects.get(pk=1216430)
+        row = FunctionSignature.objects.with_inputs().get(pk=1216430)
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
         self.assertEqual(row.name, "fill")
         self.assertEqual(row.input_types(), ["(address,uint256)[]", "bytes"])
@@ -287,7 +309,7 @@ class LoadFunctionSignaturesTests(TestCase):
     def test_a_function_taking_nothing_is_stored_with_no_inputs(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
 
-        row = FunctionSignature.objects.get(pk=1216430)
+        row = FunctionSignature.objects.with_inputs().get(pk=1216430)
         self.assertEqual(row.name, "_expectedBalance")
         self.assertEqual(row.input_types(), [])
 
@@ -322,7 +344,7 @@ class LoadFunctionSignaturesTests(TestCase):
 
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")])
 
-        row = FunctionSignature.objects.get(pk=1216430)
+        row = FunctionSignature.objects.with_inputs().get(pk=1216430)
         self.assertEqual(row.description, "Reads the escrow float.")
         self.assertEqual(row.input_types(), ["uint256"])
 
@@ -332,7 +354,9 @@ class LoadFunctionSignaturesTests(TestCase):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance(uint256)")])
 
         self.assertEqual(FunctionSignature.objects.count(), 1)
-        self.assertEqual(FunctionSignature.objects.get(pk=1216430).input_types(), ["uint256"])
+        self.assertEqual(
+            FunctionSignature.objects.with_inputs().get(pk=1216430).input_types(), ["uint256"]
+        )
 
     def test_a_missing_file_is_reported(self):
         with self.assertRaises(CommandError):
