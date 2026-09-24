@@ -54,7 +54,7 @@ def parse_signature(text):
 
 
 class FunctionSignatureCreateSchema(BaseModel):
-    """A catalog entry that is not stored yet."""
+    """A catalog entry that is not stored yet, its ``inputs`` the types it takes in order."""
 
     id: int
     hex_signature: str
@@ -63,11 +63,20 @@ class FunctionSignatureCreateSchema(BaseModel):
 
 
 class FunctionSignatureUpdateSchema(BaseModel):
-    """What changes on a stored entry; its id names it, so that never does."""
+    """What changes on a stored entry's own row; its id names it, so that never does.
+
+    Its inputs are rows of their own, so a save replaces them apart from these.
+    """
 
     hex_signature: str
     name: str
-    inputs: list[str]
+
+
+class FunctionSignatureManager(models.Manager):
+    """Every signature comes with its inputs, since reading one means reading what it takes."""
+
+    def get_queryset(self):
+        return super().get_queryset().prefetch_related("inputs")
 
 
 class FunctionSignature(models.Model):
@@ -81,16 +90,45 @@ class FunctionSignature(models.Model):
     id = models.BigIntegerField(primary_key=True)
     hex_signature = models.CharField(max_length=10, db_index=True)  # "0xc1c3d3d9"
     name = models.CharField(max_length=255)  # "transferFrom"
-    inputs = models.JSONField(default=list, blank=True)  # ["address", "address", "uint256"]
     # What a reader adds: in neither schema, so a save never sets or clears it.
     description = models.TextField(blank=True, default="")
+
+    objects = FunctionSignatureManager()
 
     class Meta:
         ordering = ["-id"]
 
+    def input_types(self):
+        """The types it takes, in order: ["address", "address", "uint256"]."""
+        return [function_input.type for function_input in self.inputs.all()]
+
     def pretty_signature(self):
         """The name's camelCase and snake_case runs read as words, the inputs as stored."""
-        return Signature(name=_worded(self.name), inputs=self.inputs)
+        return Signature(name=_worded(self.name), inputs=self.input_types())
 
     def __str__(self):
-        return f"{self.hex_signature} {self.name}({','.join(self.inputs)})"
+        return f"{self.hex_signature} {self.name}({','.join(self.input_types())})"
+
+
+class FunctionInput(models.Model):
+    """One parameter of a signature: where it sits, what type it is, and its name if known."""
+
+    function_signature = models.ForeignKey(
+        FunctionSignature, on_delete=models.CASCADE, related_name="inputs"
+    )
+    index = models.PositiveSmallIntegerField()  # 0 for the first parameter
+    # "from", "to", "value"; None when the source gave only the type, as a text signature does.
+    name = models.CharField(max_length=255, blank=True, null=True, default=None)
+    type = models.CharField(max_length=255)  # "address", "uint256"
+
+    class Meta:
+        ordering = ["index"]
+        constraints = [
+            # One parameter per position, so the order reads back as it was saved.
+            models.UniqueConstraint(
+                fields=["function_signature", "index"], name="function_input_index_unique"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.index}: {self.type} {self.name or ''}".rstrip()

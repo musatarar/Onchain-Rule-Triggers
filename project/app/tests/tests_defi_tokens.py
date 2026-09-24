@@ -94,7 +94,7 @@ class SaveTokenTests(TestCase):
     def test_saving_again_leaves_verification_and_functions_alone(self):
         row = services.save_token(token())
         transfer = FunctionSignature.objects.create(
-            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
+            id=1, hex_signature="0xa9059cbb", name="transfer"
         )
         row.contract_is_verified = True
         row.save()
@@ -133,7 +133,7 @@ class SaveTokensTests(TestCase):
     def test_saving_again_leaves_verification_and_functions_alone(self):
         services.save_tokens([token()])
         transfer = FunctionSignature.objects.create(
-            id=1, hex_signature="0xa9059cbb", name="transfer", inputs=["address", "uint256"]
+            id=1, hex_signature="0xa9059cbb", name="transfer"
         )
         row = Token.objects.get()
         row.contract_is_verified = True
