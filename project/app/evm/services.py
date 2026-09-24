@@ -6,6 +6,7 @@ from project.app.evm.function_signatures import (
     FunctionInput,
     FunctionSignature,
     FunctionSignatureUpdateSchema,
+    parse_signature,
 )
 from project.app.evm.tokens import Token, TokenUpdateSchema
 
@@ -27,6 +28,19 @@ def signatures_for_selector(hex_signature):
         .filter(hex_signature=(hex_signature or "").lower())
         .order_by("id")
     )
+
+
+def signatures_for_texts(texts):
+    """Each stored signature whose name and input types spell one of ``texts``, keyed by that text.
+
+    A text names one function exactly, so unlike a selector it has no candidates to
+    choose between; one the catalog does not hold is absent from the answer.
+    """
+    texts = set(texts)
+    names = {parse_signature(text).name for text in texts}
+    rows = FunctionSignature.objects.with_inputs().filter(name__in=names)
+    by_text = {f"{row.name}({','.join(row.input_types())})": row for row in rows}
+    return {text: row for text, row in by_text.items() if text in texts}
 
 
 def _replace_inputs(signatures_by_id):

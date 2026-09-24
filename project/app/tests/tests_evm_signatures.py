@@ -145,6 +145,49 @@ class SelectorLookupTests(TestCase):
             )
 
 
+class TextLookupTests(TestCase):
+    def setUp(self):
+        signature("transfer", ["address", "uint256"], "0xa9059cbb", pk=1)
+        signature("transfer", ["address", "uint256", "bytes"], "0xbe45fd62", pk=2)
+        signature("balanceOf", ["address"], "0x70a08231", pk=3)
+
+    def test_each_text_answers_with_the_signature_it_spells(self):
+        found = services.signatures_for_texts(["transfer(address,uint256)", "balanceOf(address)"])
+
+        self.assertEqual(
+            {text: row.pk for text, row in found.items()},
+            {
+                "transfer(address,uint256)": 1,
+                "balanceOf(address)": 3,
+            },
+        )
+
+    def test_an_overload_with_other_types_is_not_an_answer(self):
+        found = services.signatures_for_texts(["transfer(address,uint256,bytes)"])
+
+        self.assertEqual(
+            {text: row.pk for text, row in found.items()},
+            {
+                "transfer(address,uint256,bytes)": 2,
+            },
+        )
+
+    def test_a_text_the_catalog_does_not_hold_is_absent(self):
+        found = services.signatures_for_texts(["transfer(address)", "approve(address,uint256)"])
+
+        self.assertEqual(found, {})
+
+    def test_texts_may_be_given_as_a_generator(self):
+        found = services.signatures_for_texts(text for text in ["balanceOf(address)"])
+
+        self.assertEqual(list(found), ["balanceOf(address)"])
+
+    def test_the_answers_come_with_their_inputs_in_one_query(self):
+        with self.assertNumQueries(2):
+            found = services.signatures_for_texts(["transfer(address,uint256)"])
+            found["transfer(address,uint256)"].input_types()
+
+
 class FunctionInputTests(TestCase):
     def test_inputs_read_back_in_parameter_order(self):
         signature("transferFrom", ["address", "address", "uint256"])
