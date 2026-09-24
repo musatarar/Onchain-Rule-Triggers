@@ -53,13 +53,21 @@ def parse_signature(text):
     return Signature(name=name.strip(), inputs=_inputs(arguments))
 
 
+class InputCreateSchema(BaseModel):
+    """One parameter of a signature that is not stored yet: its type, and its name if known."""
+
+    type: str  # "address", "uint256"
+    # "recipient"; None when the source gave only the type, as a text signature does.
+    name: str | None = None
+
+
 class FunctionSignatureCreateSchema(BaseModel):
-    """A catalog entry that is not stored yet, its ``inputs`` the types it takes in order."""
+    """A catalog entry that is not stored yet, its ``inputs`` the parameters it takes in order."""
 
     id: int
     hex_signature: str
     name: str
-    inputs: list[str]
+    inputs: list[InputCreateSchema]
 
 
 class FunctionSignatureUpdateSchema(BaseModel):
@@ -124,6 +132,10 @@ class FunctionSignature(models.Model):
     def input_types(self):
         """The types it takes, in order: ["address", "address", "uint256"]."""
         return [function_input.type for function_input in self._fetched_inputs()]
+
+    def input_names(self):
+        """The names of what it takes, in order; None where one is not known."""
+        return [function_input.name for function_input in self._fetched_inputs()]
 
     def pretty_signature(self):
         """The name's camelCase and snake_case runs read as words, the inputs as stored."""
