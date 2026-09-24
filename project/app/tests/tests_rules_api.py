@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
 
-from project.app.models import OutreachRule
+from project.app.models import Rule
 from project.app.tests.tests_shape_utils import shape_for
 
 RULES_URL = "/api/rules/"
@@ -16,7 +16,7 @@ RULES_URL = "/api/rules/"
 
 def _conditions():
     return {
-        "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
+        "version": Rule.CONDITIONS_SCHEMA_VERSION,
         "operator": "all_of",
         "conditions": [
             {"field": "deals_closed", "operator": ">", "threshold": 20, "source": "lead"}
@@ -26,7 +26,7 @@ def _conditions():
 
 def _gate():
     return {
-        "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
+        "version": Rule.CONDITIONS_SCHEMA_VERSION,
         "operator": "all_of",
         "conditions": [{"field": "signed_up_date", "operator": "exists", "source": "lead"}],
     }
@@ -47,9 +47,9 @@ class RulesApiTestCase(TestCase):
     def _rule(self, owner=None, **kwargs):
         kwargs.setdefault("owner", owner or self.user)
         kwargs.setdefault("name", "Reward power users")
-        kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _conditions())
-        return OutreachRule.objects.create(**kwargs)
+        return Rule.objects.create(**kwargs)
 
 
 class RulesApiAuthTests(RulesApiTestCase):
@@ -60,7 +60,7 @@ class RulesApiAuthTests(RulesApiTestCase):
         self.assertEqual(response.json()["code"], "not_authenticated")
 
 
-class OutreachRuleApiTests(RulesApiTestCase):
+class RuleApiTests(RulesApiTestCase):
     def test_creating_updating_and_deleting_a_rule_round_trips(self):
         created = self.client.post(
             RULES_URL,
@@ -73,7 +73,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
         )
         self.assertEqual(created.status_code, 201)
         rule_id = created.json()["id"]
-        self.assertEqual(OutreachRule.objects.get(pk=rule_id).owner, self.user)
+        self.assertEqual(Rule.objects.get(pk=rule_id).owner, self.user)
 
         patched = self.client.patch(
             f"{RULES_URL}{rule_id}/", {"name": "Renamed"}, content_type="application/json"
@@ -83,7 +83,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
 
         deleted = self.client.delete(f"{RULES_URL}{rule_id}/")
         self.assertEqual(deleted.status_code, 204)
-        self.assertFalse(OutreachRule.objects.filter(pk=rule_id).exists())
+        self.assertFalse(Rule.objects.filter(pk=rule_id).exists())
 
     def test_an_inference_rule_may_stand_on_its_predicate_alone(self):
         body = {
@@ -93,7 +93,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
         }
         ungated = self.client.post(RULES_URL, body, content_type="application/json")
         self.assertEqual(ungated.status_code, 201)
-        self.assertEqual(OutreachRule.objects.get(pk=ungated.json()["id"]).conditions, {})
+        self.assertEqual(Rule.objects.get(pk=ungated.json()["id"]).conditions, {})
 
         gated = self.client.post(
             RULES_URL,
@@ -164,7 +164,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
                     content_type="application/json",
                 )
                 self.assertEqual(response.status_code, 400)
-        self.assertEqual(OutreachRule.objects.count(), 0)
+        self.assertEqual(Rule.objects.count(), 0)
 
     def test_an_owner_in_the_payload_is_ignored(self):
         response = self.client.post(
@@ -178,7 +178,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(OutreachRule.objects.get(pk=response.json()["id"]).owner, self.user)
+        self.assertEqual(Rule.objects.get(pk=response.json()["id"]).owner, self.user)
 
     def test_someone_elses_rule_is_invisible_to_list_and_detail(self):
         theirs = self._rule(owner=self.other)

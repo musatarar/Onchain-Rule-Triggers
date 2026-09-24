@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
-from project.app.models import Event, Lead, OutreachRule
+from project.app.models import Event, Lead, Rule
 from project.app.rules import inference, schema, utils
 from project.app.rules import utils as rules_utils
 from project.app.rules.utils import _all_of
@@ -75,9 +75,9 @@ class EngineTestCase(TestCase):
 
     def _rule(self, name, **kwargs):
         kwargs.setdefault("owner", self.owner)
-        kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _all_of(_cond("deals_closed", ">", 2)))
-        return OutreachRule.objects.create(name=name, **kwargs)
+        return Rule.objects.create(name=name, **kwargs)
 
     def _run(self, job):
         self.assertTrue(services.claim(job))
@@ -338,7 +338,7 @@ class DeterministicPassTests(EngineTestCase):
     def test_a_rule_the_engine_cannot_evaluate_is_recorded_instead_of_firing(self):
         rule = self._rule("stale vocabulary")
         # Written before the field it names left the vocabulary.
-        OutreachRule.objects.filter(pk=rule.pk).update(
+        Rule.objects.filter(pk=rule.pk).update(
             conditions={
                 "version": utils.SCHEMA_VERSION,
                 "operator": "all_of",
@@ -406,7 +406,7 @@ class InferencePassTests(EngineTestCase):
     def _inference_rule(self, name, **kwargs):
         return self._rule(
             name,
-            kind=OutreachRule.KIND_INFERENCE,
+            kind=Rule.KIND_INFERENCE,
             conditions=kwargs.pop("conditions", {}),
             inference_prompt=kwargs.pop("inference_prompt", "the notes say they need help"),
             **kwargs,
@@ -452,7 +452,7 @@ class InferencePassTests(EngineTestCase):
 
     def test_both_passes_unevaluable_rules_land_in_one_list(self):
         deterministic = self._rule("stale vocabulary")
-        OutreachRule.objects.filter(pk=deterministic.pk).update(
+        Rule.objects.filter(pk=deterministic.pk).update(
             conditions={
                 "version": utils.SCHEMA_VERSION,
                 "operator": "all_of",
@@ -530,7 +530,7 @@ class DryRunTests(EngineTestCase):
     def _inference_rule(self, name="they need help"):
         return self._rule(
             name,
-            kind=OutreachRule.KIND_INFERENCE,
+            kind=Rule.KIND_INFERENCE,
             conditions={},
             inference_prompt="the notes say they need help",
         )
