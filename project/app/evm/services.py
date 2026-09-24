@@ -1,13 +1,13 @@
-"""The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
+"""The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from django.db import transaction
 
-from project.app.defi.function_signatures import (
+from project.app.evm.function_signatures import (
     FunctionInput,
     FunctionSignature,
     FunctionSignatureUpdateSchema,
 )
-from project.app.defi.tokens import Token, TokenUpdateSchema
+from project.app.evm.tokens import Token, TokenUpdateSchema
 
 
 def _update(row, update_schema, data):

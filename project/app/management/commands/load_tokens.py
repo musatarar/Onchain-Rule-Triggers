@@ -13,9 +13,9 @@ import re
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from project.app.defi import services
-from project.app.defi.chains import PLATFORM_CHAINS
-from project.app.defi.tokens import TokenCreateSchema
+from project.app.evm import services
+from project.app.evm.chains import PLATFORM_CHAINS
+from project.app.evm.tokens import TokenCreateSchema
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "tokens.json"
 
