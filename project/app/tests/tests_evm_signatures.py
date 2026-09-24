@@ -13,6 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from project.app.evm import services
 from project.app.evm.function_signatures import (
     FunctionSignatureCreateSchema,
+    InputCreateSchema,
     InputsNotFetched,
     parse_signature,
 )
@@ -29,20 +30,37 @@ def signature(name, inputs=(), hex_signature="0x23b872dd", pk=1):
     return FunctionSignature.objects.with_inputs().get(pk=pk)
 
 
-def create(pk=1, name="transfer", inputs=("address", "uint256"), hex_signature="0xa9059cbb"):
+def create(
+    pk=1,
+    name="transfer",
+    inputs=("address", "uint256"),
+    hex_signature="0xa9059cbb",
+    names=None,
+):
+    """A signature to save taking ``inputs`` types, named by ``names`` if given."""
+    names = [None] * len(inputs) if names is None else names
     return FunctionSignatureCreateSchema(
-        id=pk, hex_signature=hex_signature, name=name, inputs=list(inputs)
+        id=pk,
+        hex_signature=hex_signature,
+        name=name,
+        inputs=[
+            InputCreateSchema(type=input_type, name=input_name)
+            for input_type, input_name in zip(inputs, names, strict=True)
+        ],
     )
 
 
-def entry(pk, hex_signature, text):
-    return {
+def entry(pk, hex_signature, text, input_names=None):
+    raw = {
         "id": pk,
         "created_at": "2026-09-22T13:53:58Z",
         "text_signature": text,
         "hex_signature": hex_signature,
         "bytes_signature": "ignored",
     }
+    if input_names is not None:
+        raw["input_names"] = input_names
+    return raw
 
 
 def load(entries, **options):
@@ -129,6 +147,49 @@ class SelectorLookupTests(TestCase):
                 [row.input_types() for row in found],
                 [["int128"], ["address", "address", "uint256"]],
             )
+
+
+class TextLookupTests(TestCase):
+    def setUp(self):
+        signature("transfer", ["address", "uint256"], "0xa9059cbb", pk=1)
+        signature("transfer", ["address", "uint256", "bytes"], "0xbe45fd62", pk=2)
+        signature("balanceOf", ["address"], "0x70a08231", pk=3)
+
+    def test_each_text_answers_with_the_signature_it_spells(self):
+        found = services.signatures_for_texts(["transfer(address,uint256)", "balanceOf(address)"])
+
+        self.assertEqual(
+            {text: row.pk for text, row in found.items()},
+            {
+                "transfer(address,uint256)": 1,
+                "balanceOf(address)": 3,
+            },
+        )
+
+    def test_an_overload_with_other_types_is_not_an_answer(self):
+        found = services.signatures_for_texts(["transfer(address,uint256,bytes)"])
+
+        self.assertEqual(
+            {text: row.pk for text, row in found.items()},
+            {
+                "transfer(address,uint256,bytes)": 2,
+            },
+        )
+
+    def test_a_text_the_catalog_does_not_hold_is_absent(self):
+        found = services.signatures_for_texts(["transfer(address)", "approve(address,uint256)"])
+
+        self.assertEqual(found, {})
+
+    def test_texts_may_be_given_as_a_generator(self):
+        found = services.signatures_for_texts(text for text in ["balanceOf(address)"])
+
+        self.assertEqual(list(found), ["balanceOf(address)"])
+
+    def test_the_answers_come_with_their_inputs_in_one_query(self):
+        with self.assertNumQueries(2):
+            found = services.signatures_for_texts(["transfer(address,uint256)"])
+            found["transfer(address,uint256)"].input_types()
 
 
 class FunctionInputTests(TestCase):
@@ -221,6 +282,27 @@ class SaveFunctionSignatureTests(TestCase):
 
         self.assertEqual([i.name for i in row.inputs.all()], ["to", None])
 
+    def test_given_input_names_are_stored_in_order(self):
+        row = services.save_function_signature(create(names=["recipient", "amount"]))
+
+        self.assertEqual(row.input_names(), ["recipient", "amount"])
+        self.assertTrue(row.is_decoded)
+
+    def test_saving_other_names_for_the_same_types_replaces_them(self):
+        services.save_function_signature(create(names=["to", "value"]))
+
+        row = services.save_function_signature(create(names=["recipient", "amount"]))
+
+        self.assertEqual(row.input_names(), ["recipient", "amount"])
+        self.assertEqual(FunctionInput.objects.count(), 2)
+
+    def test_naming_some_inputs_keeps_the_names_recorded_on_the_rest(self):
+        services.save_function_signature(create(names=["to", "value"]))
+
+        row = services.save_function_signature(create(names=["recipient", None]))
+
+        self.assertEqual(row.input_names(), ["recipient", "value"])
+
     def test_saving_other_types_replaces_the_inputs(self):
         services.save_function_signature(create())
         FunctionInput.objects.filter(index=0).update(name="to")
@@ -305,6 +387,25 @@ class LoadFunctionSignaturesTests(TestCase):
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
         self.assertEqual(row.name, "fill")
         self.assertEqual(row.input_types(), ["(address,uint256)[]", "bytes"])
+
+    def test_an_entry_with_input_names_stores_them_on_its_inputs(self):
+        load([entry(161159, "0xa9059cbb", "transfer(address,uint256)", ["recipient", "amount"])])
+
+        row = FunctionSignature.objects.with_inputs().get(pk=161159)
+        self.assertEqual(row.input_types(), ["address", "uint256"])
+        self.assertEqual(row.input_names(), ["recipient", "amount"])
+
+    def test_an_entry_naming_other_than_its_inputs_is_refused(self):
+        with self.assertRaises(CommandError):
+            load([entry(161159, "0xa9059cbb", "transfer(address,uint256)", ["recipient"])])
+
+        self.assertEqual(FunctionSignature.objects.count(), 0)
+
+    def test_an_entry_without_input_names_leaves_its_inputs_unnamed(self):
+        load([entry(161159, "0xa9059cbb", "transfer(address,uint256)")])
+
+        row = FunctionSignature.objects.with_inputs().get(pk=161159)
+        self.assertEqual(row.input_names(), [None, None])
 
     def test_a_function_taking_nothing_is_stored_with_no_inputs(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
