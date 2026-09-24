@@ -2,6 +2,8 @@
 
 from project.app.actions.models import ActionJob
 from project.app.defi.function_signatures import FunctionSignature
+from project.app.defi.token_standards import TokenStandard
+from project.app.defi.token_transfers import TokenTransfer
 from project.app.defi.tokens import Token
 from project.app.rules.models import OutreachRule
 
@@ -17,4 +19,6 @@ __all__ = [
     "OutreachRule",
     "Shape",
     "Token",
+    "TokenStandard",
+    "TokenTransfer",
 ]
