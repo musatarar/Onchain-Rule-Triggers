@@ -1,4 +1,4 @@
-"""Token standards and decoded transfers: new tables, and nullable token columns so existing rows need no backfill."""
+"""Token standards and decoded transfers: new tables, nullable token columns so existing rows need no backfill, and a nameless placeholder token for an unrecognised contract."""
 
 from django.db import migrations, models
 import django.db.models.deletion
@@ -35,6 +35,16 @@ class Migration(migrations.Migration):
             model_name="token",
             name="symbol",
             field=models.CharField(blank=True, default="", max_length=20),
+        ),
+        migrations.AlterField(
+            model_name="token",
+            name="coingecko_id",
+            field=models.CharField(db_index=True, max_length=255, null=True),
+        ),
+        migrations.AlterField(
+            model_name="token",
+            name="name",
+            field=models.CharField(max_length=255, null=True),
         ),
         migrations.CreateModel(
             name="TokenTransfer",
