@@ -3,9 +3,9 @@
 from django.db import models
 from pydantic import BaseModel, field_validator
 
-from project.app.defi.chains import ChainId
-from project.app.defi.function_signatures import FunctionSignature
-from project.app.defi.token_standards import TokenStandard
+from project.app.evm.chains import ChainId
+from project.app.evm.function_signatures import FunctionSignature
+from project.app.evm.token_standards import TokenStandard
 
 
 class TokenCreateSchema(BaseModel):

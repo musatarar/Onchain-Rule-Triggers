@@ -4,8 +4,8 @@ import datetime
 
 from django.db import transaction as db_transaction
 
-from project.app.defi.chains import ChainId
-from project.app.evm_block.models import Block, Transaction, Withdrawal
+from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.chains import ChainId
 
 # What names a row; every other column is refreshed when a block is stored again.
 _WITHDRAWAL_KEY = ["chain", "index"]
@@ -29,7 +29,7 @@ def store_blocks(blocks, chain):
 
     Answers how many blocks. Each is an ``eth_getBlockByNumber`` result fetched
     with full transaction objects; a response never names its chain, so the
-    caller does, as a :class:`~project.app.defi.chains.ChainId` value. A block
+    caller does, as a :class:`~project.app.evm.chains.ChainId` value. A block
     is keyed by its hash, a transaction by its hash and a withdrawal by its
     chain and index, so storing one again updates it.
     """

@@ -12,8 +12,8 @@ from decimal import Decimal
 from django.db import connection
 from django.test import TestCase
 
-from project.app.defi.chains import ChainId
-from project.app.evm_block import services
+from project.app.evm.block import services
+from project.app.evm.chains import ChainId
 from project.app.models import Block, Transaction, Withdrawal
 from scripts.load_blocks import load_blocks
 

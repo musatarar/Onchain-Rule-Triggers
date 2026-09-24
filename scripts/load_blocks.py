@@ -22,8 +22,8 @@ import django  # noqa: E402
 
 django.setup()
 
-from project.app.defi.chains import ChainId  # noqa: E402
-from project.app.evm_block.services import store_blocks  # noqa: E402
+from project.app.evm.block.services import store_blocks  # noqa: E402
+from project.app.evm.chains import ChainId  # noqa: E402
 
 DEFAULT_PATH = os.path.join(PROJECT_ROOT, "raw_data", "blocks.json")
 

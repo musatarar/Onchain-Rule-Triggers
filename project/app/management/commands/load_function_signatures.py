@@ -11,8 +11,8 @@ import json
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from project.app.defi import services
-from project.app.defi.function_signatures import FunctionSignatureCreateSchema, parse_signature
+from project.app.evm import services
+from project.app.evm.function_signatures import FunctionSignatureCreateSchema, parse_signature
 
 DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "function_signatures.json"
 

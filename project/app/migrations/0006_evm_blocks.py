@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0004_token_standards_and_transfers"),
+        ("app", "0005_function_inputs"),
     ]
 
     operations = [

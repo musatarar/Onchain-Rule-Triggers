@@ -2,8 +2,8 @@
 
 from django.db import models
 
-from project.app.defi.constants import UINT256_DIGITS
-from project.app.defi.tokens import Token
+from project.app.evm.constants import UINT256_DIGITS
+from project.app.evm.tokens import Token
 
 
 class TokenTransfer(models.Model):
