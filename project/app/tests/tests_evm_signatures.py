@@ -10,8 +10,8 @@ from django.db import IntegrityError, connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-from project.app.defi import services
-from project.app.defi.function_signatures import (
+from project.app.evm import services
+from project.app.evm.function_signatures import (
     FunctionSignatureCreateSchema,
     InputsNotFetched,
     parse_signature,

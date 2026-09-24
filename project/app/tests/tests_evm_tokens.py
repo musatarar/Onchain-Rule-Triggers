@@ -9,9 +9,9 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 from pydantic import ValidationError
 
-from project.app.defi import services
-from project.app.defi.chains import ChainId
-from project.app.defi.tokens import TokenCreateSchema
+from project.app.evm import services
+from project.app.evm.chains import ChainId
+from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import FunctionSignature, Token
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
