@@ -98,6 +98,11 @@ class FunctionSignature(models.Model):
     class Meta:
         ordering = ["-id"]
 
+    @property
+    def is_decoded(self):
+        """Whether every input has a name; one taking nothing has none left to name."""
+        return all(function_input.name for function_input in self.inputs.all())
+
     def input_types(self):
         """The types it takes, in order: ["address", "address", "uint256"]."""
         return [function_input.type for function_input in self.inputs.all()]

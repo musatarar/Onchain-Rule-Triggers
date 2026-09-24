@@ -144,6 +144,24 @@ class FunctionInputTests(TestCase):
             rows = list(FunctionSignature.objects.all())
             self.assertEqual([row.input_types() for row in rows], [["address", "uint256"]] * 2)
 
+    def test_a_signature_is_decoded_once_every_input_has_a_name(self):
+        signature("transfer", ["address", "uint256"])
+        FunctionInput.objects.filter(index=0).update(name="to")
+        self.assertFalse(FunctionSignature.objects.get().is_decoded)
+
+        FunctionInput.objects.filter(index=1).update(name="value")
+
+        self.assertTrue(FunctionSignature.objects.get().is_decoded)
+
+    def test_a_blank_name_leaves_a_signature_undecoded(self):
+        signature("transfer", ["address"])
+        FunctionInput.objects.update(name="")
+
+        self.assertFalse(FunctionSignature.objects.get().is_decoded)
+
+    def test_a_signature_taking_nothing_is_decoded(self):
+        self.assertTrue(signature("totalSupply").is_decoded)
+
     def test_a_signature_reads_with_its_input_types(self):
         self.assertEqual(
             str(signature("transfer", ["address", "uint256"], "0xa9059cbb")),
