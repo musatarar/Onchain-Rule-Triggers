@@ -2,10 +2,8 @@
 
 from django.db import models
 
+from project.app.defi.constants import UINT256_DIGITS
 from project.app.defi.tokens import Token
-
-# The largest uint256 is 78 decimal digits.
-_UINT256_DIGITS = 78
 
 
 class TokenTransfer(models.Model):
@@ -22,7 +20,10 @@ class TokenTransfer(models.Model):
     from_address = models.CharField(max_length=42)
     to_address = models.CharField(max_length=42)
     # The amount for ERC-20 and ERC-1155, the token id for ERC-721; undivided by decimals.
-    raw_value = models.DecimalField(max_digits=_UINT256_DIGITS, decimal_places=0)
+    raw_value = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
+    # True once decoded as a known token's Transfer event; False when only the
+    # transfer signature matched, on a contract the catalog does not recognise.
+    verified = models.BooleanField(default=False)
 
     class Meta:
         constraints = [

@@ -53,6 +53,7 @@ class Migration(migrations.Migration):
                 ("from_address", models.CharField(max_length=42)),
                 ("to_address", models.CharField(max_length=42)),
                 ("raw_value", models.DecimalField(decimal_places=0, max_digits=78)),
+                ("verified", models.BooleanField(default=False)),
                 (
                     "token",
                     models.ForeignKey(
