@@ -21,7 +21,7 @@ def signature(name, inputs=(), hex_signature="0x23b872dd", pk=1):
         FunctionInput(function_signature_id=pk, index=index, type=input_type)
         for index, input_type in enumerate(inputs)
     )
-    return FunctionSignature.objects.get(pk=pk)
+    return FunctionSignature.objects.with_inputs().get(pk=pk)
 
 
 def create(pk=1, name="transfer", inputs=("address", "uint256"), hex_signature="0xa9059cbb"):
@@ -136,12 +136,12 @@ class FunctionInputTests(TestCase):
         with self.assertRaises(IntegrityError):
             FunctionInput.objects.create(function_signature_id=1, index=0, type="uint256")
 
-    def test_signatures_are_fetched_with_their_inputs(self):
+    def test_with_inputs_fetches_signatures_with_their_inputs(self):
         signature("transfer", ["address", "uint256"], pk=1)
         signature("approve", ["address", "uint256"], pk=2)
 
         with self.assertNumQueries(2):
-            rows = list(FunctionSignature.objects.all())
+            rows = list(FunctionSignature.objects.with_inputs())
             self.assertEqual([row.input_types() for row in rows], [["address", "uint256"]] * 2)
 
     def test_a_signature_is_decoded_once_every_input_has_a_name(self):

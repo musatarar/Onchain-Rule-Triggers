@@ -23,7 +23,9 @@ def signatures_for_selector(hex_signature):
     the calldata actually supports is the caller's to decide.
     """
     return list(
-        FunctionSignature.objects.filter(hex_signature=(hex_signature or "").lower()).order_by("id")
+        FunctionSignature.objects.with_inputs()
+        .filter(hex_signature=(hex_signature or "").lower())
+        .order_by("id")
     )
 
 
@@ -43,7 +45,7 @@ def save_function_signature(signature):
     Saving one signature is saving a list of one with ``save_function_signatures``.
     """
     save_function_signatures([signature])
-    return FunctionSignature.objects.get(id=signature.id)
+    return FunctionSignature.objects.with_inputs().get(id=signature.id)
 
 
 def save_function_signatures(signatures):
@@ -58,7 +60,7 @@ def save_function_signatures(signatures):
     by_id = {}
     for signature in signatures:
         by_id.setdefault(signature.id, signature)
-    stored = FunctionSignature.objects.in_bulk(list(by_id))
+    stored = FunctionSignature.objects.with_inputs().in_bulk(list(by_id))
 
     created, updated, new_inputs = [], [], {}
     for pk, signature in by_id.items():

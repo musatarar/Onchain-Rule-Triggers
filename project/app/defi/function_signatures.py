@@ -72,11 +72,10 @@ class FunctionSignatureUpdateSchema(BaseModel):
     name: str
 
 
-class FunctionSignatureManager(models.Manager):
-    """Every signature comes with its inputs, since reading one means reading what it takes."""
-
-    def get_queryset(self):
-        return super().get_queryset().prefetch_related("inputs")
+class FunctionSignatureQuerySet(models.QuerySet):
+    def with_inputs(self):
+        """Fetch each signature's inputs alongside it, for reading ``input_types()``."""
+        return self.prefetch_related("inputs")
 
 
 class FunctionSignature(models.Model):
@@ -93,7 +92,7 @@ class FunctionSignature(models.Model):
     # What a reader adds: in neither schema, so a save never sets or clears it.
     description = models.TextField(blank=True, default="")
 
-    objects = FunctionSignatureManager()
+    objects = FunctionSignatureQuerySet.as_manager()
 
     class Meta:
         ordering = ["-id"]
