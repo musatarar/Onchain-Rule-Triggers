@@ -12,6 +12,7 @@ from decimal import Decimal
 from django.db import connection
 from django.test import TestCase
 
+from project.app.evm.block import models as block_models
 from project.app.evm.block import services
 from project.app.evm.chains import ChainId
 from project.app.models import Block, Transaction, Withdrawal
@@ -260,6 +261,27 @@ class StoreBlocksTests(TestCase):
         )
 
         self.assertEqual(Transaction.objects.get().value, Decimal(value))
+
+
+class BlockSchemaTests(TestCase):
+    def test_each_create_schema_names_every_column_of_its_model(self):
+        # A column missing here would never be written; one missing from the
+        # update schema too would never be refreshed.
+        for model, schema in (
+            (Block, block_models.BlockCreateSchema),
+            (Transaction, block_models.TransactionCreateSchema),
+            (Withdrawal, block_models.WithdrawalCreateSchema),
+        ):
+            columns = {field.name for field in model._meta.concrete_fields if field.name != "id"}
+            self.assertEqual(set(schema.model_fields), columns, model.__name__)
+
+    def test_an_update_leaves_the_fields_that_name_a_row_alone(self):
+        for update, key in (
+            (block_models.BlockUpdateSchema, {"hash", "chain"}),
+            (block_models.TransactionUpdateSchema, {"hash", "chain"}),
+            (block_models.WithdrawalUpdateSchema, {"chain", "index"}),
+        ):
+            self.assertFalse(key & set(update.model_fields), update.__name__)
 
 
 class LoadBlocksScriptTests(TestCase):

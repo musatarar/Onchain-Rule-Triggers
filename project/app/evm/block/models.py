@@ -12,7 +12,10 @@ transaction or withdrawal carries its block's number rather than a link to the
 block row, so ``chain`` and ``block_number`` together say which block it is in.
 """
 
+import datetime
+
 from django.db import models
+from pydantic import BaseModel
 
 from project.app.evm.chains import ChainId
 from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGITS
@@ -20,6 +23,37 @@ from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGIT
 
 def _uint256(**options):
     return models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, **options)
+
+
+class BlockUpdateSchema(BaseModel):
+    """What changes on a stored block; its hash names it and its chain holds it, so neither does."""
+
+    parent_hash: str
+    sha3_uncles: str
+    miner: str
+    state_root: str
+    transactions_root: str
+    receipts_root: str
+    logs_bloom: str
+    difficulty: int
+    number: int
+    gas_limit: int
+    gas_used: int
+    timestamp: datetime.datetime
+    extra_data: str
+    mix_hash: str
+    nonce: str
+    base_fee_per_gas: int | None
+    withdrawals_root: str | None
+    size: int
+    uncles: list[str]
+
+
+class BlockCreateSchema(BlockUpdateSchema):
+    """A block that is not stored yet."""
+
+    hash: str
+    chain: ChainId
 
 
 class Block(models.Model):
@@ -57,6 +91,37 @@ class Block(models.Model):
 
     def __str__(self):
         return f"block {self.number} {self.hash} ({self.get_chain_display()})"
+
+
+class TransactionUpdateSchema(BaseModel):
+    """What changes on a stored transaction; its hash names it and its chain holds it, so neither does."""
+
+    block_number: int
+    block_timestamp: datetime.datetime
+    transaction_index: int
+    type: int
+    chain_id: int | None
+    nonce: int
+    from_address: str
+    to_address: str | None
+    value: int
+    gas: int
+    gas_price: int
+    max_fee_per_gas: int | None
+    max_priority_fee_per_gas: int | None
+    access_list: list[dict] | None
+    input: str
+    r: str
+    s: str
+    y_parity: int | None
+    v: int
+
+
+class TransactionCreateSchema(TransactionUpdateSchema):
+    """A transaction that is not stored yet."""
+
+    hash: str
+    chain: ChainId
 
 
 class Transaction(models.Model):
@@ -99,6 +164,22 @@ class Transaction(models.Model):
 
     def __str__(self):
         return self.hash
+
+
+class WithdrawalUpdateSchema(BaseModel):
+    """What changes on a stored withdrawal; its chain and index name it, so they never do."""
+
+    block_number: int
+    validator_index: int
+    address: str
+    amount: int
+
+
+class WithdrawalCreateSchema(WithdrawalUpdateSchema):
+    """A withdrawal that is not stored yet."""
+
+    chain: ChainId
+    index: int
 
 
 class Withdrawal(models.Model):

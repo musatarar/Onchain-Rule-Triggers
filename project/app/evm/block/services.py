@@ -4,24 +4,28 @@ import datetime
 
 from django.db import transaction as db_transaction
 
-from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.block.models import (
+    Block,
+    BlockCreateSchema,
+    BlockUpdateSchema,
+    Transaction,
+    TransactionCreateSchema,
+    TransactionUpdateSchema,
+    Withdrawal,
+    WithdrawalCreateSchema,
+    WithdrawalUpdateSchema,
+)
 from project.app.evm.chains import ChainId
 
-# What names a row; every other column is refreshed when a block is stored again.
-_WITHDRAWAL_KEY = ["chain", "index"]
 
-
-def _refreshed(model, key):
-    return [
-        field.name
-        for field in model._meta.concrete_fields
-        if not field.primary_key and field.name not in key
-    ]
-
-
-_BLOCK_FIELDS = _refreshed(Block, ["hash"])
-_TRANSACTION_FIELDS = _refreshed(Transaction, ["hash"])
-_WITHDRAWAL_FIELDS = _refreshed(Withdrawal, _WITHDRAWAL_KEY)
+def _upsert(model, update_schema, rows, unique_fields):
+    """Store ``rows``, create schemas of ``model``; a stored one gets its ``update_schema`` fields."""
+    model.objects.bulk_create(
+        [model(**row.model_dump()) for row in rows],
+        update_conflicts=True,
+        update_fields=list(update_schema.model_fields),
+        unique_fields=unique_fields,
+    )
 
 
 def store_blocks(blocks, chain):
@@ -31,35 +35,31 @@ def store_blocks(blocks, chain):
     with full transaction objects; a response never names its chain, so the
     caller does, as a :class:`~project.app.evm.chains.ChainId` value. A block
     is keyed by its hash, a transaction by its hash and a withdrawal by its
-    chain and index, so storing one again updates it.
+    chain and index, so storing one again updates it with its update schema's
+    fields.
     """
     chain = ChainId(chain)  # an id outside the catalogued chains is a ValueError
     parsed = [_parsed(raw, chain) for raw in blocks]
     with db_transaction.atomic():
-        Block.objects.bulk_create(
-            [block for block, _, _ in parsed],
-            update_conflicts=True,
-            update_fields=_BLOCK_FIELDS,
-            unique_fields=["hash"],
-        )
-        Transaction.objects.bulk_create(
+        _upsert(Block, BlockUpdateSchema, [block for block, _, _ in parsed], ["hash"])
+        _upsert(
+            Transaction,
+            TransactionUpdateSchema,
             [row for _, transactions, _ in parsed for row in transactions],
-            update_conflicts=True,
-            update_fields=_TRANSACTION_FIELDS,
-            unique_fields=["hash"],
+            ["hash"],
         )
-        Withdrawal.objects.bulk_create(
+        _upsert(
+            Withdrawal,
+            WithdrawalUpdateSchema,
             [row for _, _, withdrawals in parsed for row in withdrawals],
-            update_conflicts=True,
-            update_fields=_WITHDRAWAL_FIELDS,
-            unique_fields=_WITHDRAWAL_KEY,
+            ["chain", "index"],
         )
     return len(parsed)
 
 
 def _parsed(raw, chain):
-    """One raw block as unsaved rows: ``(block, transactions, withdrawals)``."""
-    block = Block(
+    """One raw block as create schemas: ``(block, transactions, withdrawals)``."""
+    block = BlockCreateSchema(
         hash=raw["hash"],
         chain=chain,
         parent_hash=raw["parentHash"],
@@ -84,7 +84,7 @@ def _parsed(raw, chain):
     )
     transactions = [_transaction(entry, block) for entry in raw.get("transactions", [])]
     withdrawals = [
-        Withdrawal(
+        WithdrawalCreateSchema(
             chain=block.chain,
             index=_quantity(entry["index"]),
             block_number=block.number,
@@ -104,7 +104,7 @@ def _transaction(entry, block):
             f"Block {block.hash} lists transaction {entry!r} by hash only: "
             "fetch it with full transaction objects."
         )
-    return Transaction(
+    return TransactionCreateSchema(
         hash=entry["hash"],
         chain=block.chain,
         block_number=block.number,
