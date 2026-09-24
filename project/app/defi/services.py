@@ -1,6 +1,12 @@
 """The defi catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
-from project.app.defi.function_signatures import FunctionSignature, FunctionSignatureUpdateSchema
+from django.db import transaction
+
+from project.app.defi.function_signatures import (
+    FunctionInput,
+    FunctionSignature,
+    FunctionSignatureUpdateSchema,
+)
 from project.app.defi.tokens import Token, TokenUpdateSchema
 
 
@@ -17,44 +23,62 @@ def signatures_for_selector(hex_signature):
     the calldata actually supports is the caller's to decide.
     """
     return list(
-        FunctionSignature.objects.filter(hex_signature=(hex_signature or "").lower()).order_by("id")
+        FunctionSignature.objects.with_inputs()
+        .filter(hex_signature=(hex_signature or "").lower())
+        .order_by("id")
+    )
+
+
+def _replace_inputs(types_by_id):
+    """Store each signature id's input types, in order, in place of the inputs it had."""
+    FunctionInput.objects.filter(function_signature_id__in=list(types_by_id)).delete()
+    FunctionInput.objects.bulk_create(
+        FunctionInput(function_signature_id=pk, index=index, type=input_type)
+        for pk, types in types_by_id.items()
+        for index, input_type in enumerate(types)
     )
 
 
 def save_function_signature(signature):
     """Store the ``FunctionSignatureCreateSchema`` ``signature``; answer its row.
 
-    A new id is created from it; a stored one is updated with its
-    ``FunctionSignatureUpdateSchema`` fields.
+    Saving one signature is saving a list of one with ``save_function_signatures``.
     """
-    row = FunctionSignature.objects.filter(id=signature.id).first()
-    if row is None:
-        return FunctionSignature.objects.create(**signature.model_dump())
-    _update(row, FunctionSignatureUpdateSchema, signature)
-    row.save(update_fields=list(FunctionSignatureUpdateSchema.model_fields))
-    return row
+    save_function_signatures([signature])
+    return FunctionSignature.objects.with_inputs().get(id=signature.id)
 
 
 def save_function_signatures(signatures):
-    """Store many ``FunctionSignatureCreateSchema`` signatures as ``save_function_signature`` would.
+    """Store many ``FunctionSignatureCreateSchema`` signatures; answer how many.
 
-    Answers how many. When two signatures name one id, the first one given is the one saved.
+    A new id is created from its signature; a stored one is updated with its
+    ``FunctionSignatureUpdateSchema`` fields. Inputs are replaced only where
+    their types changed, so a name recorded on a stored input outlives a save
+    that gives the same types. When two signatures name one id, the first one
+    given is the one saved.
     """
     by_id = {}
     for signature in signatures:
         by_id.setdefault(signature.id, signature)
-    stored = FunctionSignature.objects.in_bulk(list(by_id))
+    stored = FunctionSignature.objects.with_inputs().in_bulk(list(by_id))
 
-    created, updated = [], []
+    created, updated, new_inputs = [], [], {}
     for pk, signature in by_id.items():
         row = stored.get(pk)
         if row is None:
-            created.append(FunctionSignature(**signature.model_dump()))
-        else:
-            _update(row, FunctionSignatureUpdateSchema, signature)
-            updated.append(row)
-    FunctionSignature.objects.bulk_create(created)
-    FunctionSignature.objects.bulk_update(updated, list(FunctionSignatureUpdateSchema.model_fields))
+            created.append(FunctionSignature(**signature.model_dump(exclude={"inputs"})))
+            new_inputs[pk] = signature.inputs
+            continue
+        _update(row, FunctionSignatureUpdateSchema, signature)
+        updated.append(row)
+        if row.input_types() != signature.inputs:
+            new_inputs[pk] = signature.inputs
+    with transaction.atomic():
+        FunctionSignature.objects.bulk_create(created)
+        FunctionSignature.objects.bulk_update(
+            updated, list(FunctionSignatureUpdateSchema.model_fields)
+        )
+        _replace_inputs(new_inputs)
     return len(by_id)
 
 
