@@ -12,7 +12,6 @@ from django.db import transaction as db_transaction
 
 from project.app.evm import services
 from project.app.evm.block.models import DecodeStatus, Transaction
-from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_transfers import TokenTransfer
 
 BATCH_SIZE = 500
@@ -46,16 +45,10 @@ def decode_transactions(batch_size=BATCH_SIZE):
 
 def _transfer_calls():
     """The selector of each transfer call the signature catalog holds, as ``(input count, reads)``."""
-    signatures = FunctionSignature.objects.with_inputs().filter(
-        name__in={text.split("(")[0] for text in _TRANSFER_CALLS}
-    )
-    calls = {}
-    for signature in signatures:
-        types = signature.input_types()
-        reads = _TRANSFER_CALLS.get(f"{signature.name}({','.join(types)})")
-        if reads is not None:
-            calls[signature.hex_signature.lower()] = (len(types), reads)
-    return calls
+    return {
+        row.hex_signature.lower(): (len(row.input_types()), _TRANSFER_CALLS[text])
+        for text, row in services.signatures_for_texts(_TRANSFER_CALLS).items()
+    }
 
 
 def _claim(batch_size):

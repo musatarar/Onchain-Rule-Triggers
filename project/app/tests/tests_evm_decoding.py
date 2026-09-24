@@ -11,7 +11,7 @@ from project.app.evm import decoding, services
 from project.app.evm.block.models import DecodeStatus
 from project.app.evm.block.services import store_blocks
 from project.app.evm.chains import ChainId
-from project.app.evm.function_signatures import FunctionSignatureCreateSchema
+from project.app.evm.function_signatures import FunctionSignatureCreateSchema, InputCreateSchema
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import Token, TokenTransfer, Transaction
 from project.app.tests.tests_evm_block import block, legacy_transaction
@@ -35,17 +35,21 @@ def calldata(selector, *arguments):
     return selector + "".join(word(argument) for argument in arguments)
 
 
+def inputs(*types):
+    return [InputCreateSchema(type=input_type) for input_type in types]
+
+
 def catalog_transfer_calls():
     services.save_function_signatures(
         [
             FunctionSignatureCreateSchema(
-                id=1, hex_signature=TRANSFER, name="transfer", inputs=["address", "uint256"]
+                id=1, hex_signature=TRANSFER, name="transfer", inputs=inputs("address", "uint256")
             ),
             FunctionSignatureCreateSchema(
                 id=2,
                 hex_signature=TRANSFER_FROM,
                 name="transferFrom",
-                inputs=["address", "address", "uint256"],
+                inputs=inputs("address", "address", "uint256"),
             ),
         ]
     )
@@ -152,7 +156,7 @@ class DecodeTransactionsTests(TestCase):
         services.save_function_signatures(
             [
                 FunctionSignatureCreateSchema(
-                    id=1, hex_signature=TRANSFER, name="transfer", inputs=["address"]
+                    id=1, hex_signature=TRANSFER, name="transfer", inputs=inputs("address")
                 )
             ]
         )
@@ -193,7 +197,7 @@ class DecodeTransactionsTests(TestCase):
 
 
 class DecodeTransactionsScriptTests(TestCase):
-    def test_decodes_the_sample_blocks_transfer_calls(self):
+    def test_decodes_the_sample_blocks_transfer_and_transfer_from_calls(self):
         with contextlib.redirect_stdout(io.StringIO()):
             load_blocks()
         call_command("load_function_signatures", stdout=io.StringIO())
@@ -203,7 +207,7 @@ class DecodeTransactionsScriptTests(TestCase):
             decode_script()
 
         self.assertEqual(
-            out.getvalue(), "Decoded 63 transfer(s); unable to decode 550 transaction(s).\n"
+            out.getvalue(), "Decoded 68 transfer(s); unable to decode 545 transaction(s).\n"
         )
-        self.assertEqual(TokenTransfer.objects.count(), 63)
+        self.assertEqual(TokenTransfer.objects.count(), 68)
         self.assertFalse(Transaction.objects.filter(decode_status=DecodeStatus.INGESTED).exists())
