@@ -15,13 +15,14 @@ block row, so ``chain`` and ``block_number`` together say which block it is in.
 from django.db import models
 
 from project.app.defi.chains import ChainId
+from project.app.defi.constants import UINT256_DIGITS
 
 HASH_LENGTH = 66  # "0x" and 32 bytes
 ADDRESS_LENGTH = 42  # "0x" and 20 bytes
 
 
 def _uint256(**options):
-    return models.DecimalField(max_digits=78, decimal_places=0, **options)
+    return models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, **options)
 
 
 class Block(models.Model):

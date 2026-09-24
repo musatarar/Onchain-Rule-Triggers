@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator
 
 from project.app.defi.chains import ChainId
 from project.app.defi.function_signatures import FunctionSignature
+from project.app.defi.token_standards import TokenStandard
 
 
 class TokenCreateSchema(BaseModel):
@@ -33,15 +34,24 @@ class Token(models.Model):
     """One token contract: a coin's address on one chain.
 
     A coin deployed on several chains is several rows sharing a
-    ``coingecko_id``; a chain and an address name exactly one row.
+    ``coingecko_id``; a chain and an address name exactly one row. A contract
+    the catalog does not recognise is a placeholder row with no name and no
+    ``coingecko_id``, so its transfers still have a token to point at.
     """
 
-    name = models.CharField(max_length=255)  # "Tether"
-    coingecko_id = models.CharField(max_length=255, db_index=True)  # "tether"
+    name = models.CharField(max_length=255, null=True)  # "Tether"
+    coingecko_id = models.CharField(max_length=255, null=True, db_index=True)  # "tether"
     chain = models.IntegerField(choices=ChainId.choices)  # 1
     address = models.CharField(max_length=42)  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
     # Learned about the contract later: in neither schema, so a save never sets or clears them.
     contract_is_verified = models.BooleanField(null=True, default=None)
+    standard = models.ForeignKey(
+        TokenStandard, on_delete=models.PROTECT, null=True, blank=True, related_name="tokens"
+    )
+    symbol = models.CharField(max_length=20, blank=True, default="")  # "USDT"
+    # Unknown until read from the contract: a guessed 18 would misprice a 6-decimal token.
+    decimals = models.PositiveSmallIntegerField(null=True, default=None)  # 6
+    created_at_block = models.PositiveBigIntegerField(null=True, default=None)  # 4634748
     functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
 
     class Meta:
@@ -51,4 +61,4 @@ class Token(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.name} {self.address} ({self.get_chain_display()})"
+        return f"{self.name or 'Unknown token'} {self.address} ({self.get_chain_display()})"
