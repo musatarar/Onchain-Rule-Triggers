@@ -3,7 +3,7 @@
 import re
 
 from django.db import models
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 # "transferFrom(address,address,uint256)": the name, then everything it takes.
 _SIGNATURE_RE = re.compile(r"^([^(]*)\((.*)\)$", re.DOTALL)
@@ -54,12 +54,25 @@ def parse_signature(text):
 
 
 class FunctionSignatureCreateSchema(BaseModel):
-    """A catalog entry that is not stored yet, its ``inputs`` the types it takes in order."""
+    """A catalog entry that is not stored yet, its ``inputs`` the types it takes in order.
+
+    ``input_names`` names those inputs position by position; None when the
+    source gave only the types, as a text signature does.
+    """
 
     id: int
     hex_signature: str
     name: str
     inputs: list[str]
+    input_names: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _one_name_per_input(self):
+        if self.input_names is not None and len(self.input_names) != len(self.inputs):
+            raise ValueError(
+                f"{len(self.input_names)} input name(s) given for {len(self.inputs)} input(s)."
+            )
+        return self
 
 
 class FunctionSignatureUpdateSchema(BaseModel):
@@ -124,6 +137,10 @@ class FunctionSignature(models.Model):
     def input_types(self):
         """The types it takes, in order: ["address", "address", "uint256"]."""
         return [function_input.type for function_input in self._fetched_inputs()]
+
+    def input_names(self):
+        """The names of what it takes, in order; None where one is not known."""
+        return [function_input.name for function_input in self._fetched_inputs()]
 
     def pretty_signature(self):
         """The name's camelCase and snake_case runs read as words, the inputs as stored."""

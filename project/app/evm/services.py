@@ -29,14 +29,27 @@ def signatures_for_selector(hex_signature):
     )
 
 
-def _replace_inputs(types_by_id):
-    """Store each signature id's input types, in order, in place of the inputs it had."""
-    FunctionInput.objects.filter(function_signature_id__in=list(types_by_id)).delete()
+def _replace_inputs(signatures_by_id):
+    """Store each signature id's inputs, in order, in place of the inputs it had."""
+    FunctionInput.objects.filter(function_signature_id__in=list(signatures_by_id)).delete()
     FunctionInput.objects.bulk_create(
-        FunctionInput(function_signature_id=pk, index=index, type=input_type)
-        for pk, types in types_by_id.items()
-        for index, input_type in enumerate(types)
+        FunctionInput(function_signature_id=pk, index=index, type=input_type, name=name)
+        for pk, signature in signatures_by_id.items()
+        for index, (input_type, name) in enumerate(
+            zip(signature.inputs, signature.input_names or [None] * len(signature.inputs))
+        )
     )
+
+
+def _inputs_changed(row, signature):
+    """Whether ``signature`` gives ``row`` other input types, or names them otherwise.
+
+    Names it does not give are no change, so a name recorded on a stored input
+    outlives a save that gives only the same types.
+    """
+    if row.input_types() != signature.inputs:
+        return True
+    return signature.input_names is not None and row.input_names() != signature.input_names
 
 
 def save_function_signature(signature):
@@ -53,9 +66,9 @@ def save_function_signatures(signatures):
 
     A new id is created from its signature; a stored one is updated with its
     ``FunctionSignatureUpdateSchema`` fields. Inputs are replaced only where
-    their types changed, so a name recorded on a stored input outlives a save
-    that gives the same types. When two signatures name one id, the first one
-    given is the one saved.
+    their types or given names changed, so a name recorded on a stored input
+    outlives a save that gives the same types and no names. When two
+    signatures name one id, the first one given is the one saved.
     """
     by_id = {}
     for signature in signatures:
@@ -66,13 +79,15 @@ def save_function_signatures(signatures):
     for pk, signature in by_id.items():
         row = stored.get(pk)
         if row is None:
-            created.append(FunctionSignature(**signature.model_dump(exclude={"inputs"})))
-            new_inputs[pk] = signature.inputs
+            created.append(
+                FunctionSignature(**signature.model_dump(exclude={"inputs", "input_names"}))
+            )
+            new_inputs[pk] = signature
             continue
         _update(row, FunctionSignatureUpdateSchema, signature)
         updated.append(row)
-        if row.input_types() != signature.inputs:
-            new_inputs[pk] = signature.inputs
+        if _inputs_changed(row, signature):
+            new_inputs[pk] = signature
     with transaction.atomic():
         FunctionSignature.objects.bulk_create(created)
         FunctionSignature.objects.bulk_update(

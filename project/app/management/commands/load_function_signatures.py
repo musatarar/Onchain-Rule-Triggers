@@ -1,7 +1,8 @@
 """Load the function signature catalog from raw_data/.
 
 Run after `manage.py migrate`. The file is function signatures aggregated into a JSON list of
-results, each stored as the name and inputs its ``text_signature`` parses to.
+results, each stored as the name and inputs its ``text_signature`` parses to,
+those inputs named by its ``input_names`` where the entry gives them.
 Idempotent: each entry's own id is its row's primary key, so a re-run updates
 what it stored rather than adding to it.
 """
@@ -18,7 +19,7 @@ DEFAULT_PATH = settings.BASE_DIR / "raw_data" / "function_signatures.json"
 
 
 def signatures_from_entries(entries):
-    """The signatures ``entries`` list, in file order, each as its text parses."""
+    """The signatures ``entries`` list, in file order, each as its text parses and names."""
     for entry in entries:
         parsed = parse_signature(entry["text_signature"])
         yield FunctionSignatureCreateSchema(
@@ -26,6 +27,7 @@ def signatures_from_entries(entries):
             hex_signature=entry["hex_signature"],
             name=parsed.name,
             inputs=parsed.inputs,
+            input_names=entry.get("input_names"),
         )
 
 

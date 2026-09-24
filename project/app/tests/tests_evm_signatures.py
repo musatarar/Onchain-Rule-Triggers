@@ -9,6 +9,7 @@ from django.core.management import CommandError, call_command
 from django.db import IntegrityError, connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
+from pydantic import ValidationError
 
 from project.app.evm import services
 from project.app.evm.function_signatures import (
@@ -29,20 +30,33 @@ def signature(name, inputs=(), hex_signature="0x23b872dd", pk=1):
     return FunctionSignature.objects.with_inputs().get(pk=pk)
 
 
-def create(pk=1, name="transfer", inputs=("address", "uint256"), hex_signature="0xa9059cbb"):
+def create(
+    pk=1,
+    name="transfer",
+    inputs=("address", "uint256"),
+    hex_signature="0xa9059cbb",
+    input_names=None,
+):
     return FunctionSignatureCreateSchema(
-        id=pk, hex_signature=hex_signature, name=name, inputs=list(inputs)
+        id=pk,
+        hex_signature=hex_signature,
+        name=name,
+        inputs=list(inputs),
+        input_names=input_names,
     )
 
 
-def entry(pk, hex_signature, text):
-    return {
+def entry(pk, hex_signature, text, input_names=None):
+    raw = {
         "id": pk,
         "created_at": "2026-09-22T13:53:58Z",
         "text_signature": text,
         "hex_signature": hex_signature,
         "bytes_signature": "ignored",
     }
+    if input_names is not None:
+        raw["input_names"] = input_names
+    return raw
 
 
 def load(entries, **options):
@@ -221,6 +235,24 @@ class SaveFunctionSignatureTests(TestCase):
 
         self.assertEqual([i.name for i in row.inputs.all()], ["to", None])
 
+    def test_given_input_names_are_stored_in_order(self):
+        row = services.save_function_signature(create(input_names=["recipient", "amount"]))
+
+        self.assertEqual(row.input_names(), ["recipient", "amount"])
+        self.assertTrue(row.is_decoded)
+
+    def test_saving_other_names_for_the_same_types_replaces_them(self):
+        services.save_function_signature(create(input_names=["to", "value"]))
+
+        row = services.save_function_signature(create(input_names=["recipient", "amount"]))
+
+        self.assertEqual(row.input_names(), ["recipient", "amount"])
+        self.assertEqual(FunctionInput.objects.count(), 2)
+
+    def test_a_name_for_every_input_or_none_at_all(self):
+        with self.assertRaises(ValidationError):
+            create(input_names=["recipient"])
+
     def test_saving_other_types_replaces_the_inputs(self):
         services.save_function_signature(create())
         FunctionInput.objects.filter(index=0).update(name="to")
@@ -305,6 +337,19 @@ class LoadFunctionSignaturesTests(TestCase):
         self.assertEqual(row.hex_signature, "0xc1c3d3d9")
         self.assertEqual(row.name, "fill")
         self.assertEqual(row.input_types(), ["(address,uint256)[]", "bytes"])
+
+    def test_an_entry_with_input_names_stores_them_on_its_inputs(self):
+        load([entry(161159, "0xa9059cbb", "transfer(address,uint256)", ["recipient", "amount"])])
+
+        row = FunctionSignature.objects.with_inputs().get(pk=161159)
+        self.assertEqual(row.input_types(), ["address", "uint256"])
+        self.assertEqual(row.input_names(), ["recipient", "amount"])
+
+    def test_an_entry_without_input_names_leaves_its_inputs_unnamed(self):
+        load([entry(161159, "0xa9059cbb", "transfer(address,uint256)")])
+
+        row = FunctionSignature.objects.with_inputs().get(pk=161159)
+        self.assertEqual(row.input_names(), [None, None])
 
     def test_a_function_taking_nothing_is_stored_with_no_inputs(self):
         load([entry(1216430, "0xc1c3d3d9", "_expectedBalance()")])
