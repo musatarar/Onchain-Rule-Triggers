@@ -24,7 +24,20 @@ class CatalogPagination(PageNumberPagination):
     max_page_size = 100
 
 
+class ConditionsField(serializers.JSONField):
+    """The rule's conditions in their v1 JSON shape, which no column holds.
+
+    A read renders the rule's ``Condition`` tree; a write hands the payload to
+    ``services`` as-is, which validates it and stores it as the tree.
+    """
+
+    def get_attribute(self, instance):
+        return instance.conditions_payload()
+
+
 class RuleSerializer(serializers.ModelSerializer):
+    conditions = ConditionsField(required=False)
+
     class Meta:
         model = Rule
         fields = [

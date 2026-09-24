@@ -76,8 +76,16 @@ class EngineTestCase(TestCase):
     def _rule(self, name, **kwargs):
         kwargs.setdefault("owner", self.owner)
         kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
-        kwargs.setdefault("conditions", _all_of(_cond("deals_closed", ">", 2)))
-        return Rule.objects.create(name=name, **kwargs)
+        conditions = kwargs.pop("conditions", _all_of(_cond("deals_closed", ">", 2)))
+        rule = Rule.objects.create(name=name, **kwargs)
+        utils.build_tree(rule, conditions)
+        return rule
+
+    def _stale(self, rule, conditions):
+        """Store ``conditions`` as the rule's tree without validating them, as
+        a rule written before its vocabulary moved would hold them."""
+        rule.all_conditions.all().delete()
+        utils.build_tree(rule, conditions)
 
     def _run(self, job):
         self.assertTrue(services.claim(job))
@@ -338,8 +346,9 @@ class DeterministicPassTests(EngineTestCase):
     def test_a_rule_the_engine_cannot_evaluate_is_recorded_instead_of_firing(self):
         rule = self._rule("stale vocabulary")
         # Written before the field it names left the vocabulary.
-        Rule.objects.filter(pk=rule.pk).update(
-            conditions={
+        self._stale(
+            rule,
+            {
                 "version": utils.SCHEMA_VERSION,
                 "operator": "all_of",
                 "conditions": [
@@ -350,7 +359,7 @@ class DeterministicPassTests(EngineTestCase):
                         "threshold": "red",
                     }
                 ],
-            }
+            },
         )
         job = services.enqueue_lead(self._lead())
 
@@ -452,8 +461,9 @@ class InferencePassTests(EngineTestCase):
 
     def test_both_passes_unevaluable_rules_land_in_one_list(self):
         deterministic = self._rule("stale vocabulary")
-        Rule.objects.filter(pk=deterministic.pk).update(
-            conditions={
+        self._stale(
+            deterministic,
+            {
                 "version": utils.SCHEMA_VERSION,
                 "operator": "all_of",
                 "conditions": [
@@ -464,7 +474,7 @@ class InferencePassTests(EngineTestCase):
                         "threshold": "red",
                     }
                 ],
-            }
+            },
         )
         inferred = self._inference_rule("they need help")
         job = services.enqueue_lead(self._lead())

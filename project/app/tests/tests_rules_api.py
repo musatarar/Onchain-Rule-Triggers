@@ -9,6 +9,7 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from project.app.models import Rule
+from project.app.rules import utils
 from project.app.tests.tests_shape_utils import shape_for
 
 RULES_URL = "/api/rules/"
@@ -48,8 +49,10 @@ class RulesApiTestCase(TestCase):
         kwargs.setdefault("owner", owner or self.user)
         kwargs.setdefault("name", "Reward power users")
         kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
-        kwargs.setdefault("conditions", _conditions())
-        return Rule.objects.create(**kwargs)
+        conditions = kwargs.pop("conditions", _conditions())
+        rule = Rule.objects.create(**kwargs)
+        utils.build_tree(rule, conditions)
+        return rule
 
 
 class RulesApiAuthTests(RulesApiTestCase):
@@ -74,12 +77,21 @@ class RuleApiTests(RulesApiTestCase):
         self.assertEqual(created.status_code, 201)
         rule_id = created.json()["id"]
         self.assertEqual(Rule.objects.get(pk=rule_id).owner, self.user)
+        # Stored as a tree, answered in the payload's own shape.
+        self.assertEqual(created.json()["conditions"], _conditions())
+        self.assertEqual(
+            self.client.get(f"{RULES_URL}{rule_id}/").json()["conditions"], _conditions()
+        )
+        self.assertEqual(
+            self.client.get(RULES_URL).json()["results"][0]["conditions"], _conditions()
+        )
 
         patched = self.client.patch(
             f"{RULES_URL}{rule_id}/", {"name": "Renamed"}, content_type="application/json"
         )
         self.assertEqual(patched.status_code, 200)
         self.assertEqual(patched.json()["name"], "Renamed")
+        self.assertEqual(patched.json()["conditions"], _conditions())
 
         deleted = self.client.delete(f"{RULES_URL}{rule_id}/")
         self.assertEqual(deleted.status_code, 204)
@@ -93,7 +105,7 @@ class RuleApiTests(RulesApiTestCase):
         }
         ungated = self.client.post(RULES_URL, body, content_type="application/json")
         self.assertEqual(ungated.status_code, 201)
-        self.assertEqual(Rule.objects.get(pk=ungated.json()["id"]).conditions, {})
+        self.assertEqual(Rule.objects.get(pk=ungated.json()["id"]).conditions_payload(), {})
 
         gated = self.client.post(
             RULES_URL,

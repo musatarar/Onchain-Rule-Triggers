@@ -1,4 +1,5 @@
-"""The ``conditions`` payload: its vocabulary, its builders and its validator.
+"""The ``conditions`` payload: its vocabulary, its builders, its validator, and
+its conversion to and from a rule's tree of ``Condition`` rows.
 
 A rule's structured predicate is data, so what it may name is a contract, not a
 convention: the evaluator has to resolve exactly this vocabulary, and a payload
@@ -124,6 +125,86 @@ def _all_of(*conditions):
 def _any_of(*conditions):
     """A nested group, so no ``version`` — only the root payload carries one."""
     return {"operator": "any_of", "conditions": list(conditions)}
+
+
+# A payload group's operator <-> the ``Condition.type`` of the node storing it.
+TREE_TYPE_BY_GROUP = {"all_of": "AND", "any_of": "OR"}
+GROUP_BY_TREE_TYPE = {tree_type: group for group, tree_type in TREE_TYPE_BY_GROUP.items()}
+TREE_TYPE_COMPARISON = "COMPARISON"
+
+
+def build_tree(rule, payload):
+    """Store a v1 ``conditions`` payload as ``rule``'s tree of ``Condition`` rows.
+
+    Groups become ``AND``/``OR`` nodes, leaves ``COMPARISON`` nodes (``field``
+    -> ``field_name``, ``threshold`` -> ``value``; ``operator`` and ``source``
+    as they are). Nodes are created parent first and in list order, so their
+    ids keep the payload's order and :func:`render_tree` gives it back. An
+    empty payload stores no tree. Returns the root, or ``None``.
+
+    This converts; it does not validate. The write path runs
+    :func:`validate_conditions` first, and ``rule`` must not have a tree yet.
+    """
+    if not payload:
+        return None
+    # Through the reverse accessor: rules.models imports this module, so the
+    # model cannot be imported here.
+    nodes = rule.all_conditions
+    return _build_node(nodes, None, payload)
+
+
+def _build_node(nodes, parent, node):
+    if "field" in node:
+        return nodes.create(
+            parent=parent,
+            type=TREE_TYPE_COMPARISON,
+            field_name=node["field"],
+            operator=node["operator"],
+            source=node["source"],
+            value=node.get("threshold"),
+        )
+    group = nodes.create(parent=parent, type=TREE_TYPE_BY_GROUP[node["operator"]])
+    for child in node["conditions"]:
+        _build_node(nodes, group, child)
+    return group
+
+
+def render_tree(nodes):
+    """A rule's tree as its v1 ``conditions`` payload; ``{}`` when it has none.
+
+    ``nodes`` is every node of one rule's tree, read in one go and assembled
+    here by ``parent_id``, so a prefetched tree renders with no query. Sibling
+    order is id order: ``Condition`` orders by id (sorted again here, for a
+    caller that hands the nodes over in another order) and :func:`build_tree`
+    creates each group's children in list order, so the payload a tree was
+    built from is the payload it renders.
+    """
+    children = {}
+    root = None
+    for node in sorted(nodes, key=lambda node: node.pk):
+        if node.parent_id is None:
+            root = node
+        else:
+            children.setdefault(node.parent_id, []).append(node)
+    if root is None:
+        return {}
+    payload = _render_node(root, children)
+    if "field" in payload:
+        return payload
+    return {"version": SCHEMA_VERSION, **payload}
+
+
+def _render_node(node, children):
+    if node.type == TREE_TYPE_COMPARISON:
+        leaf = {"field": node.field_name, "operator": node.operator, "source": node.source}
+        # `exists` and `absent` carry no threshold, so their leaves have none.
+        if node.value is not None:
+            leaf["threshold"] = node.value
+        return leaf
+    return {
+        "operator": GROUP_BY_TREE_TYPE.get(node.type, node.type),
+        "conditions": [_render_node(child, children) for child in children.get(node.pk, [])],
+    }
 
 
 def validate_conditions(payload, shape):
