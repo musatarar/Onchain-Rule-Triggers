@@ -96,6 +96,21 @@ def save_token(token):
     return row
 
 
+def tokens_at(contracts):
+    """The token at each ``(chain, address)`` in ``contracts``, keyed by chain and lowercase address.
+
+    A contract the catalog does not recognise gets a nameless placeholder row,
+    so what it moved still has a token to point at. Creating one that another
+    run created first is a conflict ignored, not an error.
+    """
+    keys = {(chain, address.lower()) for chain, address in contracts}
+    Token.objects.bulk_create(
+        [Token(chain=chain, address=address) for chain, address in keys], ignore_conflicts=True
+    )
+    rows = Token.objects.filter(address__in={address for _, address in keys})
+    return {(row.chain, row.address): row for row in rows if (row.chain, row.address) in keys}
+
+
 def save_tokens(tokens):
     """Store many ``TokenCreateSchema`` tokens as ``save_token`` would; answer how many.
 
