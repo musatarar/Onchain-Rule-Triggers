@@ -215,21 +215,6 @@ class StoreBlocksTests(TestCase):
         self.assertEqual(Transaction.objects.get(hash=LEGACY_HASH).value, Decimal(2))
         self.assertEqual(Withdrawal.objects.count(), 1)
 
-    def test_a_stored_transaction_starts_ingested_and_storing_it_again_keeps_its_status(self):
-        services.store_blocks([block()], ChainId.ETHEREUM)
-        self.assertEqual(
-            set(Transaction.objects.values_list("decode_status", flat=True)),
-            {block_models.DecodeStatus.INGESTED},
-        )
-        Transaction.objects.update(decode_status=block_models.DecodeStatus.DECODED)
-
-        services.store_blocks([block()], ChainId.ETHEREUM)
-
-        self.assertEqual(
-            set(Transaction.objects.values_list("decode_status", flat=True)),
-            {block_models.DecodeStatus.DECODED},
-        )
-
     def test_a_block_listing_transactions_by_hash_only_is_refused_whole(self):
         with self.assertRaisesMessage(ValueError, "full transaction objects"):
             services.store_blocks([block(transactions=[LEGACY_HASH])], ChainId.ETHEREUM)
@@ -287,12 +272,7 @@ class BlockSchemaTests(TestCase):
             (Transaction, block_models.TransactionCreateSchema),
             (Withdrawal, block_models.WithdrawalCreateSchema),
         ):
-            # decode_status is set by decoding, never by what a node returned.
-            columns = {
-                field.name
-                for field in model._meta.concrete_fields
-                if field.name not in {"id", "decode_status"}
-            }
+            columns = {field.name for field in model._meta.concrete_fields if field.name != "id"}
             self.assertEqual(set(schema.model_fields), columns, model.__name__)
 
     def test_an_update_leaves_the_fields_that_name_a_row_alone(self):
