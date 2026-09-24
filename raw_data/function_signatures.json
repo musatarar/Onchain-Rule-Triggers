@@ -2,7 +2,7 @@
   {
     "id": 161159,
     "created_at": "2026-05-11T06:05:38.699191Z",
-    "text_signature": "transfer(bytes4[9],bytes5[6],int48[11])",
+    "text_signature": "transfer(address,uint256)",
     "hex_signature": "0xa9059cbb",
     "bytes_signature": "==·"
   },

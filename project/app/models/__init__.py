@@ -1,6 +1,7 @@
 """Domain-split models; every model is importable from ``project.app.models``."""
 
 from project.app.actions.models import ActionJob
+from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.function_signatures import FunctionInput, FunctionSignature
 from project.app.evm.token_standards import TokenStandard
 from project.app.evm.token_transfers import TokenTransfer
@@ -12,6 +13,7 @@ from .lead import Event, Lead, Shape
 
 __all__ = [
     "ActionJob",
+    "Block",
     "Event",
     "FunctionInput",
     "FunctionSignature",
@@ -22,4 +24,6 @@ __all__ = [
     "Token",
     "TokenStandard",
     "TokenTransfer",
+    "Transaction",
+    "Withdrawal",
 ]
