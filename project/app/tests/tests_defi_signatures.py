@@ -6,8 +6,9 @@ import os
 import tempfile
 
 from django.core.management import CommandError, call_command
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from project.app.defi import services
 from project.app.defi.function_signatures import FunctionSignatureCreateSchema, parse_signature
@@ -117,6 +118,14 @@ class SelectorLookupTests(TestCase):
     def test_an_unknown_selector_finds_nothing(self):
         self.assertEqual(services.signatures_for_selector("0xdeadbeef"), [])
 
+    def test_every_candidate_comes_with_its_inputs_in_one_query(self):
+        with self.assertNumQueries(2):
+            found = services.signatures_for_selector("0x23b872dd")
+            self.assertEqual(
+                [row.input_types() for row in found],
+                [["int128"], ["address", "address", "uint256"]],
+            )
+
 
 class FunctionInputTests(TestCase):
     def test_inputs_read_back_in_parameter_order(self):
@@ -135,14 +144,6 @@ class FunctionInputTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             FunctionInput.objects.create(function_signature_id=1, index=0, type="uint256")
-
-    def test_with_inputs_fetches_signatures_with_their_inputs(self):
-        signature("transfer", ["address", "uint256"], pk=1)
-        signature("approve", ["address", "uint256"], pk=2)
-
-        with self.assertNumQueries(2):
-            rows = list(FunctionSignature.objects.with_inputs())
-            self.assertEqual([row.input_types() for row in rows], [["address", "uint256"]] * 2)
 
     def test_a_signature_is_decoded_once_every_input_has_a_name(self):
         signature("transfer", ["address", "uint256"])
@@ -254,6 +255,18 @@ class SaveFunctionSignaturesTests(TestCase):
     def test_nothing_to_save_stores_nothing(self):
         self.assertEqual(services.save_function_signatures([]), 0)
         self.assertEqual(FunctionSignature.objects.count(), 0)
+
+    def test_saving_over_stored_rows_costs_the_same_queries_however_many(self):
+        def resave(pks):
+            """Queries run saving ``pks`` again, one keeping its types, the rest changing them."""
+            services.save_function_signatures([create(pk) for pk in pks])
+            again = [create(pks[0])] + [create(pk, inputs=["bytes"]) for pk in pks[1:]]
+            with CaptureQueriesContext(connection) as queries:
+                services.save_function_signatures(again)
+            return len(queries)
+
+        self.assertEqual(resave([1, 2]), resave([3, 4, 5, 6, 7]))
+        self.assertEqual(FunctionSignature.objects.with_inputs().get(pk=7).input_types(), ["bytes"])
 
 
 class LoadFunctionSignaturesTests(TestCase):
