@@ -15,10 +15,7 @@ block row, so ``chain`` and ``block_number`` together say which block it is in.
 from django.db import models
 
 from project.app.evm.chains import ChainId
-from project.app.evm.constants import UINT256_DIGITS
-
-HASH_LENGTH = 66  # "0x" and 32 bytes
-ADDRESS_LENGTH = 42  # "0x" and 20 bytes
+from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGITS
 
 
 def _uint256(**options):
