@@ -6,9 +6,11 @@ source, so every comparison in it reads the same block, the same transaction
 and the same token transfer:
 
 - a tree reading ``transaction`` or ``token_transfer`` is tried against each
-  transaction in the block, bound with each of its token transfers in turn
-  and with none. The transaction matches when one of those bindings satisfies
-  the tree, so two ``token_transfer`` comparisons have to hold of one transfer;
+  transaction in the block, bound with each of its token transfers in turn,
+  or with none when it has none. The transaction matches when one of those
+  bindings satisfies the tree, so two ``token_transfer`` comparisons have to
+  hold of one transfer, and ``absent`` on a transfer field means the
+  transaction moved no token;
 - a tree reading ``withdrawal`` is tried against each withdrawal in the block;
 - a tree reading only ``block`` is tried against the block.
 
@@ -72,7 +74,9 @@ def matches_in_block(rule, block):
             for transaction in transactions
             if any(
                 holds(transaction=transaction, token_transfer=transfer)
-                for transfer in [*transfers.get(transaction.hash, ()), None]
+                # No transfer is bound only when there is none to bind, so
+                # `absent` cannot hold of a transaction that moved a token.
+                for transfer in transfers.get(transaction.hash) or [None]
             )
         ]
     if utils.SOURCE_WITHDRAWAL in sources:

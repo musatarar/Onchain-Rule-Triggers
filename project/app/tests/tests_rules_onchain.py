@@ -169,6 +169,15 @@ class TransactionRuleTests(OnchainTestCase):
         matched = self._matches(_all_of(transfer("token", "exists")), stored)
         self.assertEqual([row.hash for row in matched], [LEGACY_HASH])
 
+    def test_absent_on_token_transfer_does_not_hold_of_a_transaction_with_transfers(self):
+        stored = self._store()
+        self._transfer(LEGACY_HASH, self._token(), 0, sender=ALICE, recipient=BOB)
+
+        # The legacy transaction moved USDT, so "no transfer" is false of it.
+        conditions = _all_of(tx("from_address", "==", LEGACY_FROM), transfer("token", "absent"))
+
+        self.assertEqual(self._matches(conditions, stored), [])
+
     def test_a_transfer_on_another_chain_is_not_this_blocks(self):
         stored = self._store()
         polygon_usdt = evm_services.save_token(
