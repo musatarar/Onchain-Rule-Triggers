@@ -311,6 +311,18 @@ class DeterministicPassTests(EngineTestCase):
         self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [lead_rule.pk])
         self.assertEqual(job.decision["unevaluable_rule_ids"], [])
 
+    def test_a_rule_with_no_conditions_is_recorded_as_unevaluable_not_skipped(self):
+        # The admin saves a rule with no tree; it reads no source, on-chain or not.
+        rule = Rule.objects.create(owner=self.owner, name="no conditions")
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
+        self.assertEqual(job.decision["rules_evaluated"], 1)
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
+
     def test_a_disabled_rule_never_fires(self):
         self._rule("off", enabled=False)
         job = services.enqueue_lead(self._lead())

@@ -42,6 +42,14 @@ class OwnerScopedReadTests(RulesServiceTestCase):
 
         self.assertEqual(list(services.enabled_rules_for(self.user)), [live])
 
+    def test_the_lead_engine_reads_no_onchain_rule_but_does_read_one_with_no_tree(self):
+        lead_rule = self._rule("lead")
+        self._rule("whales", conditions=_all_of(_cond("value", ">", 10**18, source="transaction")))
+        no_tree = Rule.objects.create(owner=self.user, name="no tree")
+        self._rule("switched off", enabled=False)
+
+        self.assertEqual(list(services.enabled_lead_rules_for(self.user)), [lead_rule, no_tree])
+
 
 class ValidatedWriteTests(RulesServiceTestCase):
     def test_creating_a_rule_binds_the_owner_and_validates_the_payload(self):

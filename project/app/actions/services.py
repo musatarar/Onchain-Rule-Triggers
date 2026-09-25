@@ -20,7 +20,6 @@ from project.app.actions.models import ActionJob
 from project.app.models.lead import Event, Lead
 from project.app.rules import schema
 from project.app.rules import services as rules_services
-from project.app.rules import utils as rules_utils
 from project.app.services import prompts
 
 logger = logging.getLogger(__name__)
@@ -52,19 +51,15 @@ class _JobLead:
 def rules_for_lead(lead):
     """Every enabled lead rule in the catalog of the user whose book this lead is in.
 
-    A rule is a lead rule when its tree reads a lead source; an on-chain rule
-    is judged against blocks, not leads, so it is skipped here rather than
-    recorded as unevaluable. An unowned lead has no rules, so its job resolves
-    to no match. The rules come with their condition trees prefetched, so
-    sorting and rendering them costs no query per rule.
+    An on-chain rule is judged against blocks, not leads, so it is skipped
+    rather than recorded as unevaluable; every other rule, one with no
+    conditions included, is judged here. An unowned lead has no rules, so its
+    job resolves to no match. The rules come with their condition trees
+    prefetched, so rendering them costs no query per rule.
     """
     if lead.owner_id is None:
         return []
-    return [
-        rule
-        for rule in rules_services.enabled_rules_for(lead.owner_id)
-        if rules_utils.reads_lead(rule.sources())
-    ]
+    return rules_services.enabled_lead_rules_for(lead.owner_id)
 
 
 # --------------------------------------------------------------------------

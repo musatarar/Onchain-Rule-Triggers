@@ -12,6 +12,7 @@ exceptions.
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Exists, OuterRef
 
 from project.app.models.lead import Shape
 from project.app.rules import utils
@@ -30,8 +31,24 @@ def rules_for(owner):
 
 
 def enabled_rules_for(owner):
-    """What the engine evaluates."""
+    """Every enabled rule, lead and on-chain alike."""
     return rules_for(owner).filter(enabled=True)
+
+
+def enabled_lead_rules_for(owner):
+    """What the lead engine evaluates: every enabled rule that reads no on-chain source.
+
+    An on-chain rule is judged against blocks, so the query leaves it out
+    rather than fetching its tree to drop it. A rule with no tree reads no
+    source at all and stays in, so the engine records it as unevaluable
+    instead of passing over it unseen.
+    """
+    onchain_leaf = Condition.objects.filter(
+        rule=OuterRef("pk"),
+        type=Condition.TYPE_COMPARISON,
+        source__in=utils.ONCHAIN_SOURCES,
+    )
+    return enabled_rules_for(owner).filter(~Exists(onchain_leaf))
 
 
 def rule_for(owner, pk):
