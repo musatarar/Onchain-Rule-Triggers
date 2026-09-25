@@ -1,5 +1,6 @@
 """The token catalog: how tokens are saved, and which of a file's coin platforms become tokens."""
 
+import datetime
 import io
 import json
 import os
@@ -12,7 +13,7 @@ from pydantic import ValidationError
 from project.app.evm import services
 from project.app.evm.chains import ChainId
 from project.app.evm.tokens import TokenCreateSchema
-from project.app.models import FunctionSignature, Token
+from project.app.models import Contract, FunctionSignature, Token
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 # Sei lists some tokens by their Cosmos address, which is no EVM address.
@@ -105,6 +106,50 @@ class SaveTokenTests(TestCase):
         self.assertTrue(row.contract_is_verified)
         self.assertEqual(list(row.functions.all()), [transfer])
         self.assertEqual(list(transfer.tokens.all()), [row])
+
+    def test_a_token_is_a_contract_sharing_its_id(self):
+        row = services.save_token(token())
+
+        contract = Contract.objects.get()
+        self.assertEqual(contract.pk, row.pk)
+        self.assertEqual((contract.chain, contract.address), (ChainId.ETHEREUM, USDT))
+
+    def test_a_stored_contract_becomes_the_token_keeping_its_creation_date(self):
+        created = datetime.datetime(2017, 11, 28, tzinfo=datetime.UTC)
+        contract = Contract.objects.create(
+            chain=ChainId.ETHEREUM, address=USDT, creation_date=created
+        )
+
+        row = services.save_token(token())
+
+        self.assertEqual(Contract.objects.count(), 1)
+        self.assertEqual(row.pk, contract.pk)
+        self.assertEqual((row.name, row.creation_date), ("Tether", created))
+
+
+class TokensAtTests(TestCase):
+    def test_an_unknown_contract_gets_a_placeholder_token(self):
+        tokens = services.tokens_at({(ChainId.ETHEREUM, "0x" + USDT[2:].upper())})
+
+        row = tokens[(ChainId.ETHEREUM, USDT)]
+        self.assertEqual((row.name, row.coingecko_id), (None, None))
+        self.assertEqual(Contract.objects.get().pk, row.pk)
+
+    def test_a_stored_token_is_answered_not_duplicated(self):
+        stored = services.save_token(token())
+
+        tokens = services.tokens_at({(ChainId.ETHEREUM, USDT)})
+
+        self.assertEqual(tokens, {(ChainId.ETHEREUM, USDT): stored})
+        self.assertEqual(Contract.objects.count(), 1)
+
+    def test_a_stored_contract_that_is_no_token_yet_becomes_one(self):
+        contract = Contract.objects.create(chain=ChainId.ETHEREUM, address=USDT)
+
+        tokens = services.tokens_at({(ChainId.ETHEREUM, USDT)})
+
+        self.assertEqual(tokens[(ChainId.ETHEREUM, USDT)].pk, contract.pk)
+        self.assertEqual(Contract.objects.count(), 1)
 
 
 class SaveTokensTests(TestCase):

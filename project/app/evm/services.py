@@ -1,7 +1,8 @@
 """The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
+from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import (
     FunctionInput,
     FunctionSignature,
@@ -116,15 +117,55 @@ def save_function_signatures(signatures):
 def save_token(token):
     """Store the ``TokenCreateSchema`` ``token``; answer its row.
 
-    A new chain and address is created from it; a stored one is updated with
-    its ``TokenUpdateSchema`` fields.
+    Saving one token is saving a list of one with ``save_tokens``.
     """
-    row = Token.objects.filter(chain=token.chain, address=token.address).first()
-    if row is None:
-        return Token.objects.create(**token.model_dump())
-    _update(row, TokenUpdateSchema, token)
-    row.save(update_fields=list(TokenUpdateSchema.model_fields))
-    return row
+    save_tokens([token])
+    return Token.objects.get(chain=token.chain, address=token.address)
+
+
+def _contracts_at(keys):
+    """The contract at each ``(chain, lowercase address)`` in ``keys``, keyed by it.
+
+    One not stored yet is created; one another run created first is a conflict
+    ignored, not an error.
+    """
+    Contract.objects.bulk_create(
+        [Contract(chain=chain, address=address) for chain, address in keys], ignore_conflicts=True
+    )
+    rows = Contract.objects.filter(address__in={address for _, address in keys})
+    return {(row.chain, row.address): row for row in rows if (row.chain, row.address) in keys}
+
+
+def _make_tokens(contracts, fields):
+    """Make each of ``contracts`` that is no token yet one; answer the ids made.
+
+    A contract becomes a token with its ``fields`` entry, keyed by chain and
+    address, or else a nameless placeholder one. Django cannot bulk-create a
+    child table's rows, so each is its own insert; one another run made first
+    is a conflict ignored, not an error, and not in the answer.
+    """
+    stored = set(
+        Token.objects.filter(pk__in=[contract.pk for contract in contracts]).values_list(
+            "pk", flat=True
+        )
+    )
+    made = set()
+    for contract in contracts:
+        if contract.pk in stored:
+            continue
+        row = Token(
+            contract_ptr=contract,
+            **{field.attname: getattr(contract, field.attname) for field in Contract._meta.fields},
+            **fields.get((contract.chain, contract.address), {}),
+        )
+        try:
+            with transaction.atomic():
+                # The contract row is stored already: raw writes only the token's own.
+                row.save_base(raw=True)
+        except IntegrityError:
+            continue
+        made.add(row.pk)
+    return made
 
 
 def tokens_at(contracts):
@@ -134,35 +175,36 @@ def tokens_at(contracts):
     so what it moved still has a token to point at. Creating one that another
     run created first is a conflict ignored, not an error.
     """
-    keys = {(chain, address.lower()) for chain, address in contracts}
-    Token.objects.bulk_create(
-        [Token(chain=chain, address=address) for chain, address in keys], ignore_conflicts=True
-    )
-    rows = Token.objects.filter(address__in={address for _, address in keys})
-    return {(row.chain, row.address): row for row in rows if (row.chain, row.address) in keys}
+    stored = _contracts_at({(chain, address.lower()) for chain, address in contracts})
+    _make_tokens(list(stored.values()), {})
+    rows = Token.objects.filter(pk__in=[contract.pk for contract in stored.values()])
+    return {(row.chain, row.address): row for row in rows}
 
 
 def save_tokens(tokens):
-    """Store many ``TokenCreateSchema`` tokens as ``save_token`` would; answer how many.
+    """Store many ``TokenCreateSchema`` tokens; answer how many.
 
-    When two tokens name one chain and address, the first one given is the one saved.
+    A new chain and address is created from its token; a stored one is
+    updated with its ``TokenUpdateSchema`` fields. When two tokens name one
+    chain and address, the first one given is the one saved.
     """
     by_key = {}
     for token in tokens:
         by_key.setdefault((token.chain, token.address), token)
-    stored = {
-        (row.chain, row.address): row
-        for row in Token.objects.filter(address__in={address for _, address in by_key})
+    fields = {
+        key: TokenUpdateSchema.model_validate(token.model_dump()).model_dump()
+        for key, token in by_key.items()
     }
 
-    created, updated = [], []
-    for key, token in by_key.items():
-        row = stored.get(key)
-        if row is None:
-            created.append(Token(**token.model_dump()))
-        else:
-            _update(row, TokenUpdateSchema, token)
-            updated.append(row)
-    Token.objects.bulk_create(created)
-    Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
+    with transaction.atomic():
+        stored = _contracts_at(set(by_key))
+        made = _make_tokens(list(stored.values()), fields)
+        updated = list(
+            Token.objects.filter(
+                pk__in=[contract.pk for contract in stored.values() if contract.pk not in made]
+            )
+        )
+        for row in updated:
+            _update(row, TokenUpdateSchema, by_key[(row.chain, row.address)])
+        Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
     return len(by_key)
