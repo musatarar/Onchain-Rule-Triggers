@@ -423,7 +423,7 @@ class QueryCountTests(OnchainTestCase):
         ]
         raw = block(hash=f"0x{count:064x}", number=hex(count), transactions=transactions)
         stored = self._store(raw)
-        usdt = Token.objects.filter(address=USDT).first() or self._token()
+        usdt = Token.objects.filter(contract__address=USDT).first() or self._token()
         for index in range(count):
             self._transfer(f"0x{index:064x}", usdt, index, sender=ALICE, recipient=BOB)
         # The hashes repeat across blocks, so each block is stored on its own.

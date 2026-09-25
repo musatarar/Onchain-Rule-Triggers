@@ -10,7 +10,7 @@ import project.app.evm.fields
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0011_token_transfer_transaction_hash_index"),
+        ("app", "0012_token_transfer_transaction_hash_index"),
     ]
 
     operations = [
@@ -20,7 +20,7 @@ class Migration(migrations.Migration):
             field=project.app.evm.fields.AddressField(max_length=42),
         ),
         migrations.AlterField(
-            model_name="token",
+            model_name="contract",
             name="address",
             field=project.app.evm.fields.AddressField(max_length=42),
         ),

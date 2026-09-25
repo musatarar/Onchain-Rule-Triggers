@@ -1,9 +1,9 @@
-"""Migration 0010's data steps, run on rows seeded at 0009.
+"""Migration 0011's data steps, run on rows seeded at 0010.
 
 Its forward run deletes inference rules, fails the jobs the inference pass
 left open, and lowercases stored addresses and the thresholds that compare
 against them. Its reverse restores none of that, so these pin what it does
-to the rows, and that a token case clash stops it rather than losing a row.
+to the rows, and that a contract case clash stops it rather than losing a row.
 """
 
 import datetime
@@ -14,8 +14,8 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
-BEFORE = [("app", "0009_transaction_withdrawal_block_hash")]
-AFTER = [("app", "0010_remove_rule_kinds_and_inference")]
+BEFORE = [("app", "0010_contracts")]
+AFTER = [("app", "0011_remove_rule_kinds_and_inference")]
 
 MIXED = "0x" + "AbCdEf0123" * 4
 LOWER = MIXED.lower()
@@ -49,7 +49,7 @@ class RemoveRuleKindsMigrationTests(TransactionTestCase):
         return self.before.get_model("app", name)
 
     def _rule(self, name, kind, leaves, **fields):
-        """A rule at 0009, its tree an AND of ``(source, field, operator, threshold)`` leaves."""
+        """A rule at 0010, its tree an AND of ``(source, field, operator, threshold)`` leaves."""
         rule = self._model("Rule").objects.create(
             owner_id=self.owner.pk, name=name, kind=kind, **fields
         )
@@ -132,11 +132,12 @@ class RemoveRuleKindsMigrationTests(TransactionTestCase):
         self.assertEqual(jobs[decided.pk].error, "")
 
     def test_stored_addresses_are_lowercased(self):
-        Token = self._model("Token")
-        token = Token.objects.create(chain=1, address=MIXED, name="Tether")
-        Token.objects.create(chain=1, address=ALREADY_LOWER, name="USDC")
-        # The same address on another chain is another token, not a clash.
-        Token.objects.create(chain=137, address=LOWER, name="Tether")
+        Contract = self._model("Contract")
+        tether = Contract.objects.create(chain=1, address=MIXED)
+        token = self._model("Token").objects.create(contract=tether, name="Tether")
+        Contract.objects.create(chain=1, address=ALREADY_LOWER)
+        # The same address on another chain is another contract, not a clash.
+        Contract.objects.create(chain=137, address=LOWER)
         self._model("Block").objects.create(
             hash=BLOCK_HASH,
             chain=1,
@@ -174,7 +175,7 @@ class RemoveRuleKindsMigrationTests(TransactionTestCase):
             return list(after.get_model("app", name).objects.values_list(*columns))
 
         self.assertEqual(
-            sorted(rows("Token", "chain", "address")),
+            sorted(rows("Contract", "chain", "address")),
             [(1, ALREADY_LOWER), (1, LOWER), (137, LOWER)],
         )
         self.assertEqual(rows("Block", "miner"), [(LOWER,)])
@@ -232,17 +233,19 @@ class RemoveRuleKindsMigrationTests(TransactionTestCase):
         )
         self.assertEqual(thresholds(lead), [("type", "Email_Sent")])
 
-    def test_two_tokens_whose_addresses_differ_only_by_case_stop_the_migration(self):
-        Token = self._model("Token")
-        first = Token.objects.create(chain=1, address=MIXED, name="Tether")
-        second = Token.objects.create(chain=1, address=LOWER, name="Tether (copy)")
+    def test_two_contracts_whose_addresses_differ_only_by_case_stop_the_migration(self):
+        Contract = self._model("Contract")
+        first = Contract.objects.create(chain=1, address=MIXED)
+        second = Contract.objects.create(chain=1, address=LOWER)
         inference = self._rule("ask the model", "inference", [("lead", "deals_closed", ">", 2)])
 
-        with self.assertRaisesMessage(RuntimeError, f"Tokens {[first.pk, second.pk]} on chain 1"):
+        with self.assertRaisesMessage(
+            RuntimeError, f"Contracts {[first.pk, second.pk]} on chain 1"
+        ):
             _migrate(AFTER)
 
         # Nothing was changed: the migration stopped before its first step committed.
         self.assertTrue(self._model("Rule").objects.filter(pk=inference.pk).exists())
-        self.assertEqual(Token.objects.get(pk=first.pk).address, MIXED)
+        self.assertEqual(Contract.objects.get(pk=first.pk).address, MIXED)
         # Merged, as the error asks, so the migration can run again.
         second.delete()

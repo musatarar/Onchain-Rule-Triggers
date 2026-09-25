@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0010_remove_rule_kinds_and_inference"),
+        ("app", "0011_remove_rule_kinds_and_inference"),
     ]
 
     operations = [

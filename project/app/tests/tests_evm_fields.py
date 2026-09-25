@@ -5,7 +5,7 @@ from django.test import TestCase
 
 from project.app.evm.block import services as block_services
 from project.app.evm.chains import ChainId
-from project.app.models import Block, Token, TokenTransfer, Transaction
+from project.app.models import Block, Contract, Token, TokenTransfer, Transaction
 from project.app.tests.tests_evm_block import LEGACY_HASH, block, legacy_transaction
 
 CHECKSUMMED = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
@@ -15,17 +15,17 @@ LOWER = CHECKSUMMED.lower()
 class AddressFieldTests(TestCase):
     def test_a_save_stores_the_address_lowercased_and_the_instance_holds_it(self):
         # A transfer has no schema in front of it: only the column folds its addresses.
-        token = Token.objects.create(chain=ChainId.ETHEREUM, address=CHECKSUMMED)
+        contract = Contract.objects.create(chain=ChainId.ETHEREUM, address=CHECKSUMMED)
         transfer = TokenTransfer.objects.create(
             transaction_hash="0x" + "ab" * 32,
-            token=token,
+            token=Token.objects.create(contract=contract),
             from_address=CHECKSUMMED,
             to_address=CHECKSUMMED,
             raw_value=1,
         )
 
-        self.assertEqual((token.address, transfer.from_address), (LOWER, LOWER))
-        self.assertEqual(Token.objects.values_list("address", flat=True).get(), LOWER)
+        self.assertEqual((contract.address, transfer.from_address), (LOWER, LOWER))
+        self.assertEqual(Contract.objects.values_list("address", flat=True).get(), LOWER)
         self.assertEqual(
             TokenTransfer.objects.values_list("from_address", "to_address").get(), (LOWER, LOWER)
         )
@@ -48,7 +48,7 @@ class AddressFieldTests(TestCase):
         self.assertEqual(Transaction.objects.get(hash=LEGACY_HASH).from_address, LOWER)
 
     def test_an_exact_or_in_lookup_finds_the_address_whatever_its_case(self):
-        token = Token.objects.create(chain=ChainId.ETHEREUM, address=LOWER)
+        contract = Contract.objects.create(chain=ChainId.ETHEREUM, address=LOWER)
 
-        self.assertEqual(Token.objects.get(address=CHECKSUMMED), token)
-        self.assertEqual(list(Token.objects.filter(address__in=[CHECKSUMMED])), [token])
+        self.assertEqual(Contract.objects.get(address=CHECKSUMMED), contract)
+        self.assertEqual(list(Contract.objects.filter(address__in=[CHECKSUMMED])), [contract])

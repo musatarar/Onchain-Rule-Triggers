@@ -15,16 +15,17 @@ Forward, in order:
    the next ``run_action_jobs`` tick queues its lead again (as a new job) and
    the deterministic pass judges it.
 3. Stored addresses are lowercased: a block's miner, a transaction's and a
-   token transfer's from/to, a withdrawal's address, a token's address, and
-   the threshold of every on-chain comparison on an address field or on a
-   transaction's calldata, which a node returns in lowercase. Only rows
-   holding an upper-case letter are written: ingest mostly stored lowercase
-   already, and rewriting every row would lock them all until the migration
-   commits. Two tokens on one chain whose addresses differ only by case
-   would collide on ``token_chain_address_unique``, so the migration stops
-   and names them rather than guessing which to keep. Hashes are left alone:
-   they are primary keys (``TokenTransfer.transaction_hash`` refers to them
-   by value), and ingest stores them as the node returns them, which is
+   token transfer's from/to, a withdrawal's address, a contract's address
+   (where 0010_contracts moved a token's), and the threshold of every
+   on-chain comparison on an address field or on a transaction's calldata,
+   which a node returns in lowercase. Only rows holding an upper-case letter
+   are written: ingest mostly stored lowercase already, and rewriting every
+   row would lock them all until the migration commits. Two contracts on one
+   chain whose addresses differ only by case would collide on
+   ``contract_chain_address_unique``, so the migration stops and names them
+   rather than guessing which to keep. Hashes are left alone: they are
+   primary keys (``TokenTransfer.transaction_hash`` refers to them by
+   value), and ingest stores them as the node returns them, which is
    lowercase hex.
 4. ``orule_kind_known`` and the ``kind`` and ``inference_prompt`` columns go,
    and ActionJob's status choices and the two constraints that list statuses
@@ -107,23 +108,23 @@ def _not_lowercase(*columns):
 
 
 def lowercase_addresses(apps, schema_editor):
-    Token = apps.get_model("app", "Token")
+    Contract = apps.get_model("app", "Contract")
     clashes = (
-        Token.objects.annotate(lowered=Lower("address"))
+        Contract.objects.annotate(lowered=Lower("address"))
         .values("chain", "lowered")
         .annotate(rows=Count("id"))
         .filter(rows__gt=1)
     )
     for clash in clashes:
         ids = sorted(
-            Token.objects.filter(chain=clash["chain"], address__iexact=clash["lowered"])
+            Contract.objects.filter(chain=clash["chain"], address__iexact=clash["lowered"])
             .values_list("id", flat=True)
         )
         raise RuntimeError(
-            f"Tokens {ids} on chain {clash['chain']} have addresses that differ only by "
+            f"Contracts {ids} on chain {clash['chain']} have addresses that differ only by "
             f"case ({clash['lowered']}); merge them before migrating."
         )
-    Token.objects.filter(_not_lowercase("address")).update(address=Lower("address"))
+    Contract.objects.filter(_not_lowercase("address")).update(address=Lower("address"))
 
     for model_name, columns in ADDRESS_COLUMNS.items():
         model = apps.get_model("app", model_name)
@@ -146,7 +147,7 @@ def lowercase_addresses(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("app", "0009_transaction_withdrawal_block_hash"),
+        ("app", "0010_contracts"),
     ]
 
     operations = [

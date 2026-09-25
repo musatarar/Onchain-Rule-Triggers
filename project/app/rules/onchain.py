@@ -131,21 +131,22 @@ def _transfers_by_hash(block):
     """Every token transfer in ``block``'s transactions, by transaction hash, in log order.
 
     A transaction replayed on another chain keeps its hash, so a transfer is
-    the block's only when its token is on the block's chain. That is checked
-    here rather than in the query, which leaves the transaction-hash index the
-    only way in: with the chain in the query, SQLite without table statistics
-    starts from every token on the chain instead.
+    the block's only when its token's contract is on the block's chain. That
+    is checked here rather than in the query, which leaves the
+    transaction-hash index the only way in: with the chain in the query,
+    SQLite without table statistics starts from every contract on the chain
+    instead.
     """
     transfers = (
         TokenTransfer.objects.filter(
             transaction_hash__in=_in_block(Transaction, block).values("hash")
         )
-        .select_related("token")
+        .select_related("token__contract")
         .order_by("log_index", "id")
     )
     by_hash = {}
     for transfer in transfers:
-        if transfer.token.chain == block.chain:
+        if transfer.token.contract.chain == block.chain:
             by_hash.setdefault(transfer.transaction_hash, []).append(transfer)
     return by_hash
 
@@ -184,7 +185,7 @@ def _value(source, field, field_type, row):
     if row is None:
         return None
     if source == utils.SOURCE_TOKEN_TRANSFER and field == "token":
-        return row.token.address
+        return row.token.contract.address
     value = getattr(row, field)
     if field_type == utils.DATE and isinstance(value, datetime.datetime):
         return value.astimezone(datetime.UTC).date()
