@@ -2,6 +2,7 @@
 
 from project.app.actions.models import ActionJob
 from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import FunctionInput, FunctionSignature
 from project.app.evm.token_standards import TokenStandard
 from project.app.evm.token_transfers import TokenTransfer
@@ -15,6 +16,7 @@ __all__ = [
     "ActionJob",
     "Block",
     "Condition",
+    "Contract",
     "Event",
     "FunctionInput",
     "FunctionSignature",
