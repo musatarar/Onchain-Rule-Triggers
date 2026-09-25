@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from project.app.models import OutreachRule
+from project.app.models import Rule
 from project.app.rules import services
 from project.app.rules.utils import _all_of, _cond
 from project.app.tests.tests_shape_utils import shape_for
@@ -20,9 +20,9 @@ class RulesServiceTestCase(TestCase):
 
     def _rule(self, name, owner=None, **kwargs):
         kwargs.setdefault("owner", owner or self.user)
-        kwargs.setdefault("kind", OutreachRule.KIND_DETERMINISTIC)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         kwargs.setdefault("conditions", _all_of(_cond("deals_closed", ">", 20)))
-        return OutreachRule.objects.create(name=name, **kwargs)
+        return Rule.objects.create(name=name, **kwargs)
 
 
 class OwnerScopedReadTests(RulesServiceTestCase):
@@ -47,7 +47,7 @@ class ValidatedWriteTests(RulesServiceTestCase):
             self.user,
             {
                 "name": "Nudge them",
-                "kind": OutreachRule.KIND_DETERMINISTIC,
+                "kind": Rule.KIND_DETERMINISTIC,
                 "conditions": _all_of(_cond("deals_closed", ">", 20)),
             },
         )
@@ -58,7 +58,7 @@ class ValidatedWriteTests(RulesServiceTestCase):
                 self.user,
                 {
                     "name": "No payload",
-                    "kind": OutreachRule.KIND_DETERMINISTIC,
+                    "kind": Rule.KIND_DETERMINISTIC,
                     "conditions": {},
                 },
             )
@@ -73,4 +73,4 @@ class ValidatedWriteTests(RulesServiceTestCase):
     def test_deleting_a_rule_removes_it(self):
         rule = self._rule("Nudge them")
         services.delete_rule(rule)
-        self.assertFalse(OutreachRule.objects.filter(pk=rule.pk).exists())
+        self.assertFalse(Rule.objects.filter(pk=rule.pk).exists())

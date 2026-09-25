@@ -12,7 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
 from project.app.rules import utils
-from project.app.rules.models import OutreachRule
+from project.app.rules.models import Rule
 
 # --------------------------------------------------------------------------
 # reads — every queryset is scoped to one owner
@@ -20,7 +20,7 @@ from project.app.rules.models import OutreachRule
 
 
 def rules_for(owner):
-    return OutreachRule.objects.filter(owner=owner)
+    return Rule.objects.filter(owner=owner)
 
 
 def enabled_rules_for(owner):
@@ -80,7 +80,7 @@ def _save(instance, fields):
 
 
 def create_rule(owner, fields):
-    return _save(OutreachRule(owner=owner), fields)
+    return _save(Rule(owner=owner), fields)
 
 
 def update_rule(rule, fields):

@@ -14,7 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from project.app.rules import services
-from project.app.rules.models import OutreachRule
+from project.app.rules.models import Rule
 
 
 class CatalogPagination(PageNumberPagination):
@@ -24,9 +24,9 @@ class CatalogPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class OutreachRuleSerializer(serializers.ModelSerializer):
+class RuleSerializer(serializers.ModelSerializer):
     class Meta:
-        model = OutreachRule
+        model = Rule
         fields = [
             "id",
             "name",
@@ -82,10 +82,10 @@ class _CatalogView(APIView):
         return instance
 
 
-class OutreachRuleListCreateView(_CatalogView):
+class RuleListCreateView(_CatalogView):
     """GET/POST /api/rules/ — the signed-in user's rules."""
 
-    serializer_class = OutreachRuleSerializer
+    serializer_class = RuleSerializer
 
     def get(self, request, *args, **kwargs):
         return self._paginated(request, services.rules_for(request.user))
@@ -96,10 +96,10 @@ class OutreachRuleListCreateView(_CatalogView):
         return self._render(rule, status.HTTP_201_CREATED)
 
 
-class OutreachRuleDetailView(_CatalogView):
+class RuleDetailView(_CatalogView):
     """GET/PATCH/DELETE /api/rules/{id}/ — one owned rule."""
 
-    serializer_class = OutreachRuleSerializer
+    serializer_class = RuleSerializer
 
     def _rule(self, request, pk):
         return self._found(services.rule_for(request.user, pk), "rule")
@@ -120,6 +120,6 @@ class OutreachRuleDetailView(_CatalogView):
 # Appended to the `api/` urlpatterns as flat patterns (not include()d): the
 # auth suite audits every pattern's permission classes and expects callbacks.
 urlpatterns = [
-    path("rules/", OutreachRuleListCreateView.as_view(), name="rules-list"),
-    path("rules/<int:pk>/", OutreachRuleDetailView.as_view(), name="rules-detail"),
+    path("rules/", RuleListCreateView.as_view(), name="rules-list"),
+    path("rules/<int:pk>/", RuleDetailView.as_view(), name="rules-detail"),
 ]

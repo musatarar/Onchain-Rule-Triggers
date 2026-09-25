@@ -4,7 +4,7 @@ from project.app.models import (
     ActionJob,
     Event,
     Lead,
-    OutreachRule,
+    Rule,
     Shape,
 )
 
@@ -31,8 +31,8 @@ class EventAdmin(admin.ModelAdmin):
     date_hierarchy = "timestamp"
 
 
-@admin.register(OutreachRule)
-class OutreachRuleAdmin(admin.ModelAdmin):
+@admin.register(Rule)
+class RuleAdmin(admin.ModelAdmin):
     list_display = ("name", "owner", "kind", "enabled", "updated_at")
     list_filter = ("kind", "enabled")
     search_fields = ("name", "owner__username")

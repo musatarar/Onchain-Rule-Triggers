@@ -5,7 +5,7 @@ import datetime
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from project.app.models import Event, Lead, OutreachRule
+from project.app.models import Event, Lead, Rule
 from project.app.rules import inference, schema
 from project.app.services import prompts, sanitize
 from project.app.services.llm import LLMClient, LLMResult, StructuredResult
@@ -82,10 +82,10 @@ class InferenceEngineTests(TestCase):
 
     @classmethod
     def _rule(cls, name, predicate):
-        return OutreachRule.objects.create(
+        return Rule.objects.create(
             owner=cls.user,
             name=name,
-            kind=OutreachRule.KIND_INFERENCE,
+            kind=Rule.KIND_INFERENCE,
             inference_prompt=predicate,
         )
 
