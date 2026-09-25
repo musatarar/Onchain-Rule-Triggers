@@ -17,12 +17,15 @@ Forward, in order:
 3. Stored addresses are lowercased: a block's miner, a transaction's and a
    token transfer's from/to, a withdrawal's address, a token's address, and
    the threshold of every on-chain comparison on an address field or on a
-   transaction's calldata, which a node returns in lowercase. Two tokens
-   on one chain whose addresses differ only by case would collide on
-   ``token_chain_address_unique``, so the migration stops and names them
-   rather than guessing which to keep. Hashes are left alone: they are
-   primary keys (``TokenTransfer.transaction_hash`` refers to them by value),
-   and ingest stores them as the node returns them, which is lowercase hex.
+   transaction's calldata, which a node returns in lowercase. Only rows
+   holding an upper-case letter are written: ingest mostly stored lowercase
+   already, and rewriting every row would lock them all until the migration
+   commits. Two tokens on one chain whose addresses differ only by case
+   would collide on ``token_chain_address_unique``, so the migration stops
+   and names them rather than guessing which to keep. Hashes are left alone:
+   they are primary keys (``TokenTransfer.transaction_hash`` refers to them
+   by value), and ingest stores them as the node returns them, which is
+   lowercase hex.
 4. ``orule_kind_known`` and the ``kind`` and ``inference_prompt`` columns go,
    and ActionJob's status choices and the two constraints that list statuses
    narrow to the ones the engine still uses.
@@ -35,7 +38,7 @@ steps reverse as no-ops.
 """
 
 from django.db import migrations, models
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.db.models.functions import Coalesce, Lower, Now
 
 INFERENCE_STATUSES = ("inferring", "matched_inferred")
@@ -95,6 +98,14 @@ def _lowered(value):
     return value
 
 
+def _not_lowercase(*columns):
+    """Rows where one of ``columns`` holds an upper-case letter; ``NULL`` holds none."""
+    differs = Q()
+    for column in columns:
+        differs |= Q(**{f"{column}__isnull": False}) & ~Q(**{column: Lower(column)})
+    return differs
+
+
 def lowercase_addresses(apps, schema_editor):
     Token = apps.get_model("app", "Token")
     clashes = (
@@ -112,11 +123,13 @@ def lowercase_addresses(apps, schema_editor):
             f"Tokens {ids} on chain {clash['chain']} have addresses that differ only by "
             f"case ({clash['lowered']}); merge them before migrating."
         )
-    Token.objects.update(address=Lower("address"))
+    Token.objects.filter(_not_lowercase("address")).update(address=Lower("address"))
 
     for model_name, columns in ADDRESS_COLUMNS.items():
         model = apps.get_model("app", model_name)
-        model.objects.update(**{column: Lower(column) for column in columns})
+        model.objects.filter(_not_lowercase(*columns)).update(
+            **{column: Lower(column) for column in columns}
+        )
 
     Condition = apps.get_model("app", "Condition")
     for source, fields in LOWERCASE_FIELDS.items():
