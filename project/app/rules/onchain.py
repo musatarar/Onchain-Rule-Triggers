@@ -128,18 +128,25 @@ def _require_decoded(block, transactions):
 
 
 def _transfers_by_hash(block):
-    """Every token transfer in ``block``'s transactions, by transaction hash, in log order."""
+    """Every token transfer in ``block``'s transactions, by transaction hash, in log order.
+
+    A transaction replayed on another chain keeps its hash, so a transfer is
+    the block's only when its token is on the block's chain. That is checked
+    here rather than in the query, which leaves the transaction-hash index the
+    only way in: with the chain in the query, SQLite without table statistics
+    starts from every token on the chain instead.
+    """
     transfers = (
         TokenTransfer.objects.filter(
-            token__chain=block.chain,
-            transaction_hash__in=_in_block(Transaction, block).values("hash"),
+            transaction_hash__in=_in_block(Transaction, block).values("hash")
         )
         .select_related("token")
         .order_by("log_index", "id")
     )
     by_hash = {}
     for transfer in transfers:
-        by_hash.setdefault(transfer.transaction_hash, []).append(transfer)
+        if transfer.token.chain == block.chain:
+            by_hash.setdefault(transfer.transaction_hash, []).append(transfer)
     return by_hash
 
 

@@ -38,6 +38,11 @@ class TokenTransfer(models.Model):
                 name="token_transfer_log_unique",
             ),
         ]
+        indexes = [
+            # A block's transfers are read by its transactions' hashes, and the
+            # unique constraint's index leads with the token.
+            models.Index(fields=["transaction_hash"], name="token_transfer_tx_hash_idx"),
+        ]
 
     def __str__(self):
         log = "" if self.log_index is None else f":{self.log_index}"
