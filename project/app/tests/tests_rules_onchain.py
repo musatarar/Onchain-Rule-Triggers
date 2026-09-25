@@ -16,6 +16,7 @@ from django.test import SimpleTestCase, TestCase
 from project.app.actions.evaluate import ConditionError
 from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
+from project.app.evm.block.models import DecodeStatus
 from project.app.evm.chains import ChainId
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import (
@@ -51,6 +52,9 @@ WITHDRAWAL_ADDRESS = "0xd7a0b38496064412a8d6b1f77bc30ada93e7b7a5"
 ALICE = "0x" + "a1" * 20
 BOB = "0x" + "b0" * 20
 CAROL = "0x" + "c4" * 20
+# A second block at the sample block's number, as a reorg leaves one, and its transaction.
+REORGED_BLOCK_HASH = "0x" + "e0" * 32
+REORGED_HASH = "0x" + "e1" * 32
 
 
 def _mixed_case(address):
@@ -74,9 +78,16 @@ class OnchainTestCase(TestCase):
         # No shape: an on-chain rule names nothing a shape declares.
         self.owner = get_user_model().objects.create_user(username="watcher@lockedin.example")
 
-    def _store(self, raw=None):
-        block_services.store_blocks([raw or block()], ChainId.ETHEREUM)
-        return Block.objects.get(hash=(raw or block())["hash"])
+    def _store(self, raw=None, *, decoded=True):
+        """Store ``raw``, the sample block by default. ``decoded`` marks decoding
+        finished with its transactions; each test stores the transfers it needs."""
+        raw = raw or block()
+        block_services.store_blocks([raw], ChainId.ETHEREUM)
+        if decoded:
+            Transaction.objects.filter(block_hash=raw["hash"]).update(
+                decode_status=DecodeStatus.DECODED
+            )
+        return Block.objects.get(hash=raw["hash"])
 
     def _token(self, address=USDT, name="Tether"):
         return evm_services.save_token(
@@ -244,6 +255,81 @@ class WithdrawalAndBlockRuleTests(OnchainTestCase):
             self._matches(_all_of(_cond("timestamp", ">", "2023-08-26", source="block")), stored),
             [],
         )
+
+
+class ReorgTests(OnchainTestCase):
+    """A reorg can put two blocks at one number: each reads only the rows stored with it."""
+
+    def _reorged(self):
+        return self._store(
+            block(
+                hash=REORGED_BLOCK_HASH,
+                transactions=[dynamic_fee_transaction(hash=REORGED_HASH)],
+                withdrawals=[withdrawal(index="0xeb9b8d", address=ALICE)],
+            )
+        )
+
+    def test_each_block_at_one_number_reads_only_its_own_transactions(self):
+        stored = self._store()
+        reorged = self._reorged()
+        conditions = _all_of(tx("value", ">=", 0))
+
+        self.assertEqual(
+            [row.hash for row in self._matches(conditions, stored)],
+            [DYNAMIC_FEE_HASH, LEGACY_HASH],
+        )
+        self.assertEqual([row.hash for row in self._matches(conditions, reorged)], [REORGED_HASH])
+
+    def test_each_block_at_one_number_reads_only_its_own_transfers_and_withdrawals(self):
+        stored = self._store()
+        reorged = self._reorged()
+        self._transfer(REORGED_HASH, self._token(), 0, sender=ALICE, recipient=BOB)
+        moved_usdt = _all_of(transfer("token", "==", USDT))
+        withdrawn = _all_of(_cond("amount", ">=", 0, source="withdrawal"))
+
+        self.assertEqual(self._matches(moved_usdt, stored), [])
+        self.assertEqual([row.hash for row in self._matches(moved_usdt, reorged)], [REORGED_HASH])
+        self.assertEqual(
+            [row.address for row in self._matches(withdrawn, stored)], [WITHDRAWAL_ADDRESS]
+        )
+        self.assertEqual([row.address for row in self._matches(withdrawn, reorged)], [ALICE])
+
+    def test_a_row_stored_before_block_hashes_were_recorded_is_read_by_no_block(self):
+        stored = self._store()
+        Transaction.objects.filter(hash=LEGACY_HASH).update(block_hash=None)
+
+        matched = self._matches(_all_of(tx("value", ">=", 0)), stored)
+
+        self.assertEqual([row.hash for row in matched], [DYNAMIC_FEE_HASH])
+
+
+class DecodingTests(OnchainTestCase):
+    def test_a_transfer_rule_is_refused_until_decoding_has_finished_with_the_block(self):
+        stored = self._store(decoded=False)
+        rule = self._rule(_all_of(transfer("token", "absent")))
+
+        # Before decoding, `absent` would hold of a transaction whose transfer is not stored yet.
+        with self.assertRaisesMessage(onchain.NotDecodedError, "not all stored yet"):
+            onchain.matches_in_block(rule, stored)
+
+        Transaction.objects.filter(hash=LEGACY_HASH).update(
+            decode_status=DecodeStatus.UNABLE_TO_DECODE
+        )
+        Transaction.objects.filter(hash=DYNAMIC_FEE_HASH).update(
+            decode_status=DecodeStatus.PROCESSING
+        )
+        with self.assertRaisesMessage(onchain.NotDecodedError, DYNAMIC_FEE_HASH):
+            onchain.matches_in_block(rule, stored)
+
+        Transaction.objects.filter(hash=DYNAMIC_FEE_HASH).update(decode_status=DecodeStatus.DECODED)
+        self.assertEqual(len(onchain.matches_in_block(rule, stored)), 2)
+
+    def test_a_rule_reading_no_transfer_is_judged_before_decoding(self):
+        stored = self._store(decoded=False)
+
+        matched = self._matches(_all_of(tx("to_address", "==", DYNAMIC_TO)), stored)
+
+        self.assertEqual([row.hash for row in matched], [DYNAMIC_FEE_HASH])
 
 
 class AddressCaseTests(OnchainTestCase):

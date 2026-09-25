@@ -212,15 +212,12 @@ def _build_node(nodes, parent, node):
     return group
 
 
-def render_tree(nodes):
-    """A rule's tree as its v1 ``conditions`` payload; ``{}`` when it has none.
+def root_and_children(nodes):
+    """One rule's tree, assembled: its root (``None`` when it has none) and each
+    group's children by the group's id, in id order.
 
-    ``nodes`` is every node of one rule's tree, read in one go and assembled
-    here by ``parent_id``, so a prefetched tree renders with no query. Sibling
-    order is id order: ``Condition`` orders by id (sorted again here, for a
-    caller that hands the nodes over in another order) and :func:`build_tree`
-    creates each group's children in list order, so the payload a tree was
-    built from is the payload it renders.
+    ``nodes`` is every node of the tree, read in one go, so a prefetched tree
+    is assembled with no query.
     """
     children = {}
     root = None
@@ -229,6 +226,20 @@ def render_tree(nodes):
             root = node
         else:
             children.setdefault(node.parent_id, []).append(node)
+    return root, children
+
+
+def render_tree(nodes):
+    """A rule's tree as its v1 ``conditions`` payload; ``{}`` when it has none.
+
+    ``nodes`` is every node of one rule's tree, read in one go and assembled
+    by :func:`root_and_children`, so a prefetched tree renders with no query.
+    Sibling order is id order: ``Condition`` orders by id (sorted again there,
+    for a caller that hands the nodes over in another order) and
+    :func:`build_tree` creates each group's children in list order, so the
+    payload a tree was built from is the payload it renders.
+    """
+    root, children = root_and_children(nodes)
     if root is None:
         return {}
     payload = _render_node(root, children)

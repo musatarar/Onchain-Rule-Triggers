@@ -9,10 +9,22 @@ and the same token transfer:
   transaction in the block, bound with each of its token transfers in turn,
   or with none when it has none. The transaction matches when one of those
   bindings satisfies the tree, so two ``token_transfer`` comparisons have to
-  hold of one transfer, and ``absent`` on a transfer field means the
-  transaction moved no token;
+  hold of one transfer, and ``absent`` on a transfer field means no transfer
+  was decoded for the transaction;
 - a tree reading ``withdrawal`` is tried against each withdrawal in the block;
 - a tree reading only ``block`` is tried against the block.
+
+A transaction's token transfers are the ones decoding stored for it
+(:mod:`project.app.evm.decoding`): the ``transfer`` or ``transferFrom`` its
+calldata makes, unchecked against its receipt. A token moved by a contract the
+transaction calls leaves no transfer, so ``absent`` holds of that transaction
+too. Before decoding has finished with every transaction in the block, their
+transfers are not all stored, so a tree reading ``token_transfer`` is refused
+with :class:`NotDecodedError` rather than judged on the ones that are.
+
+A block's rows are the ones stored with it, named by its hash, since a reorg
+can put two blocks at one number. A row stored before block hashes were
+recorded names no block, so no block reads it until its block is stored again.
 
 A comparison on a source the binding leaves unbound (a ``token_transfer``
 comparison with no transfer bound) reads no value: ``absent`` holds of it,
@@ -30,11 +42,19 @@ import datetime
 from decimal import Decimal
 
 from project.app.actions import evaluate
-from project.app.evm.block.models import Transaction, Withdrawal
+from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import utils
 
 GROUP_CHECKS = {"AND": all, "OR": any}
+
+# A transaction decoding has not finished with: its transfers may not be stored yet.
+UNDECODED = (DecodeStatus.INGESTED, DecodeStatus.PROCESSING)
+
+
+class NotDecodedError(Exception):
+    """A block whose token transfers are not all stored, because decoding has
+    not finished with every one of its transactions."""
 
 
 def matches_in_block(rule, block):
@@ -45,7 +65,9 @@ def matches_in_block(rule, block):
     :class:`~project.app.evm.block.models.Withdrawal` rows for a withdrawal
     rule, and ``[block]`` or ``[]`` for a block-only rule. Raises
     :class:`~project.app.actions.evaluate.ConditionError` for a rule that reads
-    lead sources, has no tree, or names something this evaluator cannot read.
+    lead sources, has no tree, or names something this evaluator cannot read,
+    and :class:`NotDecodedError` for a rule reading token transfers before
+    decoding has finished with the block.
     """
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
@@ -55,7 +77,7 @@ def matches_in_block(rule, block):
             f"({', '.join(sorted(sources & utils.LEAD_SOURCES))}); only an on-chain rule "
             "is evaluated against a block."
         )
-    root, children = _tree(nodes)
+    root, children = utils.root_and_children(nodes)
     if root is None:
         raise evaluate.ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
 
@@ -63,36 +85,54 @@ def matches_in_block(rule, block):
         return _holds(root, children, {utils.SOURCE_BLOCK: block, **rows})
 
     if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
-        transactions = list(
-            Transaction.objects.filter(chain=block.chain, block_number=block.number).order_by(
-                "transaction_index"
-            )
-        )
-        transfers = _transfers_by_hash(block) if utils.SOURCE_TOKEN_TRANSFER in sources else {}
+        transactions = list(_in_block(Transaction, block).order_by("transaction_index"))
+        transfers = {}
+        if utils.SOURCE_TOKEN_TRANSFER in sources:
+            _require_decoded(block, transactions)
+            transfers = _transfers_by_hash(block)
         return [
             transaction
             for transaction in transactions
             if any(
                 holds(transaction=transaction, token_transfer=transfer)
                 # No transfer is bound only when there is none to bind, so
-                # `absent` cannot hold of a transaction that moved a token.
+                # `absent` cannot hold of a transaction a transfer was decoded for.
                 for transfer in transfers.get(transaction.hash) or [None]
             )
         ]
     if utils.SOURCE_WITHDRAWAL in sources:
-        withdrawals = Withdrawal.objects.filter(
-            chain=block.chain, block_number=block.number
-        ).order_by("index")
+        withdrawals = _in_block(Withdrawal, block).order_by("index")
         return [withdrawal for withdrawal in withdrawals if holds(withdrawal=withdrawal)]
     return [block] if holds() else []
 
 
+def _in_block(model, block):
+    """``model``'s rows stored with ``block``.
+
+    Its hash says which block a row is in; its chain and number, which the
+    ``(chain, block_number)`` index covers, find the rows at that height first.
+    """
+    return model.objects.filter(chain=block.chain, block_number=block.number, block_hash=block.hash)
+
+
+def _require_decoded(block, transactions):
+    pending = [
+        transaction.hash for transaction in transactions if transaction.decode_status in UNDECODED
+    ]
+    if pending:
+        raise NotDecodedError(
+            f"Decoding has not finished with {len(pending)} transaction(s) in block "
+            f"{block.hash} (the first is {pending[0]}), so its token transfers are not all "
+            "stored yet."
+        )
+
+
 def _transfers_by_hash(block):
     """Every token transfer in ``block``'s transactions, by transaction hash, in log order."""
-    in_block = Transaction.objects.filter(chain=block.chain, block_number=block.number)
     transfers = (
         TokenTransfer.objects.filter(
-            token__chain=block.chain, transaction_hash__in=in_block.values("hash")
+            token__chain=block.chain,
+            transaction_hash__in=_in_block(Transaction, block).values("hash"),
         )
         .select_related("token")
         .order_by("log_index", "id")
@@ -101,18 +141,6 @@ def _transfers_by_hash(block):
     for transfer in transfers:
         by_hash.setdefault(transfer.transaction_hash, []).append(transfer)
     return by_hash
-
-
-def _tree(nodes):
-    """The root of one rule's tree and each group's children, in id order."""
-    children = {}
-    root = None
-    for node in sorted(nodes, key=lambda node: node.pk):
-        if node.parent_id is None:
-            root = node
-        else:
-            children.setdefault(node.parent_id, []).append(node)
-    return root, children
 
 
 def _holds(node, children, rows):
