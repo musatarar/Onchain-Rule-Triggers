@@ -8,13 +8,13 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.db.models import Q
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
 from project.app.models import Event, Lead, Rule
-from project.app.rules import schema, utils
+from project.app.rules import inference, schema, utils
 from project.app.rules import utils as rules_utils
 from project.app.rules.utils import _all_of
 from project.app.tests.tests_shape_utils import shape, shape_for
@@ -27,6 +27,17 @@ def _cond(field, operator, threshold=None, source=None):
 
 
 TODAY = datetime.date(2026, 6, 12)
+
+
+def _section(*holding, unevaluable=()):
+    """An inference section as ``rules.inference.infer`` returns one: every
+    named rule holding, and every id in ``unevaluable`` answered unusably."""
+    verdicts = [
+        schema.Verdict(rule_id=rule.pk, holds=True, evidence_quote=None) for rule in holding
+    ]
+    return schema.inference_section(
+        len(holding) + len(unevaluable), holding, verdicts, list(unevaluable)
+    )
 
 
 class EngineTestCase(TestCase):
@@ -64,6 +75,7 @@ class EngineTestCase(TestCase):
 
     def _rule(self, name, **kwargs):
         kwargs.setdefault("owner", self.owner)
+        kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
         conditions = kwargs.pop("conditions", _all_of(_cond("deals_closed", ">", 2)))
         rule = Rule.objects.create(name=name, **kwargs)
         utils.build_tree(rule, conditions)
@@ -249,16 +261,18 @@ class ClaimTests(EngineTestCase):
         job = services.enqueue_lead(self._lead())
 
         with self.assertRaises(ValueError):
-            services._transition(job, ActionJob.STATUS_QUEUED, ActionJob.STATUS_NO_MATCH)
+            services._transition(job, ActionJob.STATUS_QUEUED, ActionJob.STATUS_MATCHED_INFERRED)
 
 
 class DeterministicPassTests(EngineTestCase):
-    def test_a_matching_rule_settles_the_job(self):
+    def test_a_matching_rule_settles_the_job_without_reaching_inference(self):
         rule = self._rule("Modest deal momentum")
         job = services.enqueue_lead(self._lead())
 
-        self._run(job)
+        with mock.patch.object(inference, "infer") as infer:
+            self._run(job)
 
+        infer.assert_not_called()
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_MATCHED_DETERMINISTIC)
         self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [rule.pk])
@@ -274,42 +288,6 @@ class DeterministicPassTests(EngineTestCase):
 
         job.refresh_from_db()
         self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [first.pk, second.pk])
-
-    def test_a_lead_no_rule_matches_finishes_as_no_match_without_calling_the_llm(self):
-        self._rule("Big book", conditions=_all_of(_cond("deals_closed", ">", 100)))
-        job = services.enqueue_lead(self._lead())
-
-        with mock.patch("project.app.services.llm.get_llm_client") as get_llm_client:
-            self._run(job)
-
-        get_llm_client.assert_not_called()
-        job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
-        self.assertEqual(
-            job.decision,
-            {
-                "owner_id": self.owner.pk,
-                "rules_evaluated": 1,
-                "deterministic": {"matched_rule_ids": [], "matched_rules": []},
-                "unevaluable_rule_ids": [],
-            },
-        )
-
-    def test_an_onchain_rule_is_skipped_rather_than_recorded_as_unevaluable(self):
-        lead_rule = self._rule("modest momentum")
-        self._rule(
-            "whales",
-            conditions=_all_of(_cond("value", ">", 10**18, source="transaction")),
-        )
-        job = services.enqueue_lead(self._lead())
-
-        self._run(job)
-
-        job.refresh_from_db()
-        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_DETERMINISTIC)
-        self.assertEqual(job.decision["rules_evaluated"], 1)
-        self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [lead_rule.pk])
-        self.assertEqual(job.decision["unevaluable_rule_ids"], [])
 
     def test_a_disabled_rule_never_fires(self):
         self._rule("off", enabled=False)
@@ -432,6 +410,193 @@ class OwnerScopingTests(EngineTestCase):
         self.assertEqual(job.decision["deterministic"]["matched_rule_ids"], [theirs.pk])
 
 
+@override_settings(ACTIONS_LLM_DRY_RUN=False)
+class InferencePassTests(EngineTestCase):
+    def _inference_rule(self, name, **kwargs):
+        return self._rule(
+            name,
+            kind=Rule.KIND_INFERENCE,
+            conditions=kwargs.pop("conditions", {}),
+            inference_prompt=kwargs.pop("inference_prompt", "the notes say they need help"),
+            **kwargs,
+        )
+
+    def test_a_lead_no_deterministic_rule_resolves_reaches_the_inference_pass(self):
+        rule = self._inference_rule("they need help")
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(
+            inference, "infer", return_value=_section(unevaluable=[rule.pk])
+        ) as infer:
+            self._run(job)
+
+        candidates, _lead, today = infer.call_args.args
+        self.assertEqual([candidate.pk for candidate in candidates], [rule.pk])
+        self.assertEqual(today, TODAY)
+        job.refresh_from_db()
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
+
+    def test_a_pass_that_answers_nothing_finishes_as_no_match(self):
+        rule = self._inference_rule("they need help")
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", return_value=_section(unevaluable=[rule.pk])):
+            self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
+        self.assertEqual(job.decision["inference"]["matched_rule_ids"], [])
+
+    def test_a_candidate_answered_unusably_is_unevaluable_not_a_refusal(self):
+        rule = self._inference_rule("they need help")
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", return_value=_section(unevaluable=[rule.pk])):
+            self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
+        self.assertEqual(job.decision["inference"]["matched_rule_ids"], [])
+        self.assertEqual(job.decision["inference"]["verdicts"], [])
+
+    def test_both_passes_unevaluable_rules_land_in_one_list(self):
+        deterministic = self._rule("stale vocabulary")
+        self._stale(
+            deterministic,
+            {
+                "version": utils.SCHEMA_VERSION,
+                "operator": "all_of",
+                "conditions": [
+                    {
+                        "field": "favourite_colour",
+                        "operator": "==",
+                        "source": "lead",
+                        "threshold": "red",
+                    }
+                ],
+            },
+        )
+        inferred = self._inference_rule("they need help")
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(
+            inference, "infer", return_value=_section(unevaluable=[inferred.pk])
+        ):
+            self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(
+            job.decision["unevaluable_rule_ids"], sorted([deterministic.pk, inferred.pk])
+        )
+        self.assertNotIn("unevaluable_rule_ids", job.decision["inference"])
+        self.assertNotIn("rules_evaluated", job.decision["inference"])
+
+    def test_an_inference_rule_gated_by_conditions_is_not_asked_until_they_hold(self):
+        self._inference_rule(
+            "gated",
+            conditions=_all_of(_cond("deals_closed", ">", 100)),
+        )
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", return_value=_section()) as infer:
+            self._run(job)
+
+        candidates, _lead, _today = infer.call_args.args
+        self.assertEqual(list(candidates), [])
+        job.refresh_from_db()
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [])
+
+    def test_a_match_from_the_pass_finishes_the_job_as_matched_inferred(self):
+        rule = self._inference_rule("they need help")
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", return_value=_section(rule)):
+            self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_INFERRED)
+        self.assertEqual(job.decision["inference"]["matched_rule_ids"], [rule.pk])
+
+    def test_a_verdict_naming_a_rule_that_was_never_a_candidate_is_not_a_match(self):
+        candidate = self._inference_rule("they need help")
+        other = get_user_model().objects.create_user(username="other@elsewhere.example")
+        shape_for(other)
+        stranger = self._inference_rule("someone else's rule", owner=other)
+        job = services.enqueue_lead(self._lead())
+        section = _section(candidate)
+        section["matched_rule_ids"] = [stranger.pk]
+        section["matched_rules"] = [stranger.name]
+
+        with mock.patch.object(inference, "infer", return_value=section):
+            self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
+
+
+class DryRunTests(EngineTestCase):
+    """ACTIONS_LLM_DRY_RUN decides whether a run may reach the provider at all."""
+
+    def _inference_rule(self, name="they need help"):
+        return self._rule(
+            name,
+            kind=Rule.KIND_INFERENCE,
+            conditions={},
+            inference_prompt="the notes say they need help",
+        )
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_a_dry_run_never_calls_the_inference_pass(self):
+        self._inference_rule()
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer") as infer:
+            self._run(job)
+
+        infer.assert_not_called()
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_a_dry_run_leaves_every_candidate_unevaluable_and_says_why(self):
+        rule = self._inference_rule()
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_MATCH)
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
+        self.assertIn("ACTIONS_LLM_DRY_RUN", job.decision["inference"]["reason"])
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_a_dry_run_still_resolves_a_lead_the_deterministic_pass_settles(self):
+        self._rule("modest momentum")
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_MATCHED_DETERMINISTIC)
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=False)
+    def test_the_inference_pass_runs_when_the_dry_run_flag_is_off(self):
+        self._inference_rule()
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", return_value=_section()) as infer:
+            self._run(job)
+
+        infer.assert_called_once()
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_the_command_says_a_tick_is_dry_before_it_runs(self):
+        self._lead()
+        out = StringIO()
+
+        call_command("run_action_jobs", stdout=out)
+
+        self.assertIn("ACTIONS_LLM_DRY_RUN", out.getvalue())
+
+
 class FailureTests(EngineTestCase):
     def test_a_job_that_raises_is_recorded_as_failed_rather_than_sinking_the_batch(self):
         first = services.enqueue_lead(self._lead("lead_001"))
@@ -548,34 +713,3 @@ class ConstraintTests(EngineTestCase):
         self.assertEqual(
             set(constraint.check.children[0][1]), {value for value, _ in ActionJob.STATUS_CHOICES}
         )
-
-
-class DecisionPayloadTests(TestCase):
-    def test_the_payload_nests_the_deterministic_section_and_lifts_the_shared_keys(self):
-        payload = schema.decision(
-            owner_id=7,
-            rules_evaluated=3,
-            deterministic={
-                "rules_evaluated": 1,
-                "matched_rule_ids": [12],
-                "matched_rules": ["Reward power users"],
-                "unevaluable_rule_ids": [43, 41],
-            },
-        )
-        self.assertEqual(
-            payload,
-            {
-                "owner_id": 7,
-                "rules_evaluated": 3,
-                "deterministic": {
-                    "matched_rule_ids": [12],
-                    "matched_rules": ["Reward power users"],
-                },
-                "unevaluable_rule_ids": [41, 43],
-            },
-        )
-
-    def test_a_payload_with_no_section_still_carries_its_keys(self):
-        payload = schema.decision(owner_id=7, rules_evaluated=0)
-        self.assertEqual(payload["deterministic"], {})
-        self.assertEqual(payload["unevaluable_rule_ids"], [])

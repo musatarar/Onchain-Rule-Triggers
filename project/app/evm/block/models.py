@@ -4,9 +4,8 @@ Columns follow the JSON-RPC field names in snake_case. Quantities arrive as hex
 and are stored as numbers: a count or index that fits 64 bits is a
 ``BigIntegerField``, and anything typed uint256 on chain (wei amounts, fees,
 difficulty) is a 78-digit ``DecimalField``, which Postgres holds exactly and
-SQLite rounds to 15 significant digits. Hashes and byte strings stay as the
-``0x`` text they arrived as; addresses are stored lowercased, so one account is
-one value however its address was written (a checksummed address mixes case).
+SQLite rounds to 15 significant digits. Hashes, addresses and byte strings stay
+as the ``0x`` text they arrived as.
 
 Every row names its ``chain``, since a node's response never does. A
 transaction or withdrawal carries its block's number rather than a link to the
@@ -16,7 +15,7 @@ block row, so ``chain`` and ``block_number`` together say which block it is in.
 import datetime
 
 from django.db import models
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from project.app.evm.chains import ChainId
 from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGITS
@@ -24,11 +23,6 @@ from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGIT
 
 def _uint256(**options):
     return models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, **options)
-
-
-def _lowercase(address):
-    """One account is one value however its address was written."""
-    return None if address is None else address.lower()
 
 
 class BlockUpdateSchema(BaseModel):
@@ -53,8 +47,6 @@ class BlockUpdateSchema(BaseModel):
     withdrawals_root: str | None
     size: int
     uncles: list[str]
-
-    _miner = field_validator("miner")(_lowercase)
 
 
 class BlockCreateSchema(BlockUpdateSchema):
@@ -133,8 +125,6 @@ class TransactionUpdateSchema(BaseModel):
     y_parity: int | None
     v: int
 
-    _addresses = field_validator("from_address", "to_address")(_lowercase)
-
 
 class TransactionCreateSchema(TransactionUpdateSchema):
     """A transaction that is not stored yet."""
@@ -197,8 +187,6 @@ class WithdrawalUpdateSchema(BaseModel):
     validator_index: int
     address: str
     amount: int
-
-    _address = field_validator("address")(_lowercase)
 
 
 class WithdrawalCreateSchema(WithdrawalUpdateSchema):

@@ -1,16 +1,15 @@
 """User-defined rules catalog: the rules that select leads.
 
-A rule is its conditions: a tree of :class:`Condition` rows comparing fields
-against thresholds. A tree reads either the lead sources (the columns the
-owner's shape declares, and figures derived from them) or the on-chain ones (a
-block, its transactions, withdrawals and token transfers), never both. The
-actions engine evaluates lead rules against a lead;
-:mod:`project.app.rules.onchain` evaluates on-chain rules against a stored
-block.
+The user outlines deterministic rules (a column their shape declares, compared
+against a threshold) and AI inferences ("notes show they need help"); the
+engine evaluates them later — deterministic rules in-process, inference rules
+via the LLM seam against sanitized, fenced lead data. Nothing here names a
+column; the shape is the only vocabulary.
 """
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxLengthValidator
 from django.db import models
 from django.db.models import Q
 
@@ -18,29 +17,52 @@ from project.app.rules import utils
 
 
 class Rule(models.Model):
-    """A user-authored rule: a predicate that either holds or does not.
+    """A user-authored rule: a predicate that either holds for a lead or does not.
 
-    The predicate is a tree of :class:`Condition` rows, read and written as the
+    A ``deterministic`` rule is its conditions: a tree of :class:`Condition`
+    rows naming the columns the owner's shape declares and the figures derived
+    from them, evaluated in-process. The tree is read and written as the
     structured, versioned ``conditions`` payload of
     :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
-    ``rules.services`` on write). What a rule reads, a lead or a block,
-    follows from the sources its tree names (:meth:`sources`), not from a
-    stored flag.
+    ``rules.services`` on write). An
+    ``inference`` rule adds ``inference_prompt``, a natural-language predicate
+    the LLM seam evaluates against the lead's sanitized, fenced data, and may
+    stand on that predicate alone. Conditions on an inference rule are
+    optional and act as a gate: the model is asked only once they hold, so a
+    lead the structured part already ruled out costs no provider call.
 
     Rules are not first-match: every one is evaluated, and a run records every
-    rule that matched.
+    rule that matched the lead.
     """
 
+    KIND_DETERMINISTIC = "deterministic"
+    KIND_INFERENCE = "inference"
+    KIND_CHOICES = [
+        (KIND_DETERMINISTIC, "Deterministic"),
+        (KIND_INFERENCE, "AI inference"),
+    ]
+
     # The ``conditions`` schema, its vocabulary, its validator and its tree
-    # conversion all live in utils, which reads the nameable lead fields off
-    # the owner's declared shape.
+    # conversion all live in utils, which reads the nameable fields off the
+    # owner's declared shape.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
+
+    # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the
+    # cap bounds per-rule provider spend.
+    INFERENCE_PROMPT_MAX_CHARS = 2000
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="rules"
     )
     name = models.CharField(max_length=255)  # "Reward power users"
-    # The predicate is the ``all_conditions`` tree, which every rule has.
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    # The structured predicate is the ``all_conditions`` tree. Required on a
+    # deterministic rule, since it is the whole predicate; optional on an
+    # inference rule, where it gates the model.
+    # Inference predicate; "" on deterministic rules.
+    inference_prompt = models.TextField(
+        blank=True, default="", validators=[MaxLengthValidator(INFERENCE_PROMPT_MAX_CHARS)]
+    )
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -51,6 +73,27 @@ class Rule(models.Model):
             # The engine's fetch: one user's enabled rules.
             models.Index(fields=["owner", "enabled"], name="orule_owner_enabled"),
         ]
+        constraints = [
+            # Literal values: Meta cannot see the enclosing class namespace.
+            models.CheckConstraint(
+                check=Q(kind__in=("deterministic", "inference")),
+                name="orule_kind_known",
+            ),
+        ]
+
+    def build_inference_prompt(self):
+        """One line of the evaluation prompt: ``<predicate> ? <id>``.
+
+        The id is this rule's own, so the prefix is identical for every lead the
+        same rules are asked about and a verdict maps straight back. It buys the
+        model no reach: the caller answers only for the ids it put in front of
+        the model, so a verdict naming any other id is unevaluable, never a
+        match. ``clean()`` has already refused the characters that could forge a
+        second line or answer slot.
+        """
+        if self.kind != self.KIND_INFERENCE:
+            raise ValueError("Only inference rules build an inference prompt.")
+        return f"{(self.inference_prompt or '').strip()} ? {self.pk}"
 
     def conditions_payload(self):
         """This rule's tree as its v1 ``conditions`` payload; ``{}`` when it has none.
@@ -63,18 +106,34 @@ class Rule(models.Model):
             return {}
         return utils.render_tree(self.all_conditions.all())
 
-    def sources(self):
-        """The sources this rule's comparisons read, as a frozenset.
+    def clean(self):
+        """Enforce the kind <-> inference prompt pairing.
 
-        Read off ``all_conditions`` like :meth:`conditions_payload`, so a
-        prefetched tree answers with no query.
+        The conditions live in their own rows, so the write path
+        (``rules.services``) checks them and their pairing with the kind.
         """
-        if self.pk is None:
-            return frozenset()
-        return utils.tree_sources(self.all_conditions.all())
+        problems = {}
+        prompt = (self.inference_prompt or "").strip()
+        if self.kind == self.KIND_DETERMINISTIC:
+            if prompt:
+                problems["inference_prompt"] = (
+                    "A deterministic rule must not carry an inference prompt."
+                )
+        elif self.kind == self.KIND_INFERENCE:
+            if not prompt:
+                problems["inference_prompt"] = (
+                    "An inference rule needs its natural-language predicate."
+                )
+            else:
+                try:
+                    utils.validate_inference_predicate(prompt)
+                except ValidationError as exc:
+                    problems["inference_prompt"] = exc.messages
+        if problems:
+            raise ValidationError(problems)
 
     def __str__(self):
-        return f"rule {self.name!r} of user {self.owner_id}"
+        return f"rule {self.name!r} ({self.kind}) of user {self.owner_id}"
 
 
 class Condition(models.Model):
@@ -97,16 +156,15 @@ class Condition(models.Model):
     GROUP_TYPES = (TYPE_AND, TYPE_OR)
 
     # The record a comparison reads its field from: a lead-side source of the
-    # v1 ``conditions`` vocabulary (``rules.utils.SOURCES``) or an on-chain one
-    # (``rules.utils.ONCHAIN_SOURCES``).
+    # v1 ``conditions`` vocabulary (``rules.utils.SOURCES``) or an on-chain one.
     SOURCE_LEAD = utils.SOURCE_LEAD
     SOURCE_DERIVED = utils.SOURCE_DERIVED
     SOURCE_NOTES = utils.SOURCE_NOTES
     SOURCE_EVENTS = utils.SOURCE_EVENTS
-    SOURCE_BLOCK = utils.SOURCE_BLOCK
-    SOURCE_TRANSACTION = utils.SOURCE_TRANSACTION
-    SOURCE_WITHDRAWAL = utils.SOURCE_WITHDRAWAL
-    SOURCE_TOKEN_TRANSFER = utils.SOURCE_TOKEN_TRANSFER
+    SOURCE_BLOCK = "block"
+    SOURCE_TRANSACTION = "transaction"
+    SOURCE_WITHDRAWAL = "withdrawal"
+    SOURCE_TOKEN_TRANSFER = "token_transfer"
     SOURCE_CHOICES = [
         (SOURCE_LEAD, "Lead"),
         (SOURCE_DERIVED, "Derived"),
