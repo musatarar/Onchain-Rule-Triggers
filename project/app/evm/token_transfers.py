@@ -13,6 +13,8 @@ class TokenTransfer(models.Model):
     carries the chain, so the three together name exactly one row. A transfer
     read from calldata has no log index yet, so the constraint cannot hold it
     to one row: the transaction's ``decode_status`` does, by decoding it once.
+    Addresses are stored lowercased, as blocks, transactions and tokens store
+    theirs.
     """
 
     transaction_hash = models.CharField(max_length=66)  # "0x" and 32 bytes of hex

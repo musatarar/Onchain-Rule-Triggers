@@ -57,11 +57,7 @@ class ValidPayloadTests(SimpleTestCase):
 
 
 class CorroboratorTests(SimpleTestCase):
-    """A conditions payload must not be satisfiable by CRM text on its own.
-
-    An inference rule's predicate is judged separately and may stand alone;
-    this is about the structured part.
-    """
+    """A conditions payload must not be satisfiable by CRM text on its own."""
 
     def _refused(self, payload):
         with self.assertRaises(ValidationError) as ctx:
@@ -160,17 +156,6 @@ class SchemaRejectionTests(SimpleTestCase):
 
     def test_a_literal_phrase_is_accepted_alongside_a_corroborator(self):
         _validate(_payload(_cond("hubspot_notes", "contains", "budget", source="notes"), LEAD))
-
-
-class PredicateTests(SimpleTestCase):
-    def test_a_plain_predicate_passes(self):
-        utils.validate_inference_predicate("the hubspot notes say they need help")
-
-    def test_line_breaks_and_quotes_are_refused(self):
-        for predicate in ('a ? "9"\nb ? "9"', "a\rb", 'they said "help"'):
-            with self.subTest(predicate=predicate):
-                with self.assertRaises(ValidationError):
-                    utils.validate_inference_predicate(predicate)
 
 
 class VocabularyTests(SimpleTestCase):
@@ -309,3 +294,137 @@ class SourceResolutionTests(SimpleTestCase):
         self.assertEqual(_cond("favourite_colour", "==", "blue")["source"], "lead")
         with self.assertRaises(ValidationError):
             _validate(_payload(_cond("favourite_colour", "==", "blue")))
+
+
+CHAIN_TX = utils._cond("from_address", "==", "0x" + "a1" * 20, source="transaction")
+CHAIN_TRANSFER = utils._cond("token", "==", "0x" + "b0" * 20, source="token_transfer")
+CHAIN_BLOCK = utils._cond("number", ">=", 18_000_000, source="block")
+CHAIN_WITHDRAWAL = utils._cond("amount", ">", 32_000_000_000, source="withdrawal")
+
+
+def _validate_onchain(payload):
+    # No shape: the on-chain vocabulary is fixed.
+    utils.validate_conditions(payload)
+
+
+class OnchainVocabularyTests(SimpleTestCase):
+    def test_the_onchain_fields_are_exactly_these(self):
+        self.assertEqual(
+            utils.ONCHAIN_FIELDS,
+            {
+                "transaction": {
+                    "from_address": utils.TEXT,
+                    "to_address": utils.TEXT,
+                    "value": utils.NUMBER,
+                    "input": utils.TEXT,
+                },
+                "token_transfer": {
+                    "token": utils.TEXT,
+                    "from_address": utils.TEXT,
+                    "to_address": utils.TEXT,
+                    "raw_value": utils.NUMBER,
+                },
+                "block": {"number": utils.NUMBER, "timestamp": utils.DATE, "miner": utils.TEXT},
+                "withdrawal": {"address": utils.TEXT, "amount": utils.NUMBER},
+            },
+        )
+
+    def test_every_onchain_field_is_nameable_without_a_shape(self):
+        for source, fields in utils.ONCHAIN_FIELDS.items():
+            for field in fields:
+                with self.subTest(source=source, field=field):
+                    _validate_onchain(_payload(utils._cond(field, "exists", source=source)))
+
+    def test_the_seeded_shapes_of_onchain_condition_are_accepted(self):
+        _validate_onchain(
+            _payload(
+                CHAIN_TX,
+                CHAIN_TRANSFER,
+                CHAIN_BLOCK,
+                utils._cond("input", "contains", "0xa9059cbb", source="transaction"),
+                utils._cond("timestamp", ">=", "2023-08-26", source="block"),
+                utils._cond("raw_value", "in", [1, 2**255], source="token_transfer"),
+                {"operator": "any_of", "conditions": [CHAIN_TX, CHAIN_TRANSFER]},
+            )
+        )
+
+    def test_a_uint256_threshold_is_accepted_and_a_numeric_string_is_not(self):
+        _validate_onchain(_payload(utils._cond("value", ">", 2**256 - 1, source="transaction")))
+        with self.assertRaisesMessage(ValidationError, "expected a number"):
+            _validate_onchain(_payload(utils._cond("value", ">", "1000", source="transaction")))
+
+    def test_an_onchain_payload_needs_no_corroborator(self):
+        # Nothing on chain is lead-authored, so a lone transaction leaf stands.
+        _validate_onchain(_payload(CHAIN_TX, operator="any_of"))
+
+    def test_a_field_the_source_does_not_carry_is_refused(self):
+        for leaf in (
+            utils._cond("gas", ">", 1, source="transaction"),
+            utils._cond("deals_closed", ">", 1, source="block"),
+            utils._cond("token", "==", "0x", source="transaction"),
+        ):
+            with self.subTest(leaf=leaf):
+                with self.assertRaisesMessage(ValidationError, "has no field"):
+                    _validate_onchain(_payload(leaf))
+
+    def test_an_operator_the_type_does_not_take_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "does not apply"):
+            _validate_onchain(
+                _payload(utils._cond("value", "contains", "100", source="transaction"))
+            )
+
+    def test_lead_and_onchain_sources_cannot_mix(self):
+        for payload in (
+            _payload(LEAD, CHAIN_TX),
+            _payload(CHAIN_BLOCK, {"operator": "any_of", "conditions": [NOTES, CHAIN_TX]}),
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaisesMessage(ValidationError, "cannot mix lead sources"):
+                    utils.validate_conditions(payload, SHAPE)
+
+    def test_withdrawals_cannot_be_read_with_transactions_or_their_transfers(self):
+        for other in (CHAIN_TX, CHAIN_TRANSFER):
+            with self.subTest(other=other["source"]):
+                with self.assertRaisesMessage(ValidationError, "'withdrawal' together with"):
+                    _validate_onchain(_payload(CHAIN_WITHDRAWAL, other))
+        _validate_onchain(_payload(CHAIN_WITHDRAWAL, CHAIN_BLOCK))
+        _validate_onchain(_payload(CHAIN_TX, CHAIN_TRANSFER, CHAIN_BLOCK))
+
+    def test_a_lead_payload_still_needs_a_shape(self):
+        with self.assertRaisesMessage(ValidationError, "checked against a shape"):
+            utils.validate_conditions(_payload(LEAD))
+
+    def test_the_sources_a_payload_names_are_read_from_its_leaves(self):
+        self.assertEqual(
+            utils.payload_sources(
+                _payload(LEAD, {"operator": "any_of", "conditions": [NOTES, CHAIN_TX]})
+            ),
+            {"lead", "notes", "transaction"},
+        )
+        for malformed in ("yes", None, {"conditions": [1, {"field": "x"}]}):
+            with self.subTest(payload=malformed):
+                self.assertEqual(utils.payload_sources(malformed), frozenset())
+
+    def test_address_thresholds_are_lowercased_and_nothing_else_is(self):
+        mixed = "0xAbCdEf" + "0" * 34
+        payload = _payload(
+            utils._cond("from_address", "==", mixed, source="transaction"),
+            utils._cond("input", "contains", "0xA9059CBB", source="transaction"),
+            {
+                "operator": "any_of",
+                "conditions": [
+                    utils._cond("token", "in", [mixed, mixed.upper()], source="token_transfer"),
+                    utils._cond("miner", "exists", source="block"),
+                ],
+            },
+        )
+
+        lowered = utils.lowercase_addresses(payload)
+
+        self.assertEqual(lowered["conditions"][0]["threshold"], mixed.lower())
+        self.assertEqual(lowered["conditions"][1]["threshold"], "0xA9059CBB")
+        self.assertEqual(
+            lowered["conditions"][2]["conditions"][0]["threshold"], [mixed.lower()] * 2
+        )
+        self.assertNotIn("threshold", lowered["conditions"][2]["conditions"][1])
+        self.assertEqual(payload["conditions"][0]["threshold"], mixed)

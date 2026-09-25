@@ -1,8 +1,8 @@
 """The actions engine's own table: the queue of per-lead jobs.
 
 A job is one lead's trip through the engine: queued with the events it was
-queued for, claimed by the cron, then resolved by the deterministic pass or,
-failing that, the inference pass. Every status write is a conditional UPDATE in
+queued for, claimed by the cron, then resolved by the deterministic pass.
+Every status write is a conditional UPDATE in
 :mod:`project.app.actions.services`, so two crons cannot run the same job.
 """
 
@@ -21,42 +21,28 @@ class ActionJob(models.Model):
     STATUS_QUEUED = "queued"
     STATUS_PROCESSING = "processing"
     STATUS_MATCHED_DETERMINISTIC = "matched_deterministic"
-    STATUS_INFERRING = "inferring"
-    STATUS_MATCHED_INFERRED = "matched_inferred"
     STATUS_NO_MATCH = "no_match"
     STATUS_FAILED = "failed"
     STATUS_CHOICES = [
         (STATUS_QUEUED, "Queued"),
         (STATUS_PROCESSING, "Processing"),
         (STATUS_MATCHED_DETERMINISTIC, "Matched deterministic"),
-        (STATUS_INFERRING, "Inferring"),
-        (STATUS_MATCHED_INFERRED, "Matched inferred"),
         (STATUS_NO_MATCH, "No match"),
         (STATUS_FAILED, "Failed"),
     ]
 
     # Statuses that still owe work, so re-enqueuing the lead is a no-op.
-    OPEN_STATUSES = (STATUS_QUEUED, STATUS_PROCESSING, STATUS_INFERRING)
+    OPEN_STATUSES = (STATUS_QUEUED, STATUS_PROCESSING)
 
     # Statuses where the engine reached a verdict. A failed job is not one:
     # it owes a retry, so it never settles the lead.
-    DECIDED_STATUSES = (
-        STATUS_MATCHED_DETERMINISTIC,
-        STATUS_MATCHED_INFERRED,
-        STATUS_NO_MATCH,
-    )
+    DECIDED_STATUSES = (STATUS_MATCHED_DETERMINISTIC, STATUS_NO_MATCH)
 
     # The state machine. A transition runs as a conditional UPDATE from the
     # status named here, never a read-then-check.
     ALLOWED_TRANSITIONS = {
         STATUS_QUEUED: (STATUS_PROCESSING, STATUS_FAILED),
-        STATUS_PROCESSING: (
-            STATUS_MATCHED_DETERMINISTIC,
-            STATUS_INFERRING,
-            STATUS_NO_MATCH,
-            STATUS_FAILED,
-        ),
-        STATUS_INFERRING: (STATUS_MATCHED_INFERRED, STATUS_NO_MATCH, STATUS_FAILED),
+        STATUS_PROCESSING: (STATUS_MATCHED_DETERMINISTIC, STATUS_NO_MATCH, STATUS_FAILED),
     }
 
     lead = models.ForeignKey("app.Lead", on_delete=models.CASCADE, related_name="action_jobs")
@@ -87,8 +73,6 @@ class ActionJob(models.Model):
                         "queued",
                         "processing",
                         "matched_deterministic",
-                        "inferring",
-                        "matched_inferred",
                         "no_match",
                         "failed",
                     )
@@ -99,7 +83,7 @@ class ActionJob(models.Model):
             # inserts and handles the refusal rather than looking first.
             models.UniqueConstraint(
                 fields=["lead"],
-                condition=Q(status__in=("queued", "processing", "inferring")),
+                condition=Q(status__in=("queued", "processing")),
                 name="ajob_one_open_per_lead",
             ),
         ]
