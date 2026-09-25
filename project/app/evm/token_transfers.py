@@ -7,14 +7,18 @@ from project.app.evm.tokens import Token
 
 
 class TokenTransfer(models.Model):
-    """One Transfer log, decoded.
+    """One Transfer log, decoded, or the transfer a transaction's calldata makes.
 
     A transaction hash and a log index name one log on one chain; the token
-    carries the chain, so the three together name exactly one row.
+    carries the chain, so the three together name exactly one row. A transfer
+    read from calldata has no log index yet, so the constraint cannot hold it
+    to one row: the transaction's ``decode_status`` does, by decoding it once.
     """
 
     transaction_hash = models.CharField(max_length=66)  # "0x" and 32 bytes of hex
-    log_index = models.PositiveIntegerField()
+    # None for a transfer read from a transaction's calldata: which log it
+    # emitted is known only once the transfer is checked against the receipt.
+    log_index = models.PositiveIntegerField(null=True, blank=True)
     # A transfer is history: its token cannot be deleted out from under it.
     token = models.ForeignKey(Token, on_delete=models.PROTECT, related_name="transfers")
     from_address = models.CharField(max_length=42)
@@ -34,4 +38,5 @@ class TokenTransfer(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.transaction_hash}:{self.log_index} {self.from_address} -> {self.to_address}"
+        log = "" if self.log_index is None else f":{self.log_index}"
+        return f"{self.transaction_hash}{log} {self.from_address} -> {self.to_address}"
