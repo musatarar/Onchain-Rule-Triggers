@@ -87,6 +87,7 @@ def _parsed(raw, chain):
         WithdrawalCreateSchema(
             chain=block.chain,
             index=_quantity(entry["index"]),
+            block_hash=block.hash,
             block_number=block.number,
             validator_index=_quantity(entry["validatorIndex"]),
             address=entry["address"],
@@ -107,6 +108,7 @@ def _transaction(entry, block):
     return TransactionCreateSchema(
         hash=entry["hash"],
         chain=block.chain,
+        block_hash=block.hash,
         block_number=block.number,
         block_timestamp=block.timestamp,
         transaction_index=_quantity(entry["transactionIndex"]),

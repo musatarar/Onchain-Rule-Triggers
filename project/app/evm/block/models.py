@@ -8,8 +8,9 @@ SQLite rounds to 15 significant digits. Hashes, addresses and byte strings stay
 as the ``0x`` text they arrived as.
 
 Every row names its ``chain``, since a node's response never does. A
-transaction or withdrawal carries its block's number rather than a link to the
-block row, so ``chain`` and ``block_number`` together say which block it is in.
+transaction or withdrawal carries its block's hash and number rather than a
+link to the block row: ``block_hash`` says which block it is in, and ``chain``
+and ``block_number`` where that block sits, which a reorg can share between two.
 """
 
 import datetime
@@ -105,6 +106,7 @@ class DecodeStatus(models.TextChoices):
 class TransactionUpdateSchema(BaseModel):
     """What changes on a stored transaction; its hash names it and its chain holds it, so neither does."""
 
+    block_hash: str
     block_number: int
     block_timestamp: datetime.datetime
     transaction_index: int
@@ -146,6 +148,8 @@ class Transaction(models.Model):
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
     chain = models.IntegerField(choices=ChainId.choices)
+    # Null only on a row stored before the column existed; storing its block again fills it.
+    block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     block_number = models.BigIntegerField()
     block_timestamp = models.DateTimeField()
     transaction_index = models.BigIntegerField()
@@ -183,6 +187,7 @@ class Transaction(models.Model):
 class WithdrawalUpdateSchema(BaseModel):
     """What changes on a stored withdrawal; its chain and index name it, so they never do."""
 
+    block_hash: str
     block_number: int
     validator_index: int
     address: str
@@ -206,6 +211,8 @@ class Withdrawal(models.Model):
 
     chain = models.IntegerField(choices=ChainId.choices)
     index = models.BigIntegerField()
+    # Null only on a row stored before the column existed; storing its block again fills it.
+    block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     block_number = models.BigIntegerField()
     validator_index = models.BigIntegerField()
     address = models.CharField(max_length=ADDRESS_LENGTH)
