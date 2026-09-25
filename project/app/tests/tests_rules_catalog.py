@@ -1,7 +1,9 @@
 """User-defined rules catalog: ``Rule``.
 
 Pins the rules-catalog schema: the deterministic/inference kind <-> payload
-pairing, the conditions vocabulary, and the clean sweep on owner delete.
+pairing, the conditions vocabulary, and the clean sweep on owner delete. The
+conditions are checked on the write path (``rules.services``), so the
+refusals that name them go through it.
 """
 
 import re
@@ -12,6 +14,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from project.app.models import Condition, Rule
+from project.app.rules import services, utils
 from project.app.tests.tests_shape_utils import shape_for
 
 
@@ -60,8 +63,10 @@ class RuleTests(TestCase):
         kwargs.setdefault("owner", self.user)
         kwargs.setdefault("name", "Reward power users")
         kwargs.setdefault("kind", Rule.KIND_DETERMINISTIC)
-        kwargs.setdefault("conditions", _deterministic_conditions())
-        return Rule.objects.create(**kwargs)
+        conditions = kwargs.pop("conditions", _deterministic_conditions())
+        rule = Rule.objects.create(**kwargs)
+        utils.build_tree(rule, conditions)
+        return rule
 
     def test_the_two_example_rules_from_the_brief_round_trip(self):
         deterministic = self._rule()
@@ -74,7 +79,7 @@ class RuleTests(TestCase):
         deterministic.full_clean()
         inference.full_clean()
         deterministic.refresh_from_db()
-        self.assertEqual(deterministic.conditions, _deterministic_conditions())
+        self.assertEqual(deterministic.conditions_payload(), _deterministic_conditions())
         inference.refresh_from_db()
         self.assertEqual(inference.kind, Rule.KIND_INFERENCE)
 
@@ -96,15 +101,16 @@ class RuleTests(TestCase):
             "line one\rline two",
         ):
             with self.subTest(predicate=predicate):
-                rule = Rule(
-                    owner=self.user,
-                    name="forging",
-                    kind=Rule.KIND_INFERENCE,
-                    conditions=_gate(),
-                    inference_prompt=predicate,
-                )
                 with self.assertRaises(ValidationError) as ctx:
-                    rule.full_clean()
+                    services.create_rule(
+                        self.user,
+                        {
+                            "name": "forging",
+                            "kind": Rule.KIND_INFERENCE,
+                            "conditions": _gate(),
+                            "inference_prompt": predicate,
+                        },
+                    )
                 self.assertIn("inference_prompt", ctx.exception.message_dict)
 
     def test_a_deterministic_rule_refuses_to_build_an_inference_prompt(self):
@@ -112,92 +118,91 @@ class RuleTests(TestCase):
             self._rule().build_inference_prompt()
 
     def test_a_deterministic_rule_needs_conditions_and_no_inference_prompt(self):
-        empty = Rule(
-            owner=self.user,
-            name="no payload",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions={},
-        )
         with self.assertRaises(ValidationError) as ctx:
-            empty.full_clean()
+            services.create_rule(
+                self.user,
+                {"name": "no payload", "kind": Rule.KIND_DETERMINISTIC, "conditions": {}},
+            )
         self.assertIn("conditions", ctx.exception.message_dict)
 
-        both = Rule(
-            owner=self.user,
-            name="both payloads",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(),
-            inference_prompt="also an inference?",
-        )
         with self.assertRaises(ValidationError) as ctx:
-            both.full_clean()
+            services.create_rule(
+                self.user,
+                {
+                    "name": "both payloads",
+                    "kind": Rule.KIND_DETERMINISTIC,
+                    "conditions": _deterministic_conditions(),
+                    "inference_prompt": "also an inference?",
+                },
+            )
         self.assertIn("inference_prompt", ctx.exception.message_dict)
 
     def test_an_inference_rule_needs_its_predicate(self):
-        blank = Rule(
-            owner=self.user,
-            name="no predicate",
-            kind=Rule.KIND_INFERENCE,
-            conditions=_gate(),
-            inference_prompt="   ",
-        )
         with self.assertRaises(ValidationError) as ctx:
-            blank.full_clean()
+            services.create_rule(
+                self.user,
+                {
+                    "name": "no predicate",
+                    "kind": Rule.KIND_INFERENCE,
+                    "conditions": _gate(),
+                    "inference_prompt": "   ",
+                },
+            )
         self.assertIn("inference_prompt", ctx.exception.message_dict)
 
     def test_an_inference_rule_may_stand_on_its_predicate_alone(self):
-        ungated = Rule(
-            owner=self.user,
-            name="reads the notes and nothing else",
-            kind=Rule.KIND_INFERENCE,
-            conditions={},
-            inference_prompt="the notes say they need help",
+        services.create_rule(
+            self.user,
+            {
+                "name": "reads the notes and nothing else",
+                "kind": Rule.KIND_INFERENCE,
+                "conditions": {},
+                "inference_prompt": "the notes say they need help",
+            },
         )
-        ungated.full_clean()
 
     def test_conditions_on_an_inference_rule_are_still_validated(self):
-        gated = Rule(
-            owner=self.user,
-            name="gated on nonsense",
-            kind=Rule.KIND_INFERENCE,
-            conditions={"version": 1, "operator": "all_of", "conditions": [{"lol": 1}]},
-            inference_prompt="the notes say they need help",
-        )
+        fields = {
+            "name": "gated on nonsense",
+            "kind": Rule.KIND_INFERENCE,
+            "conditions": {"version": 1, "operator": "all_of", "conditions": [{"lol": 1}]},
+            "inference_prompt": "the notes say they need help",
+        }
         with self.assertRaises(ValidationError) as ctx:
-            gated.full_clean()
+            services.create_rule(self.user, fields)
         self.assertIn("conditions", ctx.exception.message_dict)
-        gated.conditions = _gate()
-        gated.full_clean()
+        services.create_rule(self.user, dict(fields, conditions=_gate()))
 
     def test_an_owner_with_no_shape_has_no_vocabulary_to_write_conditions_against(self):
         shapeless = get_user_model().objects.create_user(username="fresh@lockedin.example")
-        rule = Rule(
-            owner=shapeless,
-            name="named a column nobody declared",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(),
-        )
         with self.assertRaises(ValidationError) as ctx:
-            rule.full_clean()
+            services.create_rule(
+                shapeless,
+                {
+                    "name": "named a column nobody declared",
+                    "kind": Rule.KIND_DETERMINISTIC,
+                    "conditions": _deterministic_conditions(),
+                },
+            )
         self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_a_rule_naming_a_column_the_shape_does_not_declare_is_refused(self):
-        rule = Rule(
-            owner=self.user,
-            name="reads a column that was renamed away",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(field="favourite_colour", threshold=1),
-        )
         with self.assertRaises(ValidationError) as ctx:
-            rule.full_clean()
+            services.create_rule(
+                self.user,
+                {
+                    "name": "reads a column that was renamed away",
+                    "kind": Rule.KIND_DETERMINISTIC,
+                    "conditions": _deterministic_conditions(field="favourite_colour", threshold=1),
+                },
+            )
         self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_a_deterministic_rule_reading_only_the_notes_is_refused(self):
-        notes_only = Rule(
-            owner=self.user,
-            name="CRM text alone",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions={
+        notes_only = {
+            "name": "CRM text alone",
+            "kind": Rule.KIND_DETERMINISTIC,
+            "conditions": {
                 "version": Rule.CONDITIONS_SCHEMA_VERSION,
                 "operator": "all_of",
                 "conditions": [
@@ -209,9 +214,9 @@ class RuleTests(TestCase):
                     }
                 ],
             },
-        )
+        }
         with self.assertRaises(ValidationError) as ctx:
-            notes_only.full_clean()
+            services.create_rule(self.user, notes_only)
         self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_an_unknown_rule_kind_is_rejected_by_the_db(self):
@@ -231,12 +236,7 @@ class RuleTests(TestCase):
 
     def test_deleting_a_user_sweeps_their_rules_with_them(self):
         user = _user("leaver@lockedin.example")
-        Rule.objects.create(
-            owner=user,
-            name="goes with its owner",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(),
-        )
+        self._rule(owner=user, name="goes with its owner")
         user.delete()
         self.assertFalse(Rule.objects.filter(name="goes with its owner").exists())
 
@@ -247,17 +247,12 @@ class ConditionTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         user = _user()
+        # No tree yet: each test builds the one it is about by hand.
         cls.rule = Rule.objects.create(
-            owner=user,
-            name="Big transfers",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(),
+            owner=user, name="Big transfers", kind=Rule.KIND_DETERMINISTIC
         )
         cls.other_rule = Rule.objects.create(
-            owner=user,
-            name="Someone else's tree",
-            kind=Rule.KIND_DETERMINISTIC,
-            conditions=_deterministic_conditions(),
+            owner=user, name="Someone else's tree", kind=Rule.KIND_DETERMINISTIC
         )
 
     def _group(self, rule=None, parent=None, type=Condition.TYPE_AND, **kwargs):

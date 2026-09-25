@@ -13,16 +13,18 @@ from django.core.validators import MaxLengthValidator
 from django.db import models
 from django.db.models import Q
 
-from project.app.models.lead import Shape
 from project.app.rules import utils
 
 
 class Rule(models.Model):
     """A user-authored rule: a predicate that either holds for a lead or does not.
 
-    A ``deterministic`` rule is its ``conditions``: a structured, versioned
-    payload (:mod:`project.app.rules.utils`) naming the columns the owner's shape
-    declares and the figures derived from them, evaluated in-process. An
+    A ``deterministic`` rule is its conditions: a tree of :class:`Condition`
+    rows naming the columns the owner's shape declares and the figures derived
+    from them, evaluated in-process. The tree is read and written as the
+    structured, versioned ``conditions`` payload of
+    :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
+    ``rules.services`` on write). An
     ``inference`` rule adds ``inference_prompt``, a natural-language predicate
     the LLM seam evaluates against the lead's sanitized, fenced data, and may
     stand on that predicate alone. Conditions on an inference rule are
@@ -40,8 +42,9 @@ class Rule(models.Model):
         (KIND_INFERENCE, "AI inference"),
     ]
 
-    # The ``conditions`` schema, its vocabulary and its validator all live in
-    # utils, which reads the nameable fields off the owner's declared shape.
+    # The ``conditions`` schema, its vocabulary, its validator and its tree
+    # conversion all live in utils, which reads the nameable fields off the
+    # owner's declared shape.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
 
     # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the
@@ -53,9 +56,9 @@ class Rule(models.Model):
     )
     name = models.CharField(max_length=255)  # "Reward power users"
     kind = models.CharField(max_length=16, choices=KIND_CHOICES)
-    # Structured predicate. Required on a deterministic rule, since it is the
-    # whole predicate; optional on an inference rule, where it gates the model.
-    conditions = models.JSONField(default=dict, blank=True)
+    # The structured predicate is the ``all_conditions`` tree. Required on a
+    # deterministic rule, since it is the whole predicate; optional on an
+    # inference rule, where it gates the model.
     # Inference predicate; "" on deterministic rules.
     inference_prompt = models.TextField(
         blank=True, default="", validators=[MaxLengthValidator(INFERENCE_PROMPT_MAX_CHARS)]
@@ -92,30 +95,26 @@ class Rule(models.Model):
             raise ValueError("Only inference rules build an inference prompt.")
         return f"{(self.inference_prompt or '').strip()} ? {self.pk}"
 
-    def clean(self):
-        """Enforce the kind <-> payload pairing.
+    def conditions_payload(self):
+        """This rule's tree as its v1 ``conditions`` payload; ``{}`` when it has none.
 
-        The conditions vocabulary is the owner's shape, so editing surfaces
-        must run ``full_clean()``.
+        Reads ``all_conditions`` once and assembles the tree in memory, so a
+        queryset that prefetches ``all_conditions`` renders every rule free.
+        An unsaved rule has no rows yet.
+        """
+        if self.pk is None:
+            return {}
+        return utils.render_tree(self.all_conditions.all())
+
+    def clean(self):
+        """Enforce the kind <-> inference prompt pairing.
+
+        The conditions live in their own rows, so the write path
+        (``rules.services``) checks them and their pairing with the kind.
         """
         problems = {}
-        if self.conditions:
-            shape = Shape.objects.filter(owner_id=self.owner_id).first()
-            if shape is None:
-                problems["conditions"] = (
-                    "Declare what a lead and an event are before writing conditions: "
-                    "without a shape there is no vocabulary to name."
-                )
-            else:
-                try:
-                    utils.validate_conditions(self.conditions, shape)
-                except ValidationError as exc:
-                    problems["conditions"] = exc.messages
-
         prompt = (self.inference_prompt or "").strip()
         if self.kind == self.KIND_DETERMINISTIC:
-            if not self.conditions:
-                problems["conditions"] = "A deterministic rule needs a conditions payload."
             if prompt:
                 problems["inference_prompt"] = (
                     "A deterministic rule must not carry an inference prompt."
@@ -156,12 +155,21 @@ class Condition(models.Model):
     ]
     GROUP_TYPES = (TYPE_AND, TYPE_OR)
 
-    # The on-chain record a comparison reads its field from.
+    # The record a comparison reads its field from: a lead-side source of the
+    # v1 ``conditions`` vocabulary (``rules.utils.SOURCES``) or an on-chain one.
+    SOURCE_LEAD = utils.SOURCE_LEAD
+    SOURCE_DERIVED = utils.SOURCE_DERIVED
+    SOURCE_NOTES = utils.SOURCE_NOTES
+    SOURCE_EVENTS = utils.SOURCE_EVENTS
     SOURCE_BLOCK = "block"
     SOURCE_TRANSACTION = "transaction"
     SOURCE_WITHDRAWAL = "withdrawal"
     SOURCE_TOKEN_TRANSFER = "token_transfer"
     SOURCE_CHOICES = [
+        (SOURCE_LEAD, "Lead"),
+        (SOURCE_DERIVED, "Derived"),
+        (SOURCE_NOTES, "Notes"),
+        (SOURCE_EVENTS, "Events"),
         (SOURCE_BLOCK, "Block"),
         (SOURCE_TRANSACTION, "Transaction"),
         (SOURCE_WITHDRAWAL, "Withdrawal"),
@@ -207,7 +215,19 @@ class Condition(models.Model):
             ),
             # "" is a group's source: groups read no record.
             models.CheckConstraint(
-                check=Q(source__in=("", "block", "transaction", "withdrawal", "token_transfer")),
+                check=Q(
+                    source__in=(
+                        "",
+                        "lead",
+                        "derived",
+                        "notes",
+                        "events",
+                        "block",
+                        "transaction",
+                        "withdrawal",
+                        "token_transfer",
+                    )
+                ),
                 name="cond_source_known",
             ),
         ]
