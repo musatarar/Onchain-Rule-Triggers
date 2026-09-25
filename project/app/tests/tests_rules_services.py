@@ -201,7 +201,7 @@ class OnchainWriteTests(RulesServiceTestCase):
             )
         self.assertIn("cannot mix lead sources", ctx.exception.message_dict["conditions"][0])
 
-    def test_address_thresholds_are_stored_lowercased(self):
+    def test_address_and_calldata_thresholds_are_stored_lowercased(self):
         conditions = _all_of(
             _cond("from_address", "==", self.MIXED, source="transaction"),
             _cond("input", "contains", "0xA9059CBB", source="transaction"),
@@ -221,7 +221,7 @@ class OnchainWriteTests(RulesServiceTestCase):
             ),
             [
                 ("from_address", self.MIXED.lower()),
-                ("input", "0xA9059CBB"),
+                ("input", "0xa9059cbb"),
                 ("miner", self.MIXED.lower()),
                 ("to_address", self.MIXED.lower()),
                 ("token", [self.MIXED.lower()]),

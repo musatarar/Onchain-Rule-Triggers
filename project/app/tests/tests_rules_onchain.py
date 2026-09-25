@@ -204,6 +204,16 @@ class TransactionRuleTests(OnchainTestCase):
 
         self.assertEqual([row.hash for row in matched], [LEGACY_HASH])
 
+    def test_calldata_is_compared_whatever_case_its_threshold_was_written_in(self):
+        stored = self._store()
+        calldata = Transaction.objects.get(hash=LEGACY_HASH).input
+
+        matched = self._matches(_all_of(tx("input", "==", calldata.upper())), stored)
+        differs = self._matches(_all_of(tx("input", "!=", calldata.upper())), stored)
+
+        self.assertEqual([row.hash for row in matched], [LEGACY_HASH])
+        self.assertEqual([row.hash for row in differs], [DYNAMIC_FEE_HASH])
+
     def test_a_block_leaf_reads_the_block_every_transaction_is_in(self):
         matched = self._matches(
             _all_of(

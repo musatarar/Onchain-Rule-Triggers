@@ -98,8 +98,8 @@ def _save(instance, fields):
 
     Raises ``django.core.exceptions.ValidationError`` — the model's own
     verdict on its fields, and the conditions' against their vocabulary.
-    Address thresholds on on-chain leaves are stored lowercased, as the
-    addresses they compare against are.
+    Thresholds on on-chain addresses and calldata are stored lowercased, as
+    the values they compare against are.
     """
     fields = dict(fields)
     replacing = "conditions" in fields
@@ -113,7 +113,7 @@ def _save(instance, fields):
             if replacing:
                 Condition.objects.filter(rule=instance).delete()
                 _forget_tree(instance)
-                utils.build_tree(instance, utils.lowercase_addresses(payload))
+                utils.build_tree(instance, utils.lowercase_thresholds(payload))
     except IntegrityError as exc:
         # full_clean checks uniqueness and the check constraints with SELECTs,
         # so a concurrent writer can still win the race and leave the database

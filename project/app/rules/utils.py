@@ -77,11 +77,13 @@ ONCHAIN_FIELDS = {
     },
 }
 
-# The on-chain fields holding an address. Addresses are stored lowercased, so a
-# threshold on one is lowercased on write too.
-ADDRESS_FIELDS = {
+# The on-chain fields stored in lowercase: every address, lowercased on the way
+# in (a checksummed one mixes case), and a transaction's calldata, hex a node
+# returns in lowercase. A threshold on one is lowercased on write too, so `==`
+# and `in` compare it in the stored case.
+LOWERCASE_FIELDS = {
     SOURCE_BLOCK: frozenset({"miner"}),
-    SOURCE_TRANSACTION: frozenset({"from_address", "to_address"}),
+    SOURCE_TRANSACTION: frozenset({"from_address", "to_address", "input"}),
     SOURCE_WITHDRAWAL: frozenset({"address"}),
     SOURCE_TOKEN_TRANSFER: frozenset({"token", "from_address", "to_address"}),
 }
@@ -303,26 +305,31 @@ def reads_lead(sources):
     return not frozenset(sources).isdisjoint(LEAD_SOURCES)
 
 
-def lowercase_addresses(payload):
-    """``payload`` with the threshold of every on-chain address leaf lowercased.
+def lowered(threshold):
+    """``threshold`` in lowercase: a string, or each string of an ``in`` list."""
+    if isinstance(threshold, str):
+        return threshold.lower()
+    if isinstance(threshold, list):
+        return [item.lower() if isinstance(item, str) else item for item in threshold]
+    return threshold
 
-    Stored addresses are lowercase, so a threshold written in any other case
-    would never match. Runs on a validated payload; ``in`` lists are lowercased
-    item by item, and every other leaf is returned as it was.
+
+def lowercase_thresholds(payload):
+    """``payload`` with the threshold of every leaf on a :data:`LOWERCASE_FIELDS`
+    field lowercased.
+
+    Those fields are stored in lowercase, so a threshold written in any other
+    case would never match. Runs on a validated payload; ``in`` lists are
+    lowercased item by item, and every other leaf is returned as it was.
     """
     if "field" in payload:
-        if payload.get("field") not in ADDRESS_FIELDS.get(payload.get("source"), ()):
+        fields = LOWERCASE_FIELDS.get(payload.get("source"), ())
+        if payload.get("field") not in fields or "threshold" not in payload:
             return payload
-        threshold = payload.get("threshold")
-        if isinstance(threshold, str):
-            return {**payload, "threshold": threshold.lower()}
-        if isinstance(threshold, list):
-            lowered = [item.lower() if isinstance(item, str) else item for item in threshold]
-            return {**payload, "threshold": lowered}
-        return payload
+        return {**payload, "threshold": lowered(payload["threshold"])}
     return {
         **payload,
-        "conditions": [lowercase_addresses(child) for child in payload["conditions"]],
+        "conditions": [lowercase_thresholds(child) for child in payload["conditions"]],
     }
 
 

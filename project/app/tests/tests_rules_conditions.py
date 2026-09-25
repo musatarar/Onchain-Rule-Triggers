@@ -405,11 +405,12 @@ class OnchainVocabularyTests(SimpleTestCase):
             with self.subTest(payload=malformed):
                 self.assertEqual(utils.payload_sources(malformed), frozenset())
 
-    def test_address_thresholds_are_lowercased_and_nothing_else_is(self):
+    def test_address_and_calldata_thresholds_are_lowercased_and_nothing_else_is(self):
         mixed = "0xAbCdEf" + "0" * 34
         payload = _payload(
             utils._cond("from_address", "==", mixed, source="transaction"),
-            utils._cond("input", "contains", "0xA9059CBB", source="transaction"),
+            utils._cond("input", "==", "0xA9059CBB", source="transaction"),
+            utils._cond("value", ">", 10**18, source="transaction"),
             {
                 "operator": "any_of",
                 "conditions": [
@@ -418,13 +419,16 @@ class OnchainVocabularyTests(SimpleTestCase):
                 ],
             },
         )
+        lead_text = _payload(_cond("type", "==", "Email_Sent", source="events"))
 
-        lowered = utils.lowercase_addresses(payload)
+        lowered = utils.lowercase_thresholds(payload)
 
         self.assertEqual(lowered["conditions"][0]["threshold"], mixed.lower())
-        self.assertEqual(lowered["conditions"][1]["threshold"], "0xA9059CBB")
+        self.assertEqual(lowered["conditions"][1]["threshold"], "0xa9059cbb")
+        self.assertEqual(lowered["conditions"][2]["threshold"], 10**18)
         self.assertEqual(
-            lowered["conditions"][2]["conditions"][0]["threshold"], [mixed.lower()] * 2
+            lowered["conditions"][3]["conditions"][0]["threshold"], [mixed.lower()] * 2
         )
-        self.assertNotIn("threshold", lowered["conditions"][2]["conditions"][1])
+        self.assertNotIn("threshold", lowered["conditions"][3]["conditions"][1])
         self.assertEqual(payload["conditions"][0]["threshold"], mixed)
+        self.assertEqual(utils.lowercase_thresholds(lead_text), lead_text)

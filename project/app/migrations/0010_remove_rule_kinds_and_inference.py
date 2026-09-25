@@ -16,7 +16,8 @@ Forward, in order:
    the deterministic pass judges it.
 3. Stored addresses are lowercased: a block's miner, a transaction's and a
    token transfer's from/to, a withdrawal's address, a token's address, and
-   the threshold of every on-chain comparison on an address field. Two tokens
+   the threshold of every on-chain comparison on an address field or on a
+   transaction's calldata, which a node returns in lowercase. Two tokens
    on one chain whose addresses differ only by case would collide on
    ``token_chain_address_unique``, so the migration stops and names them
    rather than guessing which to keep. Hashes are left alone: they are
@@ -43,16 +44,17 @@ REMOVED_PASS_ERROR = (
     "again and re-evaluated by the deterministic pass."
 )
 
-# model -> its address columns, and on-chain source -> its address fields.
+# model -> its address columns, and on-chain source -> the fields whose
+# thresholds are lowercased: its addresses, and a transaction's calldata.
 ADDRESS_COLUMNS = {
     "Block": ("miner",),
     "Transaction": ("from_address", "to_address"),
     "Withdrawal": ("address",),
     "TokenTransfer": ("from_address", "to_address"),
 }
-ADDRESS_FIELDS = {
+LOWERCASE_FIELDS = {
     "block": ("miner",),
-    "transaction": ("from_address", "to_address"),
+    "transaction": ("from_address", "to_address", "input"),
     "withdrawal": ("address",),
     "token_transfer": ("token", "from_address", "to_address"),
 }
@@ -117,7 +119,7 @@ def lowercase_addresses(apps, schema_editor):
         model.objects.update(**{column: Lower(column) for column in columns})
 
     Condition = apps.get_model("app", "Condition")
-    for source, fields in ADDRESS_FIELDS.items():
+    for source, fields in LOWERCASE_FIELDS.items():
         leaves = Condition.objects.filter(
             type="COMPARISON", source=source, field_name__in=fields
         )
