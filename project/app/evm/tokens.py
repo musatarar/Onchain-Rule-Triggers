@@ -5,7 +5,6 @@ from pydantic import BaseModel, field_validator
 
 from project.app.evm.chains import ChainId
 from project.app.evm.contracts import Contract
-from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_standards import TokenStandard
 
 
@@ -49,14 +48,12 @@ class Token(models.Model):
     name = models.CharField(max_length=255, null=True)  # "Tether"
     coingecko_id = models.CharField(max_length=255, null=True, db_index=True)  # "tether"
     # Learned about the contract later: in neither schema, so a save never sets or clears them.
-    contract_is_verified = models.BooleanField(null=True, default=None)
     standard = models.ForeignKey(
         TokenStandard, on_delete=models.PROTECT, null=True, blank=True, related_name="tokens"
     )
     symbol = models.CharField(max_length=20, blank=True, default="")  # "USDT"
     # Unknown until read from the contract: a guessed 18 would misprice a 6-decimal token.
     decimals = models.PositiveSmallIntegerField(null=True, default=None)  # 6
-    functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
 
     class Meta:
         ordering = ["contract__chain", "contract__address"]

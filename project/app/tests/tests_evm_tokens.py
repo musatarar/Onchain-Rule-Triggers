@@ -1,6 +1,5 @@
 """The token catalog: how tokens are saved, and which of a file's coin platforms become tokens."""
 
-import datetime
 import io
 import json
 import os
@@ -93,19 +92,19 @@ class SaveTokenTests(TestCase):
         self.assertEqual(list(Token.objects.values_list("contract__address", flat=True)), [USDT])
 
     def test_saving_again_leaves_verification_and_functions_alone(self):
-        row = services.save_token(token())
+        contract = services.save_token(token()).contract
         transfer = FunctionSignature.objects.create(
             id=1, hex_signature="0xa9059cbb", name="transfer"
         )
-        row.contract_is_verified = True
-        row.save()
-        row.functions.add(transfer)
+        contract.is_verified = True
+        contract.save()
+        contract.functions.add(transfer)
 
         row = services.save_token(token(name="Tether USD"))
 
-        self.assertTrue(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [transfer])
-        self.assertEqual(list(transfer.tokens.all()), [row])
+        self.assertTrue(row.contract.is_verified)
+        self.assertEqual(list(row.contract.functions.all()), [transfer])
+        self.assertEqual(list(transfer.contracts.all()), [row.contract])
 
     def test_a_token_is_a_contract_sharing_its_id(self):
         row = services.save_token(token())
@@ -115,19 +114,15 @@ class SaveTokenTests(TestCase):
         self.assertEqual((contract.chain, contract.address), (ChainId.ETHEREUM, USDT))
 
     def test_a_stored_contract_becomes_the_token_keeping_its_creation(self):
-        created = datetime.datetime(2017, 11, 28, tzinfo=datetime.UTC)
         contract = Contract.objects.create(
-            chain=ChainId.ETHEREUM, address=USDT, creation_date=created, creation_block=4634748
+            chain=ChainId.ETHEREUM, address=USDT, creation_block=4634748
         )
 
         row = services.save_token(token())
 
         self.assertEqual(Contract.objects.count(), 1)
         self.assertEqual(row.pk, contract.pk)
-        self.assertEqual(
-            (row.name, row.contract.creation_date, row.contract.creation_block),
-            ("Tether", created, 4634748),
-        )
+        self.assertEqual((row.name, row.contract.creation_block), ("Tether", 4634748))
 
     def test_removing_a_token_leaves_its_contract(self):
         row = services.save_token(token())
@@ -200,17 +195,17 @@ class SaveTokensTests(TestCase):
         transfer = FunctionSignature.objects.create(
             id=1, hex_signature="0xa9059cbb", name="transfer"
         )
-        row = Token.objects.get()
-        row.contract_is_verified = True
-        row.save()
-        row.functions.add(transfer)
+        contract = Contract.objects.get()
+        contract.is_verified = True
+        contract.save()
+        contract.functions.add(transfer)
 
         services.save_tokens([token(name="Tether USD")])
 
         row = Token.objects.get()
         self.assertEqual(row.name, "Tether USD")
-        self.assertTrue(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [transfer])
+        self.assertTrue(row.contract.is_verified)
+        self.assertEqual(list(row.contract.functions.all()), [transfer])
 
     def test_nothing_to_save_stores_nothing(self):
         self.assertEqual(services.save_tokens([]), 0)
@@ -244,8 +239,8 @@ class LoadTokensTests(TestCase):
         load([coin("tether", ethereum=USDT)])
 
         row = Token.objects.get()
-        self.assertIsNone(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [])
+        self.assertIsNone(row.contract.is_verified)
+        self.assertEqual(list(row.contract.functions.all()), [])
 
     def test_a_platform_without_an_evm_chain_id_is_skipped(self):
         load([coin("tether", ethereum=USDT, solana="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")])

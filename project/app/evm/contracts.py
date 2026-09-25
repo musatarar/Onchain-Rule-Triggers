@@ -3,6 +3,7 @@
 from django.db import models
 
 from project.app.evm.chains import ChainId
+from project.app.evm.function_signatures import FunctionSignature
 
 
 class Contract(models.Model):
@@ -15,8 +16,10 @@ class Contract(models.Model):
     chain = models.IntegerField(choices=ChainId.choices)  # 1
     address = models.CharField(max_length=42)  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
     # Unknown until read from the chain.
-    creation_date = models.DateTimeField(null=True, default=None)
     creation_block = models.PositiveBigIntegerField(null=True, default=None)  # 4634748
+    # Learned about the contract later: saving its token never sets or clears them.
+    is_verified = models.BooleanField(null=True, default=None)
+    functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="contracts")
 
     class Meta:
         ordering = ["chain", "address"]
