@@ -1,4 +1,4 @@
-"""Contracts: a token's chain and address move to a new parent table, each token's contract taking the token's id so every reference to a token still holds."""
+"""Contracts: a token's chain, address and creation block move to a new parent table, each token's contract taking the token's id so every reference to a token still holds."""
 
 from django.core.management.color import no_style
 from django.db import migrations, models
@@ -35,15 +35,15 @@ class AlterModelBases(Operation):
 
 
 def tokens_to_contracts(apps, schema_editor):
-    """Give each token a contract with its id, chain and address."""
+    """Give each token a contract with its id, chain, address and creation block."""
     Contract = apps.get_model("app", "Contract")
     Token = apps.get_model("app", "Token")
     db = schema_editor.connection.alias
     Contract.objects.using(db).bulk_create(
         (
-            Contract(id=pk, chain=chain, address=address)
-            for pk, chain, address in Token.objects.using(db)
-            .values_list("id", "chain", "address")
+            Contract(id=pk, chain=chain, address=address, creation_block=block)
+            for pk, chain, address, block in Token.objects.using(db)
+            .values_list("id", "chain", "address", "created_at_block")
             .iterator()
         ),
         batch_size=1000,
@@ -54,12 +54,16 @@ def tokens_to_contracts(apps, schema_editor):
 
 
 def contracts_to_tokens(apps, schema_editor):
-    """Give each token back its contract's chain and address."""
+    """Give each token back its contract's chain, address and creation block."""
     Contract = apps.get_model("app", "Contract")
     Token = apps.get_model("app", "Token")
     db = schema_editor.connection.alias
-    for pk, chain, address in Contract.objects.using(db).values_list("id", "chain", "address"):
-        Token.objects.using(db).filter(id=pk).update(chain=chain, address=address)
+    for pk, chain, address, block in Contract.objects.using(db).values_list(
+        "id", "chain", "address", "creation_block"
+    ):
+        Token.objects.using(db).filter(id=pk).update(
+            chain=chain, address=address, created_at_block=block
+        )
 
 
 class Migration(migrations.Migration):
@@ -84,6 +88,7 @@ class Migration(migrations.Migration):
                 ("chain", models.IntegerField(choices=ChainId.choices)),
                 ("address", models.CharField(max_length=42)),
                 ("creation_date", models.DateTimeField(default=None, null=True)),
+                ("creation_block", models.PositiveBigIntegerField(default=None, null=True)),
             ],
             options={
                 "ordering": ["chain", "address"],
@@ -137,6 +142,10 @@ class Migration(migrations.Migration):
         migrations.RemoveField(
             model_name="token",
             name="address",
+        ),
+        migrations.RemoveField(
+            model_name="token",
+            name="created_at_block",
         ),
         AlterModelBases(name="token", bases=("app.contract",)),
     ]

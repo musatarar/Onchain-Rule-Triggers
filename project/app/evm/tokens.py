@@ -50,7 +50,6 @@ class Token(Contract):
     symbol = models.CharField(max_length=20, blank=True, default="")  # "USDT"
     # Unknown until read from the contract: a guessed 18 would misprice a 6-decimal token.
     decimals = models.PositiveSmallIntegerField(null=True, default=None)  # 6
-    created_at_block = models.PositiveBigIntegerField(null=True, default=None)  # 4634748
     functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
 
     class Meta:

@@ -1,6 +1,7 @@
 """The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
+from django.db.models.constants import OnConflict
 
 from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import (
@@ -136,36 +137,21 @@ def _contracts_at(keys):
     return {(row.chain, row.address): row for row in rows if (row.chain, row.address) in keys}
 
 
-def _make_tokens(contracts, fields):
-    """Make each of ``contracts`` that is no token yet one; answer the ids made.
+def _create_tokens(rows, ignore_conflicts=False):
+    """Insert the ``Token`` ``rows``, each on a stored contract, into the token table alone.
 
-    A contract becomes a token with its ``fields`` entry, keyed by chain and
-    address, or else a nameless placeholder one. Django cannot bulk-create a
-    child table's rows, so each is its own insert; one another run made first
-    is a conflict ignored, not an error, and not in the answer.
+    ``bulk_create`` refuses a child model because in general it would first
+    have to insert each parent to learn its id. Every contract here is stored
+    and its id set, so the token rows are a plain bulk insert of their own
+    table: Django's own suggested workaround, through the insert
+    ``bulk_create`` batches with.
     """
-    stored = set(
-        Token.objects.filter(pk__in=[contract.pk for contract in contracts]).values_list(
-            "pk", flat=True
-        )
+    Token.objects.all()._batched_insert(
+        rows,
+        Token._meta.local_concrete_fields,
+        batch_size=None,
+        on_conflict=OnConflict.IGNORE if ignore_conflicts else None,
     )
-    made = set()
-    for contract in contracts:
-        if contract.pk in stored:
-            continue
-        row = Token(
-            contract_ptr=contract,
-            **{field.attname: getattr(contract, field.attname) for field in Contract._meta.fields},
-            **fields.get((contract.chain, contract.address), {}),
-        )
-        try:
-            with transaction.atomic():
-                # The contract row is stored already: raw writes only the token's own.
-                row.save_base(raw=True)
-        except IntegrityError:
-            continue
-        made.add(row.pk)
-    return made
 
 
 def tokens_at(contracts):
@@ -176,7 +162,9 @@ def tokens_at(contracts):
     run created first is a conflict ignored, not an error.
     """
     stored = _contracts_at({(chain, address.lower()) for chain, address in contracts})
-    _make_tokens(list(stored.values()), {})
+    _create_tokens(
+        [Token(contract_ptr=contract) for contract in stored.values()], ignore_conflicts=True
+    )
     rows = Token.objects.filter(pk__in=[contract.pk for contract in stored.values()])
     return {(row.chain, row.address): row for row in rows}
 
@@ -191,20 +179,19 @@ def save_tokens(tokens):
     by_key = {}
     for token in tokens:
         by_key.setdefault((token.chain, token.address), token)
-    fields = {
-        key: TokenUpdateSchema.model_validate(token.model_dump()).model_dump()
-        for key, token in by_key.items()
-    }
 
     with transaction.atomic():
         stored = _contracts_at(set(by_key))
-        made = _make_tokens(list(stored.values()), fields)
-        updated = list(
-            Token.objects.filter(
-                pk__in=[contract.pk for contract in stored.values() if contract.pk not in made]
-            )
-        )
-        for row in updated:
-            _update(row, TokenUpdateSchema, by_key[(row.chain, row.address)])
+        rows = Token.objects.in_bulk([contract.pk for contract in stored.values()])
+        created, updated = [], []
+        for key, token in by_key.items():
+            row = rows.get(stored[key].pk)
+            if row is None:
+                row = Token(contract_ptr=stored[key])
+                created.append(row)
+            else:
+                updated.append(row)
+            _update(row, TokenUpdateSchema, token)
+        _create_tokens(created)
         Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
     return len(by_key)

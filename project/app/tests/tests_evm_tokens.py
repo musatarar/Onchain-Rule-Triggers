@@ -114,17 +114,19 @@ class SaveTokenTests(TestCase):
         self.assertEqual(contract.pk, row.pk)
         self.assertEqual((contract.chain, contract.address), (ChainId.ETHEREUM, USDT))
 
-    def test_a_stored_contract_becomes_the_token_keeping_its_creation_date(self):
+    def test_a_stored_contract_becomes_the_token_keeping_its_creation(self):
         created = datetime.datetime(2017, 11, 28, tzinfo=datetime.UTC)
         contract = Contract.objects.create(
-            chain=ChainId.ETHEREUM, address=USDT, creation_date=created
+            chain=ChainId.ETHEREUM, address=USDT, creation_date=created, creation_block=4634748
         )
 
         row = services.save_token(token())
 
         self.assertEqual(Contract.objects.count(), 1)
         self.assertEqual(row.pk, contract.pk)
-        self.assertEqual((row.name, row.creation_date), ("Tether", created))
+        self.assertEqual(
+            (row.name, row.creation_date, row.creation_block), ("Tether", created, 4634748)
+        )
 
 
 class TokensAtTests(TestCase):

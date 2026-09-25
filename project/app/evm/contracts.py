@@ -16,6 +16,7 @@ class Contract(models.Model):
     address = models.CharField(max_length=42)  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
     # Unknown until read from the chain.
     creation_date = models.DateTimeField(null=True, default=None)
+    creation_block = models.PositiveBigIntegerField(null=True, default=None)  # 4634748
 
     class Meta:
         ordering = ["chain", "address"]
