@@ -43,9 +43,7 @@ class RuleSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
-            "kind",
             "conditions",
-            "inference_prompt",
             "enabled",
             "created_at",
             "updated_at",

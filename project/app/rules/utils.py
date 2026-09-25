@@ -18,6 +18,12 @@ agency's own record and figures computed from it; ``notes`` and ``events``
 carry free text a lead can write. A conditions payload may read the untrusted
 ones, but is never satisfiable by them alone — see
 :data:`CORROBORATING_SOURCES`.
+
+A payload reads either those lead sources or the on-chain ones — ``block``,
+``transaction``, ``withdrawal`` and ``token_transfer`` — never both. The
+on-chain vocabulary is fixed (:data:`ONCHAIN_FIELDS`) rather than declared, so
+an on-chain payload needs no shape. Its values are the chain's, not the lead's,
+so the corroboration rule does not apply to it.
 """
 
 import datetime
@@ -37,10 +43,52 @@ SOURCE_EVENTS = "events"
 # error messages list sources in.
 SOURCES = (SOURCE_LEAD, SOURCE_DERIVED, SOURCE_NOTES, SOURCE_EVENTS)
 
+LEAD_SOURCES = frozenset(SOURCES)
+
 # Sources whose values the lead cannot author, so a condition reading one is
-# enough to corroborate a branch that also reads CRM text. (An inference
-# rule's predicate is judged separately, and may stand alone.)
+# enough to corroborate a branch that also reads CRM text.
 CORROBORATING_SOURCES = frozenset({SOURCE_LEAD, SOURCE_DERIVED})
+
+SOURCE_BLOCK = "block"
+SOURCE_TRANSACTION = "transaction"
+SOURCE_WITHDRAWAL = "withdrawal"
+SOURCE_TOKEN_TRANSFER = "token_transfer"
+
+# The rows of one stored block a comparison can read, and the order error
+# messages list them in.
+ONCHAIN_SOURCES = (SOURCE_BLOCK, SOURCE_TRANSACTION, SOURCE_WITHDRAWAL, SOURCE_TOKEN_TRANSFER)
+
+# Every field an on-chain comparison may name, by source and type. ``token`` is
+# the transferred token's contract address.
+ONCHAIN_FIELDS = {
+    SOURCE_BLOCK: {"number": NUMBER, "timestamp": DATE, "miner": TEXT},
+    SOURCE_TRANSACTION: {
+        "from_address": TEXT,
+        "to_address": TEXT,
+        "value": NUMBER,
+        "input": TEXT,
+    },
+    SOURCE_WITHDRAWAL: {"address": TEXT, "amount": NUMBER},
+    SOURCE_TOKEN_TRANSFER: {
+        "token": TEXT,
+        "from_address": TEXT,
+        "to_address": TEXT,
+        "raw_value": NUMBER,
+    },
+}
+
+# The on-chain fields holding an address. Addresses are stored lowercased, so a
+# threshold on one is lowercased on write too.
+ADDRESS_FIELDS = {
+    SOURCE_BLOCK: frozenset({"miner"}),
+    SOURCE_TRANSACTION: frozenset({"from_address", "to_address"}),
+    SOURCE_WITHDRAWAL: frozenset({"address"}),
+    SOURCE_TOKEN_TRANSFER: frozenset({"token", "from_address", "to_address"}),
+}
+
+# A transaction and its token transfers are read together; a withdrawal is part
+# of no transaction, so a payload reads one side or the other.
+TRANSACTION_SOURCES = frozenset({SOURCE_TRANSACTION, SOURCE_TOKEN_TRANSFER})
 
 # The one event column the shape does not declare, because the table carries it.
 EVENT_TIMESTAMP = "timestamp"
@@ -61,11 +109,6 @@ MIN_LITERAL_PHRASE_CHARS = 3
 LEAF_KEYS = frozenset({"field", "operator", "source", "threshold"})
 GROUP_KEYS = frozenset({"operator", "conditions"})
 ROOT_KEYS = frozenset({"version", "operator", "conditions"})
-
-# An inference predicate renders into one line of a larger prompt. These
-# characters would let a stored predicate forge a second line or a second
-# answer slot, so they never reach the prompt.
-PREDICATE_FORBIDDEN = ('"', "\n", "\r")
 
 
 def fields_by_source(shape):
@@ -207,10 +250,78 @@ def _render_node(node, children):
     }
 
 
-def validate_conditions(payload, shape):
-    """Check a ``conditions`` payload against the schema and ``shape``'s vocabulary.
+def tree_sources(nodes):
+    """The sources a rule's tree compares, as a frozenset; groups read none.
 
-    Raises ``ValidationError``; returns None when the payload is evaluable.
+    ``nodes`` is every node of one tree, as :func:`render_tree` takes them, so a
+    prefetched tree answers with no query.
+    """
+    return frozenset(node.source for node in nodes if node.type == TREE_TYPE_COMPARISON)
+
+
+def payload_sources(payload):
+    """The sources a ``conditions`` payload's leaves name, as a frozenset.
+
+    Lenient on purpose: it reads whatever it is handed, valid or not, so the
+    write path can pick the vocabulary before :func:`validate_conditions`
+    says what is wrong with the payload.
+    """
+    named = set()
+    pending = [payload]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, list):
+            pending.extend(node)
+        elif isinstance(node, dict):
+            if "field" in node:
+                source = node.get("source")
+                if isinstance(source, str):
+                    named.add(source)
+            else:
+                pending.append(node.get("conditions"))
+    return frozenset(named)
+
+
+def reads_chain(sources):
+    """Whether ``sources`` name an on-chain source."""
+    return not frozenset(sources).isdisjoint(ONCHAIN_SOURCES)
+
+
+def reads_lead(sources):
+    """Whether ``sources`` name a lead source."""
+    return not frozenset(sources).isdisjoint(LEAD_SOURCES)
+
+
+def lowercase_addresses(payload):
+    """``payload`` with the threshold of every on-chain address leaf lowercased.
+
+    Stored addresses are lowercase, so a threshold written in any other case
+    would never match. Runs on a validated payload; ``in`` lists are lowercased
+    item by item, and every other leaf is returned as it was.
+    """
+    if "field" in payload:
+        if payload.get("field") not in ADDRESS_FIELDS.get(payload.get("source"), ()):
+            return payload
+        threshold = payload.get("threshold")
+        if isinstance(threshold, str):
+            return {**payload, "threshold": threshold.lower()}
+        if isinstance(threshold, list):
+            lowered = [item.lower() if isinstance(item, str) else item for item in threshold]
+            return {**payload, "threshold": lowered}
+        return payload
+    return {
+        **payload,
+        "conditions": [lowercase_addresses(child) for child in payload["conditions"]],
+    }
+
+
+def validate_conditions(payload, shape=None):
+    """Check a ``conditions`` payload against the schema and its vocabulary.
+
+    A payload naming an on-chain source is checked against
+    :data:`ONCHAIN_FIELDS` and needs no ``shape``; any other payload is a lead
+    payload, checked against ``shape``'s vocabulary. Raises
+    ``ValidationError``; returns None when the payload is evaluable.
     """
     if not isinstance(payload, dict):
         raise ValidationError("conditions must be an object.")
@@ -223,6 +334,12 @@ def validate_conditions(payload, shape):
 
     operator = payload.get("operator")
     children = payload.get("conditions")
+    named = payload_sources(payload)
+    if reads_chain(named):
+        _validate_onchain(operator, children, named)
+        return
+    if shape is None:
+        raise ValidationError("Conditions on lead sources are checked against a shape; none given.")
     _validate_group(operator, children, "conditions", fields_by_source(shape), nested=False)
 
     if not _branch_corroborated({"operator": operator, "conditions": children}):
@@ -232,16 +349,22 @@ def validate_conditions(payload, shape):
         )
 
 
-def validate_inference_predicate(text):
-    """Check a predicate can render as exactly one prompt line that names one
-    answer slot. Raises ``ValidationError``."""
-    for char in PREDICATE_FORBIDDEN:
-        if char in text:
-            raise ValidationError(
-                "An inference predicate must be a single line and cannot contain "
-                "a double quote — those would let it forge extra prompt lines or "
-                "a second answer."
-            )
+def _validate_onchain(operator, children, named):
+    """The on-chain half of :func:`validate_conditions`: its own vocabulary,
+    no mixing with lead sources, and no withdrawal read alongside a
+    transaction. No corroboration: nothing on chain is lead-authored."""
+    lead = named & LEAD_SOURCES
+    if lead:
+        raise ValidationError(
+            f"conditions cannot mix lead sources ({_listed(lead)}) with on-chain sources "
+            f"({_listed(named - lead)}): a rule reads a lead or a block, not both."
+        )
+    _validate_group(operator, children, "conditions", ONCHAIN_FIELDS, nested=False)
+    if SOURCE_WITHDRAWAL in named and not named.isdisjoint(TRANSACTION_SOURCES):
+        raise ValidationError(
+            "conditions cannot read 'withdrawal' together with 'transaction' or "
+            "'token_transfer': a withdrawal is part of no transaction."
+        )
 
 
 def _validate_group(operator, children, path, fields, *, nested):
