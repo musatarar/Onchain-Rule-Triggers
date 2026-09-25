@@ -5,7 +5,6 @@ from rest_framework import status
 
 from project.app.models import (
     Lead,
-    Rule,
     Shape,
 )
 from project.app.rules import services as rules_services
@@ -186,7 +185,6 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
             self.user,
             {
                 "name": "Modest deal momentum",
-                "kind": Rule.KIND_DETERMINISTIC,
                 "conditions": _all_of(_cond("deals_closed", ">", 2, source="lead")),
             },
         )
@@ -243,20 +241,6 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
             [column["name"] for column in Shape.objects.get(owner=self.user).lead_columns],
             ["deals_closed", "renamed_notes"],
         )
-
-    def test_a_rule_carrying_no_conditions_is_not_something_a_shape_can_strand(self):
-        rules_services.update_rule(
-            self.rule,
-            {
-                "kind": Rule.KIND_INFERENCE,
-                "conditions": {},
-                "inference_prompt": "Does this lead sound stuck?",
-            },
-        )
-
-        resp = self._put([{"name": "agency_name", "type": "text", "lead_authored": False}])
-
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
 
 class ShapeWriteRaceTests(AuthenticatedAPITestCase):

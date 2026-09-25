@@ -1,9 +1,8 @@
 """The actions engine: enqueue a lead, claim its job, run it to a decision.
 
-One job runs as three steps -- read the lead and the events it was queued for,
-the deterministic pass (pure Python, no tokens), then the inference pass for
-what is left (:mod:`project.app.rules.inference`, one provider call unless the
-run is dry). The rules that matched and each pass's workings land on the job.
+One job runs as two steps -- read the lead and the events it was queued for,
+then the deterministic pass (pure Python, no provider call). The rules that
+matched and the pass's workings land on the job.
 
 Every status write is a conditional UPDATE from the status it expects, so two
 crons running the same batch cannot both process a job.
@@ -12,7 +11,6 @@ crons running the same batch cannot both process a job.
 import datetime
 import logging
 
-from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
@@ -20,7 +18,7 @@ from django.utils import timezone
 from project.app.actions import evaluate
 from project.app.actions.models import ActionJob
 from project.app.models.lead import Event, Lead
-from project.app.rules import inference, schema
+from project.app.rules import schema
 from project.app.rules import services as rules_services
 from project.app.rules.models import Rule
 from project.app.services import prompts
@@ -29,8 +27,6 @@ logger = logging.getLogger(__name__)
 
 # How many jobs one cron tick drains; the command's --limit overrides it.
 DEFAULT_BATCH_SIZE = 50
-
-DRY_RUN = "ACTIONS_LLM_DRY_RUN is set: this run made no provider call."
 
 
 class _JobLead:
@@ -186,61 +182,19 @@ def _resolve(job, today):
     rules = list(rules_for_lead(job.lead))
     unevaluable = []
 
-    matched = [
-        rule
-        for rule in rules
-        if rule.kind == Rule.KIND_DETERMINISTIC and _holds(rule, lead, today, unevaluable)
-    ]
+    matched = [rule for rule in rules if _holds(rule, lead, today, unevaluable)]
 
-    if matched:
-        _finish(
-            job,
-            ActionJob.STATUS_PROCESSING,
-            ActionJob.STATUS_MATCHED_DETERMINISTIC,
-            _decision(job, rules, matched, unevaluable),
-        )
-        return job
-
-    # Nothing deterministic matched: the remainder goes to the model.
-    candidates = [
-        rule
-        for rule in rules
-        if rule.kind == Rule.KIND_INFERENCE
-        and (not rule.conditions_payload() or _holds(rule, lead, today, unevaluable))
-    ]
-    if not _transition(job, ActionJob.STATUS_PROCESSING, ActionJob.STATUS_INFERRING):
-        return job
-
-    section = (
-        _not_asked(candidates, DRY_RUN)
-        if settings.ACTIONS_LLM_DRY_RUN
-        else inference.infer(candidates, lead, today)
+    _finish(
+        job,
+        ActionJob.STATUS_PROCESSING,
+        ActionJob.STATUS_MATCHED_DETERMINISTIC if matched else ActionJob.STATUS_NO_MATCH,
+        _decision(job, rules, matched, unevaluable),
     )
-    decision = _decision(job, rules, matched, unevaluable, section)
-    # A verdict naming anything outside the candidate set is not a match.
-    holding = set(section.get("matched_rule_ids") or ())
-    inferred = [rule for rule in candidates if rule.pk in holding]
-
-    if inferred:
-        _finish(job, ActionJob.STATUS_INFERRING, ActionJob.STATUS_MATCHED_INFERRED, decision)
-    else:
-        _finish(job, ActionJob.STATUS_INFERRING, ActionJob.STATUS_NO_MATCH, decision)
     return job
 
 
-def _not_asked(candidates, reason):
-    """The inference section for a pass that never ran: no verdict for any
-    candidate, so each is unevaluable rather than a non-match, and ``reason``
-    records which silence this was."""
-    section = schema.inference_section(
-        len(candidates), (), (), sorted(rule.pk for rule in candidates)
-    )
-    section["reason"] = reason
-    return section
-
-
-def _decision(job, rules, matched, unevaluable, section=None):
-    """The job's workings: what each pass read, matched and could not judge."""
+def _decision(job, rules, matched, unevaluable):
+    """The job's workings: what the pass read, matched and could not judge."""
     return schema.decision(
         job.lead.owner_id,
         len(rules),
@@ -249,7 +203,6 @@ def _decision(job, rules, matched, unevaluable, section=None):
             "matched_rules": [rule.name for rule in matched],
             "unevaluable_rule_ids": list(unevaluable),
         },
-        inference=section,
     )
 
 

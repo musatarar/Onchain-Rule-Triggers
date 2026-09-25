@@ -2,7 +2,7 @@
 
 Owner-scoped reads and the single validated write path for rules: every write
 runs ``full_clean()`` for the rule's own fields and checks its conditions here,
-so the pairing and vocabulary rules hold whatever calls in. A rule's conditions
+so the vocabulary rules hold whatever calls in. A rule's conditions
 are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`.
 
@@ -68,15 +68,15 @@ NO_SHAPE = (
     "Declare what a lead and an event are before writing conditions: "
     "without a shape there is no vocabulary to name."
 )
-NEEDS_CONDITIONS = "A deterministic rule needs a conditions payload."
+NEEDS_CONDITIONS = "A rule needs a conditions payload."
 
 
 def _save(instance, fields):
     """Apply ``fields``, check the rule and its conditions, and save both at once.
 
     ``fields["conditions"]``, when given, is a v1 payload that replaces the
-    rule's tree; ``{}`` leaves the rule with none. Left out, the stored tree
-    stays, and is checked again like every other field this write keeps.
+    rule's tree. Left out, the stored tree stays, and is checked again like
+    every other field this write keeps.
 
     Raises ``django.core.exceptions.ValidationError`` — the model's own
     verdict on its fields, and the conditions' against the owner's shape.
@@ -122,12 +122,10 @@ def _check(rule, payload):
 
 
 def _check_conditions(rule, payload):
-    """The conditions' half of the kind <-> payload pairing, and their
-    vocabulary: the owner's shape is the only thing a payload may name."""
+    """Every rule needs conditions, and the owner's shape is the only thing
+    they may name."""
     if not payload:
-        if rule.kind == Rule.KIND_DETERMINISTIC:
-            raise ValidationError({"conditions": NEEDS_CONDITIONS})
-        return
+        raise ValidationError({"conditions": NEEDS_CONDITIONS})
     shape = Shape.objects.filter(owner_id=rule.owner_id).first()
     if shape is None:
         raise ValidationError({"conditions": NO_SHAPE})

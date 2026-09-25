@@ -38,8 +38,7 @@ SOURCE_EVENTS = "events"
 SOURCES = (SOURCE_LEAD, SOURCE_DERIVED, SOURCE_NOTES, SOURCE_EVENTS)
 
 # Sources whose values the lead cannot author, so a condition reading one is
-# enough to corroborate a branch that also reads CRM text. (An inference
-# rule's predicate is judged separately, and may stand alone.)
+# enough to corroborate a branch that also reads CRM text.
 CORROBORATING_SOURCES = frozenset({SOURCE_LEAD, SOURCE_DERIVED})
 
 # The one event column the shape does not declare, because the table carries it.
@@ -61,11 +60,6 @@ MIN_LITERAL_PHRASE_CHARS = 3
 LEAF_KEYS = frozenset({"field", "operator", "source", "threshold"})
 GROUP_KEYS = frozenset({"operator", "conditions"})
 ROOT_KEYS = frozenset({"version", "operator", "conditions"})
-
-# An inference predicate renders into one line of a larger prompt. These
-# characters would let a stored predicate forge a second line or a second
-# answer slot, so they never reach the prompt.
-PREDICATE_FORBIDDEN = ('"', "\n", "\r")
 
 
 def fields_by_source(shape):
@@ -230,18 +224,6 @@ def validate_conditions(payload, shape):
             "These conditions can be satisfied by lead-controlled text alone: "
             "every branch needs at least one 'lead' or 'derived' condition."
         )
-
-
-def validate_inference_predicate(text):
-    """Check a predicate can render as exactly one prompt line that names one
-    answer slot. Raises ``ValidationError``."""
-    for char in PREDICATE_FORBIDDEN:
-        if char in text:
-            raise ValidationError(
-                "An inference predicate must be a single line and cannot contain "
-                "a double quote — those would let it forge extra prompt lines or "
-                "a second answer."
-            )
 
 
 def _validate_group(operator, children, path, fields, *, nested):

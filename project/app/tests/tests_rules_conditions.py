@@ -57,11 +57,7 @@ class ValidPayloadTests(SimpleTestCase):
 
 
 class CorroboratorTests(SimpleTestCase):
-    """A conditions payload must not be satisfiable by CRM text on its own.
-
-    An inference rule's predicate is judged separately and may stand alone;
-    this is about the structured part.
-    """
+    """A conditions payload must not be satisfiable by CRM text on its own."""
 
     def _refused(self, payload):
         with self.assertRaises(ValidationError) as ctx:
@@ -160,17 +156,6 @@ class SchemaRejectionTests(SimpleTestCase):
 
     def test_a_literal_phrase_is_accepted_alongside_a_corroborator(self):
         _validate(_payload(_cond("hubspot_notes", "contains", "budget", source="notes"), LEAD))
-
-
-class PredicateTests(SimpleTestCase):
-    def test_a_plain_predicate_passes(self):
-        utils.validate_inference_predicate("the hubspot notes say they need help")
-
-    def test_line_breaks_and_quotes_are_refused(self):
-        for predicate in ('a ? "9"\nb ? "9"', "a\rb", 'they said "help"'):
-            with self.subTest(predicate=predicate):
-                with self.assertRaises(ValidationError):
-                    utils.validate_inference_predicate(predicate)
 
 
 class VocabularyTests(SimpleTestCase):
