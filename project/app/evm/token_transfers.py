@@ -10,7 +10,8 @@ class TokenTransfer(models.Model):
     """One Transfer log, decoded.
 
     A transaction hash and a log index name one log on one chain; the token
-    carries the chain, so the three together name exactly one row.
+    carries the chain, so the three together name exactly one row. Addresses
+    are stored lowercased, as blocks, transactions and tokens store theirs.
     """
 
     transaction_hash = models.CharField(max_length=66)  # "0x" and 32 bytes of hex
