@@ -6,7 +6,8 @@ and are stored as numbers: a count or index that fits 64 bits is a
 difficulty) is a 78-digit ``DecimalField``, which Postgres holds exactly and
 SQLite rounds to 15 significant digits. Hashes and byte strings stay as the
 ``0x`` text they arrived as; addresses are stored lowercased, so one account is
-one value however its address was written (a checksummed address mixes case).
+one value however its address was written (a checksummed address mixes case):
+their :class:`~project.app.evm.fields.AddressField` columns fold every write.
 
 Every row names its ``chain``, since a node's response never does. A
 transaction or withdrawal carries its block's hash and number rather than a
@@ -17,19 +18,15 @@ and ``block_number`` where that block sits, which a reorg can share between two.
 import datetime
 
 from django.db import models
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from project.app.evm.chains import ChainId
-from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGITS
+from project.app.evm.constants import HASH_LENGTH, UINT256_DIGITS
+from project.app.evm.fields import AddressField
 
 
 def _uint256(**options):
     return models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, **options)
-
-
-def _lowercase(address):
-    """One account is one value however its address was written."""
-    return None if address is None else address.lower()
 
 
 class BlockUpdateSchema(BaseModel):
@@ -55,8 +52,6 @@ class BlockUpdateSchema(BaseModel):
     size: int
     uncles: list[str]
 
-    _miner = field_validator("miner")(_lowercase)
-
 
 class BlockCreateSchema(BlockUpdateSchema):
     """A block that is not stored yet."""
@@ -76,7 +71,7 @@ class Block(models.Model):
     chain = models.IntegerField(choices=ChainId.choices)  # 1
     parent_hash = models.CharField(max_length=HASH_LENGTH)
     sha3_uncles = models.CharField(max_length=HASH_LENGTH)
-    miner = models.CharField(max_length=ADDRESS_LENGTH)
+    miner = AddressField()
     state_root = models.CharField(max_length=HASH_LENGTH)
     transactions_root = models.CharField(max_length=HASH_LENGTH)
     receipts_root = models.CharField(max_length=HASH_LENGTH)
@@ -135,8 +130,6 @@ class TransactionUpdateSchema(BaseModel):
     y_parity: int | None
     v: int
 
-    _addresses = field_validator("from_address", "to_address")(_lowercase)
-
 
 class TransactionCreateSchema(TransactionUpdateSchema):
     """A transaction that is not stored yet."""
@@ -166,8 +159,8 @@ class Transaction(models.Model):
     type = models.BigIntegerField()
     chain_id = models.BigIntegerField(null=True, blank=True)
     nonce = models.BigIntegerField()
-    from_address = models.CharField(max_length=ADDRESS_LENGTH, db_index=True)
-    to_address = models.CharField(max_length=ADDRESS_LENGTH, null=True, blank=True, db_index=True)
+    from_address = AddressField(db_index=True)
+    to_address = AddressField(null=True, blank=True, db_index=True)
     value = _uint256()
     gas = models.BigIntegerField()
     gas_price = _uint256()
@@ -203,8 +196,6 @@ class WithdrawalUpdateSchema(BaseModel):
     address: str
     amount: int
 
-    _address = field_validator("address")(_lowercase)
-
 
 class WithdrawalCreateSchema(WithdrawalUpdateSchema):
     """A withdrawal that is not stored yet."""
@@ -227,7 +218,7 @@ class Withdrawal(models.Model):
     block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     block_number = models.BigIntegerField()
     validator_index = models.BigIntegerField()
-    address = models.CharField(max_length=ADDRESS_LENGTH)
+    address = AddressField()
     amount = models.BigIntegerField()
 
     class Meta:

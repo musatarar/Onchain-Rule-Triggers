@@ -4,6 +4,7 @@ from django.db import models
 from pydantic import BaseModel, field_validator
 
 from project.app.evm.chains import ChainId
+from project.app.evm.fields import AddressField
 from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_standards import TokenStandard
 
@@ -19,7 +20,8 @@ class TokenCreateSchema(BaseModel):
     @field_validator("address")
     @classmethod
     def _lowercase(cls, address):
-        """One contract is one row however its address was written."""
+        """As the column stores it: ``save_tokens`` keys a batch by chain and
+        address before anything is stored, so one contract is one key."""
         return address.lower()
 
 
@@ -42,7 +44,7 @@ class Token(models.Model):
     name = models.CharField(max_length=255, null=True)  # "Tether"
     coingecko_id = models.CharField(max_length=255, null=True, db_index=True)  # "tether"
     chain = models.IntegerField(choices=ChainId.choices)  # 1
-    address = models.CharField(max_length=42)  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
+    address = AddressField()  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
     # Learned about the contract later: in neither schema, so a save never sets or clears them.
     contract_is_verified = models.BooleanField(null=True, default=None)
     standard = models.ForeignKey(
