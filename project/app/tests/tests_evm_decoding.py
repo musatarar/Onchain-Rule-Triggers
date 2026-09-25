@@ -84,7 +84,7 @@ class DecodeTransactionsTests(TestCase):
         decoding.decode_transactions()
 
         transfer = TokenTransfer.objects.get()
-        self.assertEqual(transfer.token, Token.objects.get(address=USDT))
+        self.assertEqual(transfer.token, Token.objects.get(contract__address=USDT))
         self.assertEqual(transfer.transaction_hash, tx_hash)
         self.assertEqual(transfer.from_address, SENDER)
         self.assertEqual(transfer.to_address, RECIPIENT)
@@ -112,7 +112,9 @@ class DecodeTransactionsTests(TestCase):
         decoding.decode_transactions()
 
         placeholder = TokenTransfer.objects.get().token
-        self.assertEqual((placeholder.chain, placeholder.address), (ChainId.BASE, contract))
+        self.assertEqual(
+            (placeholder.contract.chain, placeholder.contract.address), (ChainId.BASE, contract)
+        )
         self.assertIsNone(placeholder.name)
         self.assertIsNone(placeholder.coingecko_id)
 
@@ -121,8 +123,8 @@ class DecodeTransactionsTests(TestCase):
 
         decoding.decode_transactions()
 
-        self.assertEqual(TokenTransfer.objects.get().token.chain, ChainId.BASE)
-        self.assertEqual(Token.objects.filter(address=USDT).count(), 2)
+        self.assertEqual(TokenTransfer.objects.get().token.contract.chain, ChainId.BASE)
+        self.assertEqual(Token.objects.filter(contract__address=USDT).count(), 2)
 
     def test_a_transaction_making_no_transfer_is_unable_to_decode(self):
         hashes = store(

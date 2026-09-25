@@ -1,18 +1,21 @@
 """Business logic for the rules entity.
 
 Owner-scoped reads and the single validated write path for rules: every write
-runs ``full_clean()``, so the model's pairing and vocabulary rules hold
-whatever calls in.
+runs ``full_clean()`` for the rule's own fields and checks its conditions here,
+so the pairing and vocabulary rules hold whatever calls in. A rule's conditions
+are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
+payload of :mod:`project.app.rules.utils`.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
 """
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
+from project.app.models.lead import Shape
 from project.app.rules import utils
-from project.app.rules.models import OutreachRule
+from project.app.rules.models import Condition, Rule
 
 # --------------------------------------------------------------------------
 # reads — every queryset is scoped to one owner
@@ -20,7 +23,10 @@ from project.app.rules.models import OutreachRule
 
 
 def rules_for(owner):
-    return OutreachRule.objects.filter(owner=owner)
+    # Every reader renders the rules' trees (the API, the engine, a shape
+    # write's check), so the trees come along: one query for all of them
+    # rather than one per rule.
+    return Rule.objects.filter(owner=owner).prefetch_related("all_conditions")
 
 
 def enabled_rules_for(owner):
@@ -43,10 +49,11 @@ def rules_refused_by(owner, shape):
     """
     refused = []
     for rule in rules_for(owner):
-        if not rule.conditions:
+        payload = rule.conditions_payload()
+        if not payload:
             continue
         try:
-            utils.validate_conditions(rule.conditions, shape)
+            utils.validate_conditions(payload, shape)
         except ValidationError as exc:
             refused.append((rule, exc.messages))
     return refused
@@ -57,17 +64,36 @@ def rules_refused_by(owner, shape):
 # --------------------------------------------------------------------------
 
 
+NO_SHAPE = (
+    "Declare what a lead and an event are before writing conditions: "
+    "without a shape there is no vocabulary to name."
+)
+NEEDS_CONDITIONS = "A deterministic rule needs a conditions payload."
+
+
 def _save(instance, fields):
-    """Apply ``fields`` and save through ``full_clean()``.
+    """Apply ``fields``, check the rule and its conditions, and save both at once.
+
+    ``fields["conditions"]``, when given, is a v1 payload that replaces the
+    rule's tree; ``{}`` leaves the rule with none. Left out, the stored tree
+    stays, and is checked again like every other field this write keeps.
 
     Raises ``django.core.exceptions.ValidationError`` — the model's own
-    verdict, not a re-derived one.
+    verdict on its fields, and the conditions' against the owner's shape.
     """
+    fields = dict(fields)
+    replacing = "conditions" in fields
+    payload = fields.pop("conditions") if replacing else instance.conditions_payload()
     for field, value in fields.items():
         setattr(instance, field, value)
-    instance.full_clean()
+    _check(instance, payload)
     try:
-        instance.save()
+        with transaction.atomic():
+            instance.save()
+            if replacing:
+                Condition.objects.filter(rule=instance).delete()
+                _forget_tree(instance)
+                utils.build_tree(instance, payload)
     except IntegrityError as exc:
         # full_clean checks uniqueness and the check constraints with SELECTs,
         # so a concurrent writer can still win the race and leave the database
@@ -79,8 +105,46 @@ def _save(instance, fields):
     return instance
 
 
+def _check(rule, payload):
+    """Every problem with the write at once, filed by field as ``full_clean()``
+    files them."""
+    problems = {}
+    try:
+        rule.full_clean()
+    except ValidationError as exc:
+        exc.update_error_dict(problems)
+    try:
+        _check_conditions(rule, payload)
+    except ValidationError as exc:
+        exc.update_error_dict(problems)
+    if problems:
+        raise ValidationError(problems)
+
+
+def _check_conditions(rule, payload):
+    """The conditions' half of the kind <-> payload pairing, and their
+    vocabulary: the owner's shape is the only thing a payload may name."""
+    if not payload:
+        if rule.kind == Rule.KIND_DETERMINISTIC:
+            raise ValidationError({"conditions": NEEDS_CONDITIONS})
+        return
+    shape = Shape.objects.filter(owner_id=rule.owner_id).first()
+    if shape is None:
+        raise ValidationError({"conditions": NO_SHAPE})
+    try:
+        utils.validate_conditions(payload, shape)
+    except ValidationError as exc:
+        raise ValidationError({"conditions": exc.messages}) from exc
+
+
+def _forget_tree(rule):
+    """Drop a prefetched tree the write just replaced, so the next render
+    reads the stored one."""
+    getattr(rule, "_prefetched_objects_cache", {}).pop("all_conditions", None)
+
+
 def create_rule(owner, fields):
-    return _save(OutreachRule(owner=owner), fields)
+    return _save(Rule(owner=owner), fields)
 
 
 def update_rule(rule, fields):

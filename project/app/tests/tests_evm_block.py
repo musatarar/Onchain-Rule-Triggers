@@ -149,6 +149,26 @@ class StoreBlocksTests(TestCase):
             [15_440_780],
         )
 
+    def test_stores_the_blocks_hash_on_its_transactions_and_withdrawals(self):
+        services.store_blocks([block()], ChainId.ETHEREUM)
+
+        self.assertEqual(
+            set(Transaction.objects.values_list("block_hash", flat=True)), {BLOCK_HASH}
+        )
+        self.assertEqual(Withdrawal.objects.get().block_hash, BLOCK_HASH)
+
+    def test_storing_a_block_again_fills_a_block_hash_stored_before_it_existed(self):
+        services.store_blocks([block()], ChainId.ETHEREUM)
+        Transaction.objects.update(block_hash=None)
+        Withdrawal.objects.update(block_hash=None)
+
+        services.store_blocks([block()], ChainId.ETHEREUM)
+
+        self.assertEqual(
+            set(Transaction.objects.values_list("block_hash", flat=True)), {BLOCK_HASH}
+        )
+        self.assertEqual(Withdrawal.objects.get().block_hash, BLOCK_HASH)
+
     def test_a_dynamic_fee_transaction_keeps_its_fee_caps(self):
         services.store_blocks([block()], ChainId.ETHEREUM)
 
