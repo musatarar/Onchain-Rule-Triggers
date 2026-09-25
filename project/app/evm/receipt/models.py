@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from project.app.evm.block.models import _uint256
 from project.app.evm.chains import ChainId
 from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH
+from project.app.evm.contracts import Contract
 
 
 class ReceiptUpdateSchema(BaseModel):
@@ -34,7 +35,7 @@ class ReceiptUpdateSchema(BaseModel):
     effective_gas_price: int
     from_address: str
     to_address: str | None
-    contract_address: str | None
+    contract_id: int | None
     blob_gas_used: int | None
     blob_gas_price: int | None
 
@@ -50,9 +51,9 @@ class Receipt(models.Model):
     """The receipt of one transaction, keyed by that transaction's hash.
 
     ``status`` is 1 for success and 0 for a revert. A contract creation has no
-    ``to_address`` and names the contract it deployed in ``contract_address``;
-    any other transaction has no ``contract_address``. Only a blob transaction
-    has the blob gas fields.
+    ``to_address`` and links the contract it deployed as ``contract``; any
+    other transaction has no ``contract``. Only a blob transaction has the
+    blob gas fields.
     """
 
     transaction_hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -68,8 +69,14 @@ class Receipt(models.Model):
     effective_gas_price = _uint256()
     from_address = models.CharField(max_length=ADDRESS_LENGTH)
     to_address = models.CharField(max_length=ADDRESS_LENGTH, null=True, blank=True)
-    # The deployed contract's address until a contract table exists to point at.
-    contract_address = models.CharField(max_length=ADDRESS_LENGTH, null=True, blank=True)
+    # A receipt is history: the contract it deployed cannot be deleted out from under it.
+    contract = models.ForeignKey(
+        Contract,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="creation_receipts",
+    )
     blob_gas_used = models.BigIntegerField(null=True, blank=True)
     blob_gas_price = _uint256(null=True, blank=True)
 
@@ -113,7 +120,7 @@ class Log(models.Model):
 
     receipt = models.ForeignKey(Receipt, on_delete=models.CASCADE, related_name="logs")
     index = models.BigIntegerField()
-    address = models.CharField(max_length=ADDRESS_LENGTH)
+    address = models.CharField(max_length=ADDRESS_LENGTH, db_index=True)
     data = models.TextField()
     block_hash = models.CharField(max_length=HASH_LENGTH)
     block_number = models.BigIntegerField()
@@ -151,7 +158,7 @@ class Topic(models.Model):
 
     log = models.ForeignKey(Log, on_delete=models.CASCADE, related_name="topics")
     index = models.PositiveSmallIntegerField()  # a log carries at most four
-    data = models.CharField(max_length=HASH_LENGTH)
+    data = models.CharField(max_length=HASH_LENGTH, db_index=True)
 
     class Meta:
         ordering = ["log", "index"]

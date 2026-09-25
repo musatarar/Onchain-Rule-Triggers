@@ -5,8 +5,9 @@ import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
-        ("app", "0007_transaction_decode_status"),
+        ("app", "0010_contracts"),
     ]
 
     operations = [
@@ -23,7 +24,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("index", models.BigIntegerField()),
-                ("address", models.CharField(max_length=42)),
+                ("address", models.CharField(db_index=True, max_length=42)),
                 ("data", models.TextField()),
                 ("block_hash", models.CharField(max_length=66)),
                 ("block_number", models.BigIntegerField()),
@@ -50,7 +51,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("index", models.PositiveSmallIntegerField()),
-                ("data", models.CharField(max_length=66)),
+                ("data", models.CharField(db_index=True, max_length=66)),
                 (
                     "log",
                     models.ForeignKey(
@@ -121,21 +122,26 @@ class Migration(migrations.Migration):
                 ),
                 ("from_address", models.CharField(max_length=42)),
                 ("to_address", models.CharField(blank=True, max_length=42, null=True)),
-                (
-                    "contract_address",
-                    models.CharField(blank=True, max_length=42, null=True),
-                ),
                 ("blob_gas_used", models.BigIntegerField(blank=True, null=True)),
                 (
                     "blob_gas_price",
-                    models.DecimalField(blank=True, decimal_places=0, max_digits=78, null=True),
+                    models.DecimalField(
+                        blank=True, decimal_places=0, max_digits=78, null=True
+                    ),
+                ),
+                (
+                    "contract",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="creation_receipts",
+                        to="app.contract",
+                    ),
                 ),
             ],
             options={
                 "ordering": ["chain", "block_number", "transaction_index"],
-                "indexes": [
-                    models.Index(fields=["chain", "block_number"], name="receipt_chain_block_idx")
-                ],
             },
         ),
         migrations.AddField(
@@ -151,6 +157,12 @@ class Migration(migrations.Migration):
             model_name="topic",
             constraint=models.UniqueConstraint(
                 fields=("log", "index"), name="topic_log_index_unique"
+            ),
+        ),
+        migrations.AddIndex(
+            model_name="receipt",
+            index=models.Index(
+                fields=["chain", "block_number"], name="receipt_chain_block_idx"
             ),
         ),
         migrations.AddConstraint(

@@ -15,6 +15,7 @@ from project.app.evm.receipt.models import (
     TopicCreateSchema,
     TopicUpdateSchema,
 )
+from project.app.evm.services import _contracts_at
 
 
 def store_receipts(receipts, chain):
@@ -25,11 +26,18 @@ def store_receipts(receipts, chain):
     response never names its chain, so the caller does, as a
     :class:`~project.app.evm.chains.ChainId` value. A receipt is keyed by its
     transaction hash, a log by its receipt and index and a topic by its log and
-    index, so storing one again updates it with its update schema's fields.
+    index, so storing one again updates it with its update schema's fields and
+    deletes the logs and topics it no longer carries. A contract creation links
+    the contract it deployed, created if it is not stored yet.
     """
     chain = ChainId(chain)  # an id outside the catalogued chains is a ValueError
-    parsed = [_parsed(raw, chain) for raw in receipts]
+    deployed = {
+        (chain, raw["contractAddress"].lower()) for raw in receipts if raw.get("contractAddress")
+    }
     with db_transaction.atomic():
+        contracts = _contracts_at(deployed)
+        parsed = [_parsed(raw, chain, contracts) for raw in receipts]
+        hashes = [receipt.transaction_hash for receipt, _ in parsed]
         _upsert(
             Receipt, ReceiptUpdateSchema, [receipt for receipt, _ in parsed], ["transaction_hash"]
         )
@@ -39,24 +47,36 @@ def store_receipts(receipts, chain):
             [log for _, logs in parsed for log, _ in logs],
             ["receipt", "index"],
         )
-        # An upsert does not answer the ids it wrote, so read them back by key.
-        log_ids = {
-            (receipt_id, index): log_id
-            for receipt_id, index, log_id in Log.objects.filter(
-                receipt_id__in=[receipt.transaction_hash for receipt, _ in parsed]
-            ).values_list("receipt_id", "index", "id")
-        }
-        _upsert(
-            Topic,
-            TopicUpdateSchema,
-            [
-                TopicCreateSchema(log_id=log_ids[log.receipt_id, log.index], index=index, data=data)
-                for _, logs in parsed
-                for log, topics in logs
-                for index, data in enumerate(topics)
-            ],
-            ["log", "index"],
-        )
+        # An upsert does not answer the ids it wrote, so read them back by key;
+        # a stored log at a key the receipt no longer has is one it dropped.
+        log_ids = {}
+        dropped_logs = []
+        kept_logs = {(log.receipt_id, log.index) for _, logs in parsed for log, _ in logs}
+        for receipt_id, index, log_id in Log.objects.filter(receipt_id__in=hashes).values_list(
+            "receipt_id", "index", "id"
+        ):
+            if (receipt_id, index) in kept_logs:
+                log_ids[receipt_id, index] = log_id
+            else:
+                dropped_logs.append(log_id)
+        Log.objects.filter(id__in=dropped_logs).delete()  # their topics go with them
+        topics = [
+            TopicCreateSchema(log_id=log_ids[log.receipt_id, log.index], index=index, data=data)
+            for _, logs in parsed
+            for log, log_topics in logs
+            for index, data in enumerate(log_topics)
+        ]
+        _upsert(Topic, TopicUpdateSchema, topics, ["log", "index"])
+        kept_topics = {(topic.log_id, topic.index) for topic in topics}
+        Topic.objects.filter(
+            id__in=[
+                topic_id
+                for log_id, index, topic_id in Topic.objects.filter(
+                    log__receipt_id__in=hashes
+                ).values_list("log_id", "index", "id")
+                if (log_id, index) not in kept_topics
+            ]
+        ).delete()
     return len(parsed)
 
 
@@ -73,8 +93,13 @@ def receipts_for_block(block_hash):
     )
 
 
-def _parsed(raw, chain):
-    """One raw receipt as create schemas: ``(receipt, [(log, topics), ...])``."""
+def _parsed(raw, chain, contracts):
+    """One raw receipt as create schemas: ``(receipt, [(log, topics), ...])``.
+
+    ``contracts`` holds the contract at each ``(chain, lowercase address)`` a
+    receipt in the batch deployed.
+    """
+    deployed = raw.get("contractAddress")
     receipt = ReceiptCreateSchema(
         transaction_hash=raw["transactionHash"],
         chain=chain,
@@ -89,7 +114,7 @@ def _parsed(raw, chain):
         effective_gas_price=_quantity(raw["effectiveGasPrice"]),
         from_address=raw["from"],
         to_address=raw.get("to"),
-        contract_address=raw.get("contractAddress"),
+        contract_id=None if deployed is None else contracts[chain, deployed.lower()].pk,
         blob_gas_used=_quantity(raw.get("blobGasUsed")),
         blob_gas_price=_quantity(raw.get("blobGasPrice")),
     )

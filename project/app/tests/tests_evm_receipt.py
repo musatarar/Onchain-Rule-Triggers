@@ -13,7 +13,7 @@ from django.test import TestCase
 from project.app.evm.chains import ChainId
 from project.app.evm.receipt import models as receipt_models
 from project.app.evm.receipt import services
-from project.app.models import Log, Receipt, Topic
+from project.app.models import Contract, Log, Receipt, Topic
 from scripts.load_receipts import load_receipts
 
 BLOCK_HASH = "0x95bcdbcf4d80ca00ec9ee085d27b50c4a79d9b921977b74f2f2109d049c7d869"
@@ -98,7 +98,7 @@ class StoreReceiptsTests(TestCase):
         self.assertEqual(stored.block_hash, BLOCK_HASH)
         self.assertEqual(stored.from_address, "0x2252f216f4a494a87025123425181ca1bb754fb8")
         self.assertEqual(stored.to_address, "0x0000000aa232009084bd71a5797d089aa4edfad4")
-        self.assertIsNone(stored.contract_address)
+        self.assertIsNone(stored.contract)
         self.assertIsNone(stored.blob_gas_used)
         self.assertIsNone(stored.blob_gas_price)
 
@@ -130,14 +130,31 @@ class StoreReceiptsTests(TestCase):
         self.assertIsNone(Log.objects.get().block_timestamp)
         self.assertFalse(Topic.objects.exists())
 
-    def test_a_contract_creation_names_its_contract_and_no_recipient(self):
-        created = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+    def test_a_contract_creation_links_the_contract_it_deployed_and_no_recipient(self):
+        created = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
 
         services.store_receipts([receipt(to=None, contractAddress=created)], ChainId.ETHEREUM)
 
-        stored = Receipt.objects.get()
+        stored = Receipt.objects.select_related("contract").get()
         self.assertIsNone(stored.to_address)
-        self.assertEqual(stored.contract_address, created)
+        self.assertEqual(
+            (stored.contract.chain, stored.contract.address), (ChainId.ETHEREUM, created.lower())
+        )
+
+    def test_a_contract_already_stored_is_linked_rather_than_added(self):
+        contract = Contract.objects.create(
+            chain=ChainId.ETHEREUM, address="0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        )
+
+        services.store_receipts(
+            [receipt(to=None, contractAddress=contract.address)], ChainId.ETHEREUM
+        )
+        services.store_receipts(
+            [receipt(to=None, contractAddress=contract.address)], ChainId.ETHEREUM
+        )
+
+        self.assertEqual(Receipt.objects.get().contract, contract)
+        self.assertEqual(Contract.objects.count(), 1)
 
     def test_a_blob_transaction_keeps_its_blob_gas(self):
         services.store_receipts(
@@ -165,10 +182,22 @@ class StoreReceiptsTests(TestCase):
         self.assertEqual(list(Log.objects.values_list("id", flat=True)), log_ids)
         self.assertTrue(Log.objects.get(index=0).removed)
         self.assertEqual(
-            list(Topic.objects.filter(log__index=0).values_list("data", flat=True)),
-            [TO_TOPIC, FROM_TOPIC, TO_TOPIC],
+            list(Topic.objects.filter(log__index=0).values_list("data", flat=True)), [TO_TOPIC]
         )
-        self.assertEqual(Topic.objects.count(), 6)
+        self.assertEqual(Topic.objects.count(), 4)
+
+    def test_storing_a_receipt_again_deletes_the_logs_it_no_longer_carries(self):
+        services.store_receipts([receipt(), swap_receipt()], ChainId.ETHEREUM)
+        kept = Log.objects.get(receipt_id=SWAP_HASH, index=0).id
+
+        services.store_receipts([swap_receipt(logs=[log()])], ChainId.ETHEREUM)
+
+        self.assertEqual(list(Log.objects.values_list("id", flat=True)), [kept])
+        self.assertEqual(
+            list(Topic.objects.values_list("log_id", "data")),
+            [(kept, TRANSFER_TOPIC), (kept, FROM_TOPIC), (kept, TO_TOPIC)],
+        )
+        self.assertTrue(Receipt.objects.filter(transaction_hash=PLAIN_HASH).exists())
 
     def test_a_chain_outside_the_catalogued_ones_is_refused(self):
         with self.assertRaises(ValueError):
