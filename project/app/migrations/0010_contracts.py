@@ -46,7 +46,7 @@ def contracts_to_tokens(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0008_rule_conditions_to_tree"),
+        ("app", "0009_transaction_withdrawal_block_hash"),
     ]
 
     operations = [
