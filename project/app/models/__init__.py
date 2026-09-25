@@ -7,7 +7,7 @@ from project.app.evm.function_signatures import FunctionInput, FunctionSignature
 from project.app.evm.token_standards import TokenStandard
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.evm.tokens import Token
-from project.app.rules.models import OutreachRule
+from project.app.rules.models import Condition, Rule
 
 from .auth import LoginToken
 from .lead import Event, Lead, Shape
@@ -15,13 +15,14 @@ from .lead import Event, Lead, Shape
 __all__ = [
     "ActionJob",
     "Block",
+    "Condition",
     "Contract",
     "Event",
     "FunctionInput",
     "FunctionSignature",
     "Lead",
     "LoginToken",
-    "OutreachRule",
+    "Rule",
     "Shape",
     "Token",
     "TokenStandard",

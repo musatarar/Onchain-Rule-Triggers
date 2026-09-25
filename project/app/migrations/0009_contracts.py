@@ -69,7 +69,7 @@ def contracts_to_tokens(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0007_transaction_decode_status"),
+        ("app", "0008_rule_conditions_to_tree"),
     ]
 
     operations = [

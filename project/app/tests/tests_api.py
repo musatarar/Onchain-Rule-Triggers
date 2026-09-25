@@ -5,7 +5,7 @@ from rest_framework import status
 
 from project.app.models import (
     Lead,
-    OutreachRule,
+    Rule,
     Shape,
 )
 from project.app.rules import services as rules_services
@@ -186,7 +186,7 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
             self.user,
             {
                 "name": "Modest deal momentum",
-                "kind": OutreachRule.KIND_DETERMINISTIC,
+                "kind": Rule.KIND_DETERMINISTIC,
                 "conditions": _all_of(_cond("deals_closed", ">", 2, source="lead")),
             },
         )
@@ -248,7 +248,7 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
         rules_services.update_rule(
             self.rule,
             {
-                "kind": OutreachRule.KIND_INFERENCE,
+                "kind": Rule.KIND_INFERENCE,
                 "conditions": {},
                 "inference_prompt": "Does this lead sound stuck?",
             },
