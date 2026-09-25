@@ -1,11 +1,10 @@
-"""The token catalog: one contract address a token lives at, on one EVM chain."""
+"""The token catalog: the contracts, each an address on one EVM chain, that are tokens."""
 
 from django.db import models
 from pydantic import BaseModel, field_validator
 
 from project.app.evm.chains import ChainId
-from project.app.evm.fields import AddressField
-from project.app.evm.function_signatures import FunctionSignature
+from project.app.evm.contracts import Contract
 from project.app.evm.token_standards import TokenStandard
 
 
@@ -35,32 +34,30 @@ class TokenUpdateSchema(BaseModel):
 class Token(models.Model):
     """One token contract: a coin's address on one chain.
 
-    A coin deployed on several chains is several rows sharing a
-    ``coingecko_id``; a chain and an address name exactly one row. A contract
-    the catalog does not recognise is a placeholder row with no name and no
-    ``coingecko_id``, so its transfers still have a token to point at.
+    Its ``contract`` holds the chain and address, and its id is that
+    contract's. A coin deployed on several chains is several rows sharing a
+    ``coingecko_id``. A contract the catalog does not recognise is a
+    placeholder row with no name and no ``coingecko_id``, so its transfers
+    still have a token to point at.
     """
 
+    # Linked, not inherited: one contract can be a token and other kinds at
+    # once, and a token row is saved or removed without touching its contract.
+    contract = models.OneToOneField(
+        Contract, primary_key=True, on_delete=models.CASCADE, related_name="token"
+    )
     name = models.CharField(max_length=255, null=True)  # "Tether"
     coingecko_id = models.CharField(max_length=255, null=True, db_index=True)  # "tether"
-    chain = models.IntegerField(choices=ChainId.choices)  # 1
-    address = AddressField()  # "0xdac17f958d2ee523a2206206994597c13d831ec7"
     # Learned about the contract later: in neither schema, so a save never sets or clears them.
-    contract_is_verified = models.BooleanField(null=True, default=None)
     standard = models.ForeignKey(
         TokenStandard, on_delete=models.PROTECT, null=True, blank=True, related_name="tokens"
     )
     symbol = models.CharField(max_length=20, blank=True, default="")  # "USDT"
     # Unknown until read from the contract: a guessed 18 would misprice a 6-decimal token.
     decimals = models.PositiveSmallIntegerField(null=True, default=None)  # 6
-    created_at_block = models.PositiveBigIntegerField(null=True, default=None)  # 4634748
-    functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
 
     class Meta:
-        ordering = ["chain", "address"]
-        constraints = [
-            models.UniqueConstraint(fields=["chain", "address"], name="token_chain_address_unique"),
-        ]
+        ordering = ["contract__chain", "contract__address"]
 
     def __str__(self):
-        return f"{self.name or 'Unknown token'} {self.address} ({self.get_chain_display()})"
+        return f"{self.name or 'Unknown token'} {self.contract}"

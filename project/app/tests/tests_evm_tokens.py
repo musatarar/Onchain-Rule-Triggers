@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from project.app.evm import services
 from project.app.evm.chains import ChainId
 from project.app.evm.tokens import TokenCreateSchema
-from project.app.models import FunctionSignature, Token
+from project.app.models import Contract, FunctionSignature, Token
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 # Sei lists some tokens by their Cosmos address, which is no EVM address.
@@ -69,7 +69,7 @@ class SaveTokenTests(TestCase):
 
         self.assertEqual(Token.objects.get(), row)
         self.assertEqual((row.name, row.coingecko_id), ("Tether", "tether"))
-        self.assertEqual((row.chain, row.address), (ChainId.ETHEREUM, USDT))
+        self.assertEqual((row.contract.chain, row.contract.address), (ChainId.ETHEREUM, USDT))
 
     def test_saving_a_stored_chain_and_address_updates_its_row(self):
         services.save_token(token(name="Tether"))
@@ -89,22 +89,82 @@ class SaveTokenTests(TestCase):
         services.save_token(token(at="0x" + USDT[2:].upper()))
         services.save_token(token(at=USDT))
 
-        self.assertEqual(list(Token.objects.values_list("address", flat=True)), [USDT])
+        self.assertEqual(list(Token.objects.values_list("contract__address", flat=True)), [USDT])
 
     def test_saving_again_leaves_verification_and_functions_alone(self):
-        row = services.save_token(token())
+        contract = services.save_token(token()).contract
         transfer = FunctionSignature.objects.create(
             id=1, hex_signature="0xa9059cbb", name="transfer"
         )
-        row.contract_is_verified = True
-        row.save()
-        row.functions.add(transfer)
+        contract.is_verified = True
+        contract.save()
+        contract.functions.add(transfer)
 
         row = services.save_token(token(name="Tether USD"))
 
-        self.assertTrue(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [transfer])
-        self.assertEqual(list(transfer.tokens.all()), [row])
+        self.assertTrue(row.contract.is_verified)
+        self.assertEqual(list(row.contract.functions.all()), [transfer])
+        self.assertEqual(list(transfer.contracts.all()), [row.contract])
+
+    def test_a_token_is_a_contract_sharing_its_id(self):
+        row = services.save_token(token())
+
+        contract = Contract.objects.get()
+        self.assertEqual(contract.pk, row.pk)
+        self.assertEqual((contract.chain, contract.address), (ChainId.ETHEREUM, USDT))
+
+    def test_a_stored_contract_becomes_the_token_keeping_its_creation(self):
+        contract = Contract.objects.create(
+            chain=ChainId.ETHEREUM, address=USDT, creation_block=4634748
+        )
+
+        row = services.save_token(token())
+
+        self.assertEqual(Contract.objects.count(), 1)
+        self.assertEqual(row.pk, contract.pk)
+        self.assertEqual((row.name, row.contract.creation_block), ("Tether", 4634748))
+
+    def test_removing_a_token_leaves_its_contract(self):
+        row = services.save_token(token())
+
+        row.delete()
+
+        self.assertFalse(Token.objects.exists())
+        self.assertEqual(Contract.objects.get().address, USDT)
+
+    def test_saving_a_token_leaves_its_contract_alone(self):
+        row = services.save_token(token())
+        Contract.objects.filter(pk=row.pk).update(creation_block=4634748)
+
+        row.symbol = "USDT"
+        row.save()
+
+        self.assertEqual(Contract.objects.get().creation_block, 4634748)
+
+
+class TokensAtTests(TestCase):
+    def test_an_unknown_contract_gets_a_placeholder_token(self):
+        tokens = services.tokens_at({(ChainId.ETHEREUM, "0x" + USDT[2:].upper())})
+
+        row = tokens[(ChainId.ETHEREUM, USDT)]
+        self.assertEqual((row.name, row.coingecko_id), (None, None))
+        self.assertEqual(Contract.objects.get().pk, row.pk)
+
+    def test_a_stored_token_is_answered_not_duplicated(self):
+        stored = services.save_token(token())
+
+        tokens = services.tokens_at({(ChainId.ETHEREUM, USDT)})
+
+        self.assertEqual(tokens, {(ChainId.ETHEREUM, USDT): stored})
+        self.assertEqual(Contract.objects.count(), 1)
+
+    def test_a_stored_contract_that_is_no_token_yet_becomes_one(self):
+        contract = Contract.objects.create(chain=ChainId.ETHEREUM, address=USDT)
+
+        tokens = services.tokens_at({(ChainId.ETHEREUM, USDT)})
+
+        self.assertEqual(tokens[(ChainId.ETHEREUM, USDT)].pk, contract.pk)
+        self.assertEqual(Contract.objects.count(), 1)
 
 
 class SaveTokensTests(TestCase):
@@ -135,17 +195,17 @@ class SaveTokensTests(TestCase):
         transfer = FunctionSignature.objects.create(
             id=1, hex_signature="0xa9059cbb", name="transfer"
         )
-        row = Token.objects.get()
-        row.contract_is_verified = True
-        row.save()
-        row.functions.add(transfer)
+        contract = Contract.objects.get()
+        contract.is_verified = True
+        contract.save()
+        contract.functions.add(transfer)
 
         services.save_tokens([token(name="Tether USD")])
 
         row = Token.objects.get()
         self.assertEqual(row.name, "Tether USD")
-        self.assertTrue(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [transfer])
+        self.assertTrue(row.contract.is_verified)
+        self.assertEqual(list(row.contract.functions.all()), [transfer])
 
     def test_nothing_to_save_stores_nothing(self):
         self.assertEqual(services.save_tokens([]), 0)
@@ -159,7 +219,7 @@ class LoadTokensTests(TestCase):
         )
 
         self.assertEqual(
-            sorted(Token.objects.values_list("chain", "address")),
+            sorted(Token.objects.values_list("contract__chain", "contract__address")),
             [
                 (ChainId.ETHEREUM, USDT),
                 (ChainId.BNB_SMART_CHAIN, address(1)),
@@ -171,7 +231,7 @@ class LoadTokensTests(TestCase):
     def test_stores_the_name_and_coingecko_id_of_each_row(self):
         load([coin("tether", name="Tether", ethereum=USDT)])
 
-        row = Token.objects.get(chain=ChainId.ETHEREUM, address=USDT)
+        row = Token.objects.get(contract__chain=ChainId.ETHEREUM, contract__address=USDT)
         self.assertEqual(row.name, "Tether")
         self.assertEqual(row.coingecko_id, "tether")
 
@@ -179,13 +239,15 @@ class LoadTokensTests(TestCase):
         load([coin("tether", ethereum=USDT)])
 
         row = Token.objects.get()
-        self.assertIsNone(row.contract_is_verified)
-        self.assertEqual(list(row.functions.all()), [])
+        self.assertIsNone(row.contract.is_verified)
+        self.assertEqual(list(row.contract.functions.all()), [])
 
     def test_a_platform_without_an_evm_chain_id_is_skipped(self):
         load([coin("tether", ethereum=USDT, solana="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")])
 
-        self.assertEqual(list(Token.objects.values_list("chain", flat=True)), [ChainId.ETHEREUM])
+        self.assertEqual(
+            list(Token.objects.values_list("contract__chain", flat=True)), [ChainId.ETHEREUM]
+        )
 
     def test_a_native_coin_with_no_platforms_stores_nothing(self):
         output = load([coin("bitcoin")])
@@ -201,7 +263,7 @@ class LoadTokensTests(TestCase):
     def test_an_address_is_stored_lowercase(self):
         load([coin("tether", ethereum="0x" + USDT[2:].upper())])
 
-        self.assertEqual(Token.objects.get().address, USDT)
+        self.assertEqual(Token.objects.get().contract.address, USDT)
 
     def test_a_name_or_id_the_file_wrote_as_a_literal_is_stored_as_its_text(self):
         load([coin(True, name=69420, ethereum=USDT)])
@@ -256,4 +318,6 @@ class LoadTokensTests(TestCase):
         call_command("load_tokens", limit=100, stdout=out)
 
         self.assertIn("from 100 of 10000 coin(s).", out.getvalue())
-        self.assertTrue(Token.objects.filter(chain=ChainId.ETHEREUM, address=USDT).exists())
+        self.assertTrue(
+            Token.objects.filter(contract__chain=ChainId.ETHEREUM, contract__address=USDT).exists()
+        )
