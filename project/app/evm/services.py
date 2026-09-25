@@ -1,7 +1,6 @@
 """The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from django.db import transaction
-from django.db.models.constants import OnConflict
 
 from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import (
@@ -121,7 +120,9 @@ def save_token(token):
     Saving one token is saving a list of one with ``save_tokens``.
     """
     save_tokens([token])
-    return Token.objects.get(chain=token.chain, address=token.address)
+    return Token.objects.select_related("contract").get(
+        contract__chain=token.chain, contract__address=token.address
+    )
 
 
 def _contracts_at(keys):
@@ -137,23 +138,6 @@ def _contracts_at(keys):
     return {(row.chain, row.address): row for row in rows if (row.chain, row.address) in keys}
 
 
-def _create_tokens(rows, ignore_conflicts=False):
-    """Insert the ``Token`` ``rows``, each on a stored contract, into the token table alone.
-
-    ``bulk_create`` refuses a child model because in general it would first
-    have to insert each parent to learn its id. Every contract here is stored
-    and its id set, so the token rows are a plain bulk insert of their own
-    table: Django's own suggested workaround, through the insert
-    ``bulk_create`` batches with.
-    """
-    Token.objects.all()._batched_insert(
-        rows,
-        Token._meta.local_concrete_fields,
-        batch_size=None,
-        on_conflict=OnConflict.IGNORE if ignore_conflicts else None,
-    )
-
-
 def tokens_at(contracts):
     """The token at each ``(chain, address)`` in ``contracts``, keyed by chain and lowercase address.
 
@@ -162,11 +146,13 @@ def tokens_at(contracts):
     run created first is a conflict ignored, not an error.
     """
     stored = _contracts_at({(chain, address.lower()) for chain, address in contracts})
-    _create_tokens(
-        [Token(contract_ptr=contract) for contract in stored.values()], ignore_conflicts=True
+    Token.objects.bulk_create(
+        [Token(contract=contract) for contract in stored.values()], ignore_conflicts=True
     )
-    rows = Token.objects.filter(pk__in=[contract.pk for contract in stored.values()])
-    return {(row.chain, row.address): row for row in rows}
+    rows = Token.objects.select_related("contract").in_bulk(
+        [contract.pk for contract in stored.values()]
+    )
+    return {key: rows[contract.pk] for key, contract in stored.items()}
 
 
 def save_tokens(tokens):
@@ -187,11 +173,11 @@ def save_tokens(tokens):
         for key, token in by_key.items():
             row = rows.get(stored[key].pk)
             if row is None:
-                row = Token(contract_ptr=stored[key])
+                row = Token(contract=stored[key])
                 created.append(row)
             else:
                 updated.append(row)
             _update(row, TokenUpdateSchema, token)
-        _create_tokens(created)
+        Token.objects.bulk_create(created)
         Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
     return len(by_key)

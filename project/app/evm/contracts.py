@@ -1,4 +1,4 @@
-"""The contract catalog: one address on one EVM chain; what the contract is lives in its child tables."""
+"""The contract catalog: one address on one EVM chain; what the contract is lives in the tables linked to it."""
 
 from django.db import models
 
@@ -9,7 +9,7 @@ class Contract(models.Model):
     """One contract: an address on one chain.
 
     A chain and an address name exactly one row. A contract known to be a
-    token has a ``Token`` row sharing its id.
+    token has a ``Token`` row keyed by it, its ``token``.
     """
 
     chain = models.IntegerField(choices=ChainId.choices)  # 1

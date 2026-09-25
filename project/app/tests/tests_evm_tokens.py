@@ -70,7 +70,7 @@ class SaveTokenTests(TestCase):
 
         self.assertEqual(Token.objects.get(), row)
         self.assertEqual((row.name, row.coingecko_id), ("Tether", "tether"))
-        self.assertEqual((row.chain, row.address), (ChainId.ETHEREUM, USDT))
+        self.assertEqual((row.contract.chain, row.contract.address), (ChainId.ETHEREUM, USDT))
 
     def test_saving_a_stored_chain_and_address_updates_its_row(self):
         services.save_token(token(name="Tether"))
@@ -90,7 +90,7 @@ class SaveTokenTests(TestCase):
         services.save_token(token(at="0x" + USDT[2:].upper()))
         services.save_token(token(at=USDT))
 
-        self.assertEqual(list(Token.objects.values_list("address", flat=True)), [USDT])
+        self.assertEqual(list(Token.objects.values_list("contract__address", flat=True)), [USDT])
 
     def test_saving_again_leaves_verification_and_functions_alone(self):
         row = services.save_token(token())
@@ -125,8 +125,26 @@ class SaveTokenTests(TestCase):
         self.assertEqual(Contract.objects.count(), 1)
         self.assertEqual(row.pk, contract.pk)
         self.assertEqual(
-            (row.name, row.creation_date, row.creation_block), ("Tether", created, 4634748)
+            (row.name, row.contract.creation_date, row.contract.creation_block),
+            ("Tether", created, 4634748),
         )
+
+    def test_removing_a_token_leaves_its_contract(self):
+        row = services.save_token(token())
+
+        row.delete()
+
+        self.assertFalse(Token.objects.exists())
+        self.assertEqual(Contract.objects.get().address, USDT)
+
+    def test_saving_a_token_leaves_its_contract_alone(self):
+        row = services.save_token(token())
+        Contract.objects.filter(pk=row.pk).update(creation_block=4634748)
+
+        row.symbol = "USDT"
+        row.save()
+
+        self.assertEqual(Contract.objects.get().creation_block, 4634748)
 
 
 class TokensAtTests(TestCase):
@@ -206,7 +224,7 @@ class LoadTokensTests(TestCase):
         )
 
         self.assertEqual(
-            sorted(Token.objects.values_list("chain", "address")),
+            sorted(Token.objects.values_list("contract__chain", "contract__address")),
             [
                 (ChainId.ETHEREUM, USDT),
                 (ChainId.BNB_SMART_CHAIN, address(1)),
@@ -218,7 +236,7 @@ class LoadTokensTests(TestCase):
     def test_stores_the_name_and_coingecko_id_of_each_row(self):
         load([coin("tether", name="Tether", ethereum=USDT)])
 
-        row = Token.objects.get(chain=ChainId.ETHEREUM, address=USDT)
+        row = Token.objects.get(contract__chain=ChainId.ETHEREUM, contract__address=USDT)
         self.assertEqual(row.name, "Tether")
         self.assertEqual(row.coingecko_id, "tether")
 
@@ -232,7 +250,9 @@ class LoadTokensTests(TestCase):
     def test_a_platform_without_an_evm_chain_id_is_skipped(self):
         load([coin("tether", ethereum=USDT, solana="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")])
 
-        self.assertEqual(list(Token.objects.values_list("chain", flat=True)), [ChainId.ETHEREUM])
+        self.assertEqual(
+            list(Token.objects.values_list("contract__chain", flat=True)), [ChainId.ETHEREUM]
+        )
 
     def test_a_native_coin_with_no_platforms_stores_nothing(self):
         output = load([coin("bitcoin")])
@@ -248,7 +268,7 @@ class LoadTokensTests(TestCase):
     def test_an_address_is_stored_lowercase(self):
         load([coin("tether", ethereum="0x" + USDT[2:].upper())])
 
-        self.assertEqual(Token.objects.get().address, USDT)
+        self.assertEqual(Token.objects.get().contract.address, USDT)
 
     def test_a_name_or_id_the_file_wrote_as_a_literal_is_stored_as_its_text(self):
         load([coin(True, name=69420, ethereum=USDT)])
@@ -303,4 +323,6 @@ class LoadTokensTests(TestCase):
         call_command("load_tokens", limit=100, stdout=out)
 
         self.assertIn("from 100 of 10000 coin(s).", out.getvalue())
-        self.assertTrue(Token.objects.filter(chain=ChainId.ETHEREUM, address=USDT).exists())
+        self.assertTrue(
+            Token.objects.filter(contract__chain=ChainId.ETHEREUM, contract__address=USDT).exists()
+        )

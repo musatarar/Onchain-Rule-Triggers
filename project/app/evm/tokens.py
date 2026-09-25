@@ -31,15 +31,21 @@ class TokenUpdateSchema(BaseModel):
     coingecko_id: str
 
 
-class Token(Contract):
+class Token(models.Model):
     """One token contract: a coin's address on one chain.
 
-    Its chain, address and id are its ``Contract``'s. A coin deployed on
-    several chains is several rows sharing a ``coingecko_id``. A contract the
-    catalog does not recognise is a placeholder row with no name and no
-    ``coingecko_id``, so its transfers still have a token to point at.
+    Its ``contract`` holds the chain and address, and its id is that
+    contract's. A coin deployed on several chains is several rows sharing a
+    ``coingecko_id``. A contract the catalog does not recognise is a
+    placeholder row with no name and no ``coingecko_id``, so its transfers
+    still have a token to point at.
     """
 
+    # Linked, not inherited: one contract can be a token and other kinds at
+    # once, and a token row is saved or removed without touching its contract.
+    contract = models.OneToOneField(
+        Contract, primary_key=True, on_delete=models.CASCADE, related_name="token"
+    )
     name = models.CharField(max_length=255, null=True)  # "Tether"
     coingecko_id = models.CharField(max_length=255, null=True, db_index=True)  # "tether"
     # Learned about the contract later: in neither schema, so a save never sets or clears them.
@@ -53,7 +59,7 @@ class Token(Contract):
     functions = models.ManyToManyField(FunctionSignature, blank=True, related_name="tokens")
 
     class Meta:
-        ordering = ["chain", "address"]
+        ordering = ["contract__chain", "contract__address"]
 
     def __str__(self):
-        return f"{self.name or 'Unknown token'} {self.address} ({self.get_chain_display()})"
+        return f"{self.name or 'Unknown token'} {self.contract}"
