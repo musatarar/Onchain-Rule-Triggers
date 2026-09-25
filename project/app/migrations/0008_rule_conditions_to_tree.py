@@ -138,8 +138,11 @@ def reverse(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    # Both 0007s: they were written side by side against 0006, and depending
+    # on each makes this the one leaf of the graph again.
     dependencies = [
         ("app", "0007_rule_condition"),
+        ("app", "0007_transaction_decode_status"),
     ]
 
     operations = [

@@ -101,6 +101,15 @@ class Block(models.Model):
         return f"block {self.number} {self.hash} ({self.get_chain_display()})"
 
 
+class DecodeStatus(models.TextChoices):
+    """How far decoding has got with one transaction's calldata."""
+
+    INGESTED = "INGESTED", "Ingested"  # stored from its block, not decoded yet
+    PROCESSING = "PROCESSING", "Processing"  # claimed by a decode run
+    DECODED = "DECODED", "Decoded"
+    UNABLE_TO_DECODE = "UNABLE_TO_DECODE", "Unable to decode"
+
+
 class TransactionUpdateSchema(BaseModel):
     """What changes on a stored transaction; its hash names it and its chain holds it, so neither does."""
 
@@ -141,7 +150,8 @@ class Transaction(models.Model):
     have no fee caps, access list or ``y_parity``, a pre-EIP-155 one has no
     ``chain_id``, and a contract creation has no ``to_address``. ``chain`` is the
     chain the block was read from, so it is there whatever the transaction signed.
-    ``input`` is the calldata as sent, undecoded.
+    ``input`` is the calldata as sent, undecoded; ``decode_status`` says how far
+    decoding it has got.
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -165,6 +175,10 @@ class Transaction(models.Model):
     s = models.CharField(max_length=HASH_LENGTH)
     y_parity = models.BigIntegerField(null=True, blank=True)
     v = models.BigIntegerField()
+    # Set by decoding: in neither schema, so storing the block again never resets it.
+    decode_status = models.CharField(
+        max_length=20, choices=DecodeStatus.choices, default=DecodeStatus.INGESTED, db_index=True
+    )
 
     class Meta:
         ordering = ["chain", "block_number", "transaction_index"]
