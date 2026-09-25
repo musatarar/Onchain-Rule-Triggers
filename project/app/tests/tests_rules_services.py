@@ -8,7 +8,7 @@ from project.app.models import Condition, Rule
 from project.app.rules import services, utils
 from project.app.rules.utils import _all_of, _any_of, _cond
 from project.app.tests.tests_rules_catalog import _deterministic_conditions
-from project.app.tests.tests_shape_utils import shape_for
+from project.app.tests.tests_shape_utils import shape, shape_for
 
 
 class RulesServiceTestCase(TestCase):
@@ -153,3 +153,91 @@ class ConditionsTreeTests(RulesServiceTestCase):
         with self.assertNumQueries(2):
             payloads = [rule.conditions_payload() for rule in services.rules_for(self.user)]
         self.assertEqual(len(payloads), 3)
+
+
+class OnchainWriteTests(RulesServiceTestCase):
+    """On-chain conditions name a fixed vocabulary: no shape, and addresses in
+    the case they are stored in."""
+
+    MIXED = "0xDAC17F958d2ee523a2206206994597C13D831ec7"
+
+    def setUp(self):
+        super().setUp()
+        self.shapeless = get_user_model().objects.create_user(username="watcher@lockedin.example")
+
+    def test_an_onchain_rule_needs_no_shape(self):
+        conditions = _all_of(_cond("value", ">", 10**18, source="transaction"))
+
+        rule = services.create_rule(self.shapeless, {"name": "Whales", "conditions": conditions})
+
+        self.assertEqual(Rule.objects.get(pk=rule.pk).conditions_payload(), conditions)
+
+    def test_a_lead_rule_still_needs_one(self):
+        with self.assertRaises(ValidationError) as ctx:
+            services.create_rule(
+                self.shapeless,
+                {"name": "Nudge", "conditions": _all_of(_cond("deals_closed", ">", 20))},
+            )
+        self.assertEqual(ctx.exception.message_dict["conditions"], [services.NO_SHAPE])
+
+    def test_a_mixed_payload_is_refused_for_mixing_not_for_a_missing_shape(self):
+        with self.assertRaises(ValidationError) as ctx:
+            services.create_rule(
+                self.shapeless,
+                {
+                    "name": "Both",
+                    "conditions": _all_of(
+                        _cond("deals_closed", ">", 20), _cond("miner", "exists", source="block")
+                    ),
+                },
+            )
+        self.assertIn("cannot mix lead sources", ctx.exception.message_dict["conditions"][0])
+
+    def test_address_thresholds_are_stored_lowercased(self):
+        conditions = _all_of(
+            _cond("from_address", "==", self.MIXED, source="transaction"),
+            _cond("input", "contains", "0xA9059CBB", source="transaction"),
+            _cond("token", "in", [self.MIXED], source="token_transfer"),
+            _any_of(
+                _cond("miner", "==", self.MIXED, source="block"),
+                _cond("to_address", "!=", self.MIXED, source="token_transfer"),
+            ),
+        )
+
+        rule = services.create_rule(self.shapeless, {"name": "USDT", "conditions": conditions})
+
+        stored = Rule.objects.get(pk=rule.pk)
+        self.assertEqual(
+            sorted(
+                (c.field_name, c.value) for c in stored.all_conditions.filter(type="COMPARISON")
+            ),
+            [
+                ("from_address", self.MIXED.lower()),
+                ("input", "0xA9059CBB"),
+                ("miner", self.MIXED.lower()),
+                ("to_address", self.MIXED.lower()),
+                ("token", [self.MIXED.lower()]),
+            ],
+        )
+        withdrawal = services.create_rule(
+            self.shapeless,
+            {
+                "name": "Withdrawals",
+                "conditions": _all_of(_cond("address", "==", self.MIXED, source="withdrawal")),
+            },
+        )
+        self.assertEqual(
+            withdrawal.conditions_payload()["conditions"][0]["threshold"], self.MIXED.lower()
+        )
+
+    def test_a_shape_write_never_strands_an_onchain_rule(self):
+        onchain = services.create_rule(
+            self.user,
+            {"name": "Blocks", "conditions": _all_of(_cond("number", ">", 1, source="block"))},
+        )
+        lead = self._rule("Nudge them")
+
+        refused = services.rules_refused_by(self.user, shape(lead_columns=[]))
+
+        self.assertEqual([rule for rule, _ in refused], [lead])
+        self.assertNotIn(onchain, [rule for rule, _ in refused])

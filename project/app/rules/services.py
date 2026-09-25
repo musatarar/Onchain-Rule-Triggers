@@ -45,12 +45,13 @@ def rules_refused_by(owner, shape):
 
     A rule is validated against the shape of the moment it was written, so a
     later shape has to answer for the rules already written against it: this is
-    what a shape write reads before it lands.
+    what a shape write reads before it lands. An on-chain rule names nothing a
+    shape declares, so no shape can strand it.
     """
     refused = []
     for rule in rules_for(owner):
         payload = rule.conditions_payload()
-        if not payload:
+        if not payload or utils.reads_chain(rule.sources()):
             continue
         try:
             utils.validate_conditions(payload, shape)
@@ -79,7 +80,9 @@ def _save(instance, fields):
     every other field this write keeps.
 
     Raises ``django.core.exceptions.ValidationError`` — the model's own
-    verdict on its fields, and the conditions' against the owner's shape.
+    verdict on its fields, and the conditions' against their vocabulary.
+    Address thresholds on on-chain leaves are stored lowercased, as the
+    addresses they compare against are.
     """
     fields = dict(fields)
     replacing = "conditions" in fields
@@ -93,7 +96,7 @@ def _save(instance, fields):
             if replacing:
                 Condition.objects.filter(rule=instance).delete()
                 _forget_tree(instance)
-                utils.build_tree(instance, payload)
+                utils.build_tree(instance, utils.lowercase_addresses(payload))
     except IntegrityError as exc:
         # full_clean checks uniqueness and the check constraints with SELECTs,
         # so a concurrent writer can still win the race and leave the database
@@ -122,13 +125,15 @@ def _check(rule, payload):
 
 
 def _check_conditions(rule, payload):
-    """Every rule needs conditions, and the owner's shape is the only thing
-    they may name."""
+    """Every rule needs conditions. On-chain conditions name the fixed on-chain
+    vocabulary; any others name the owner's shape, which they then need."""
     if not payload:
         raise ValidationError({"conditions": NEEDS_CONDITIONS})
-    shape = Shape.objects.filter(owner_id=rule.owner_id).first()
-    if shape is None:
-        raise ValidationError({"conditions": NO_SHAPE})
+    shape = None
+    if not utils.reads_chain(utils.payload_sources(payload)):
+        shape = Shape.objects.filter(owner_id=rule.owner_id).first()
+        if shape is None:
+            raise ValidationError({"conditions": NO_SHAPE})
     try:
         utils.validate_conditions(payload, shape)
     except ValidationError as exc:

@@ -242,6 +242,16 @@ class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
             ["deals_closed", "renamed_notes"],
         )
 
+    def test_an_onchain_rule_is_not_something_a_shape_can_strand(self):
+        rules_services.update_rule(
+            self.rule,
+            {"conditions": _all_of(_cond("value", ">", 10**18, source="transaction"))},
+        )
+
+        resp = self._put([{"name": "agency_name", "type": "text", "lead_authored": False}])
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
 
 class ShapeWriteRaceTests(AuthenticatedAPITestCase):
     def test_a_first_declaration_that_lost_the_race_updates_the_row_that_won(self):

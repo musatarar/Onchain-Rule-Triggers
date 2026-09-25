@@ -107,6 +107,51 @@ class RuleApiTests(RulesApiTestCase):
         self.assertNotIn("kind", listed)
         self.assertNotIn("inference_prompt", listed)
 
+    def test_onchain_conditions_are_written_without_a_shape_and_read_back_lowercased(self):
+        self.shape.delete()
+        conditions = {
+            "version": Rule.CONDITIONS_SCHEMA_VERSION,
+            "operator": "all_of",
+            "conditions": [
+                {
+                    "field": "token",
+                    "operator": "==",
+                    "threshold": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                    "source": "token_transfer",
+                },
+                {
+                    "field": "raw_value",
+                    "operator": ">",
+                    "threshold": 10**30,
+                    "source": "token_transfer",
+                },
+            ],
+        }
+
+        created = self.client.post(
+            RULES_URL,
+            {"name": "Big USDT moves", "conditions": conditions},
+            content_type="application/json",
+        )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(
+            created.json()["conditions"]["conditions"][0]["threshold"],
+            "0xdac17f958d2ee523a2206206994597c13d831ec7",
+        )
+        self.assertEqual(created.json()["conditions"]["conditions"][1]["threshold"], 10**30)
+
+    def test_conditions_mixing_lead_and_onchain_sources_are_rejected(self):
+        mixed = dict(_conditions())
+        mixed["conditions"] = mixed["conditions"] + [
+            {"field": "miner", "operator": "exists", "source": "block"}
+        ]
+        response = self.client.post(
+            RULES_URL, {"name": "Both", "conditions": mixed}, content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "validation_error")
+
     def test_a_rule_still_needs_its_conditions(self):
         response = self.client.post(
             RULES_URL,

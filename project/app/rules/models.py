@@ -1,9 +1,12 @@
 """User-defined rules catalog: the rules that select leads.
 
-A rule is its conditions: a tree of :class:`Condition` rows naming the columns
-the owner's shape declares, and the figures derived from them, compared against
-thresholds. The engine evaluates them in-process. Nothing here names a column;
-the shape is the only vocabulary.
+A rule is its conditions: a tree of :class:`Condition` rows comparing fields
+against thresholds. A tree reads either the lead sources (the columns the
+owner's shape declares, and figures derived from them) or the on-chain ones (a
+block, its transactions, withdrawals and token transfers), never both. The
+actions engine evaluates lead rules against a lead;
+:mod:`project.app.rules.onchain` evaluates on-chain rules against a stored
+block.
 """
 
 from django.conf import settings
@@ -20,7 +23,9 @@ class Rule(models.Model):
     The predicate is a tree of :class:`Condition` rows, read and written as the
     structured, versioned ``conditions`` payload of
     :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
-    ``rules.services`` on write).
+    ``rules.services`` on write). What a rule reads, a lead or a block,
+    follows from the sources its tree names (:meth:`sources`), not from a
+    stored flag.
 
     Rules are not first-match: every one is evaluated, and a run records every
     rule that matched.
@@ -58,6 +63,16 @@ class Rule(models.Model):
             return {}
         return utils.render_tree(self.all_conditions.all())
 
+    def sources(self):
+        """The sources this rule's comparisons read, as a frozenset.
+
+        Read off ``all_conditions`` like :meth:`conditions_payload`, so a
+        prefetched tree answers with no query.
+        """
+        if self.pk is None:
+            return frozenset()
+        return utils.tree_sources(self.all_conditions.all())
+
     def __str__(self):
         return f"rule {self.name!r} of user {self.owner_id}"
 
@@ -82,15 +97,16 @@ class Condition(models.Model):
     GROUP_TYPES = (TYPE_AND, TYPE_OR)
 
     # The record a comparison reads its field from: a lead-side source of the
-    # v1 ``conditions`` vocabulary (``rules.utils.SOURCES``) or an on-chain one.
+    # v1 ``conditions`` vocabulary (``rules.utils.SOURCES``) or an on-chain one
+    # (``rules.utils.ONCHAIN_SOURCES``).
     SOURCE_LEAD = utils.SOURCE_LEAD
     SOURCE_DERIVED = utils.SOURCE_DERIVED
     SOURCE_NOTES = utils.SOURCE_NOTES
     SOURCE_EVENTS = utils.SOURCE_EVENTS
-    SOURCE_BLOCK = "block"
-    SOURCE_TRANSACTION = "transaction"
-    SOURCE_WITHDRAWAL = "withdrawal"
-    SOURCE_TOKEN_TRANSFER = "token_transfer"
+    SOURCE_BLOCK = utils.SOURCE_BLOCK
+    SOURCE_TRANSACTION = utils.SOURCE_TRANSACTION
+    SOURCE_WITHDRAWAL = utils.SOURCE_WITHDRAWAL
+    SOURCE_TOKEN_TRANSFER = utils.SOURCE_TOKEN_TRANSFER
     SOURCE_CHOICES = [
         (SOURCE_LEAD, "Lead"),
         (SOURCE_DERIVED, "Derived"),
