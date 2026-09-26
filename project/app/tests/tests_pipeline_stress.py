@@ -7,9 +7,9 @@ transactions and evaluates every enabled rule against it. Each user owns ten
 rules: the five demo rules and five variants of them with other thresholds, so
 every kind of rule (block, transaction, withdrawal, token transfer) is in the mix.
 
-``QueryScalingTests`` always runs: it pins that evaluation costs a fixed number
-of queries per rule per block, so adding users grows a tick linearly and never
-by more. ``PipelineStressTests`` runs only with ``STRESS_USERS`` set, as it
+``QueryScalingTests`` always runs: it pins that a block's rows are read once
+and shared by every rule, so adding users adds no queries to a tick, only the
+work of checking their rules against rows already read. ``PipelineStressTests`` runs only with ``STRESS_USERS`` set, as it
 takes minutes at scale::
 
     STRESS_USERS=10,100,500,1000 python manage.py test project.app.tests.tests_pipeline_stress
@@ -236,7 +236,7 @@ class QueryScalingTests(StressTestCase):
         for copy, template in zip(copies, self.templates * 2, strict=True):
             self.assertEqual(copy.conditions_payload(), template.conditions_payload())
 
-    def test_every_user_adds_the_same_queries_and_matches(self):
+    def test_every_user_adds_the_same_matches_and_no_queries(self):
         counts, matches = [], []
         for _ in range(3):
             self.add_users(1, start=len(counts))
@@ -244,12 +244,9 @@ class QueryScalingTests(StressTestCase):
             counts.append(queries)
             matches.append(run.matches)
 
-        per_user = counts[1] - counts[0]
-        self.assertEqual(counts[2] - counts[1], per_user)
+        self.assertEqual(counts, [counts[0]] * 3)
         self.assertGreater(matches[0], 0)
         self.assertEqual(matches, [matches[0], 2 * matches[0], 3 * matches[0]])
-        # A rule reads a block's rows in one query, and their transfers in one more.
-        self.assertLessEqual(per_user, 2 * RULES_PER_USER * len(SAMPLE_BLOCKS))
 
 
 @unittest.skipUnless(STRESS_USERS, "set STRESS_USERS=10,100,... to run the pipeline stress tests")
