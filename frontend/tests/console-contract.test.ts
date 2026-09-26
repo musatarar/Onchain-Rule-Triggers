@@ -109,9 +109,11 @@ test('every journal row and match detail is contract-shaped, with a trace for ev
     const detail: MatchDetail = await api.matchDetail(row.id);
     assert.equal(detail.id, row.id);
     assertCondition(detail.condition);
+    const trace = detail.trace;
+    assert.ok(trace, 'the demo records a trace for every match');
     for (const node of nodes(detail.condition)) {
-      assert.ok(node.id !== null && detail.trace[node.id], `node ${node.id} has a trace`);
-      assertGate(detail.trace[node.id!]);
+      assert.ok(node.id !== null && trace[node.id], `node ${node.id} has a trace`);
+      assertGate(trace[node.id!]);
     }
     assert.match(detail.transaction.value, UINT);
     if (detail.transfer) {

@@ -1,5 +1,5 @@
 """Rules-catalog API: CRUD over the signed-in user's rules, in the console's
-``Rule`` shape, the engine status, and the match journal.
+``Rule`` shape, the engine status, the match journal, and one match's detail.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
@@ -280,6 +280,26 @@ class MatchListView(APIView):
         return rule
 
 
+class MatchDetailView(APIView):
+    """GET /api/matches/{id}/ — one match from the signed-in user's journal, for the trace pane.
+
+    A match the journal does not list reads as 404, as someone else's does and
+    an id naming none.
+    """
+
+    # The catalog's scope: a scope of its own would need a rate in settings.
+    throttle_scope = "rules_catalog"
+
+    def get(self, request, pk, *args, **kwargs):
+        # No id is past a BigAutoField's range, and SQLite refuses to compare
+        # an int past it at all.
+        in_range = pk <= BigIntegerField.MAX_BIGINT
+        detail = services.match_detail(request.user, pk) if in_range else None
+        if detail is None:
+            raise NotFound("No match with this id.")
+        return Response(detail)
+
+
 # Appended to the `api/` urlpatterns as flat patterns (not include()d): the
 # auth suite audits every pattern's permission classes and expects callbacks.
 urlpatterns = [
@@ -287,4 +307,5 @@ urlpatterns = [
     path("rules/<int:pk>/", RuleDetailView.as_view(), name="rules-detail"),
     path("engine/status/", EngineStatusView.as_view(), name="engine-status"),
     path("matches/", MatchListView.as_view(), name="matches-list"),
+    path("matches/<int:pk>/", MatchDetailView.as_view(), name="matches-detail"),
 ]

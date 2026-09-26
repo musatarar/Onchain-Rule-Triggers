@@ -8,7 +8,8 @@ payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
 row they match as a ``MatchedRule``; the engine status reports the stored
 window with each owner's own rule and match counts, each rule's stats count
-its matches the same way, and the journal lists those matches.
+its matches the same way, the journal lists those matches, and a match's
+detail reads one of them with the transaction and transfer it matched.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
@@ -25,6 +26,7 @@ from django.utils import timezone
 
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
+from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import onchain, utils
 from project.app.rules.models import Condition, MatchedRule, Rule
@@ -439,7 +441,7 @@ def _journal_row(match, transfer):
     rule = match.rule
     return {
         "id": match.pk,
-        "rule": {"id": rule.pk, "name": rule.name, "tag": rule.tag, "glyph": rule.glyph},
+        "rule": _rule_ref(rule),
         "rule_revision": rule.revision,
         "matched_at": match.created_at,
         "transaction": {
@@ -477,22 +479,31 @@ def _headline(transaction, transfer):
             "amount": _amount(transaction.value, utils.ETH_DECIMALS),
             "token": None,
         }
-    token = transfer.token
     return {
         "kind": "token_transfer",
         "from_address": transfer.from_address,
         "to_address": transfer.to_address,
         "from_label": None,
         "to_label": None,
-        "amount": _amount(transfer.raw_value, token.decimals),
-        "token": {
-            "chain": token.contract.chain,
-            "address": token.contract.address,
-            # "" until symbols are stored (#45); unknown is null in the contract.
-            "symbol": token.symbol or None,
-            "name": token.name,
-            "decimals": token.decimals,
-        },
+        "amount": _amount(transfer.raw_value, transfer.token.decimals),
+        "token": _token_ref(transfer.token),
+    }
+
+
+def _rule_ref(rule):
+    """``rule`` as the console names a rule beside a match: its ``RuleRef``."""
+    return {"id": rule.pk, "name": rule.name, "tag": rule.tag, "glyph": rule.glyph}
+
+
+def _token_ref(token):
+    """``token``, read with its contract, as the console's ``TokenRef``."""
+    return {
+        "chain": token.contract.chain,
+        "address": token.contract.address,
+        # "" until symbols are stored (#45); unknown is null in the contract.
+        "symbol": token.symbol or None,
+        "name": token.name,
+        "decimals": token.decimals,
     }
 
 
@@ -508,3 +519,108 @@ def _amount(raw, decimals):
         "decimals": decimals,
         "value": None if decimals is None else utils.decimal_string(raw, decimals),
     }
+
+
+# --------------------------------------------------------------------------
+# a match's detail — its journal row, with the transaction and transfer it matched
+# --------------------------------------------------------------------------
+
+# "0x" and the four bytes naming the function a transaction calls.
+SELECTOR_LENGTH = 10
+
+
+def match_detail(owner, pk):
+    """``owner``'s match ``pk`` as the console's ``MatchDetail``; ``None`` when their journal lists no such match.
+
+    The match's journal row (:func:`journal_rows`) with the transaction's own
+    fields, the transfer the row leads with, and the owner's other rules that
+    matched the same transaction. ``condition`` is the rule's tree as it is
+    now, since no copy of it is stored when a match is recorded, and ``trace``
+    is ``None``, since the evaluator records no gate's outcome: the console
+    shows such a match without its circuit. Someone else's match reads as
+    ``None``, as do the matches the journal leaves out (:func:`matches_for`).
+    Five queries at most: the match with its transaction and rule, the rule's
+    tree, the transaction's transfers, the functions its selector names in the
+    signature catalog, and the other matches.
+    """
+    match = matches_for(owner).filter(pk=pk).select_related("transaction", "rule").first()
+    if match is None:
+        return None
+    transaction = match.transaction
+    transfer = _leading_transfers([transaction]).get(transaction.hash)
+    selector = _selector(transaction.input)
+    row = _journal_row(match, transfer)
+    return {
+        **row,
+        "condition": match.rule.console_condition(),
+        "trace": None,
+        "transaction": {
+            **row["transaction"],
+            "from_address": transaction.from_address,
+            "to_address": transaction.to_address,  # None for a contract creation
+            "value": utils.decimal_string(transaction.value),
+            "input_selector": selector,
+            "method": _method(selector),
+            "decode_status": transaction.decode_status,
+        },
+        "transfer": None if transfer is None else _transfer_detail(transfer),
+        "also_matched": _also_matched(owner, match),
+    }
+
+
+def _selector(calldata):
+    """The selector ``calldata`` opens with, lowercased; ``None`` when it has none, as a plain ETH transfer's ``0x`` has none."""
+    selector = calldata[:SELECTOR_LENGTH].lower()
+    return selector if len(selector) == SELECTOR_LENGTH else None
+
+
+def _method(selector):
+    """The name of the function ``selector`` calls, from the signature catalog; ``None`` when it names none.
+
+    A selector is four bytes of a hash, so the catalog can hold several
+    functions for one. Their name is answered only when they all share it:
+    picking one of several could name a function the transaction never called.
+    """
+    if selector is None:
+        return None
+    names = set(
+        FunctionSignature.objects.filter(hex_signature=selector).values_list("name", flat=True)
+    )
+    return names.pop() if len(names) == 1 else None
+
+
+def _transfer_detail(transfer):
+    """A transaction's leading ``transfer`` as the console's match detail shows it.
+
+    A transfer decoding read from calldata names no log, so its ``source`` is
+    ``calldata`` while its ``log_index`` is empty; one read from a receipt's
+    Transfer log would carry the log's index.
+    """
+    return {
+        "token": _token_ref(transfer.token),
+        "from_address": transfer.from_address,
+        "to_address": transfer.to_address,
+        "raw_value": utils.decimal_string(transfer.raw_value),
+        "log_index": transfer.log_index,
+        "source": "calldata" if transfer.log_index is None else "log",
+        "verified": transfer.verified,
+    }
+
+
+def _also_matched(owner, match):
+    """The owner's other rules that matched ``match``'s transaction, each with its match, by rule id.
+
+    A rule that matched the transaction twice, as a reorg that stores it again
+    can make one, is listed once, with its first match, and ``match``'s own
+    rule not at all.
+    """
+    others = {}
+    for other in (
+        matches_for(owner)
+        .filter(transaction_id=match.transaction_id)
+        .exclude(rule_id=match.rule_id)
+        .select_related("rule")
+        .order_by("rule_id", "id")
+    ):
+        others.setdefault(other.rule_id, other)
+    return [{"match_id": other.pk, "rule": _rule_ref(other.rule)} for other in others.values()]
