@@ -121,7 +121,7 @@ class Rule(models.Model):
 
         The contract bumps it on every change to the conditions, but nothing
         records one yet, so every rule reads as its first. A journal row's
-        ``rule_revision`` is to read this too, so the two agree.
+        ``rule_revision`` reads this too, so the two agree.
         """
         return 1
 

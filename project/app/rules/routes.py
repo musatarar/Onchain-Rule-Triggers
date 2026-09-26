@@ -1,12 +1,15 @@
 """Rules-catalog API: CRUD over the signed-in user's rules, in the console's
-``Rule`` shape, and the engine status.
+``Rule`` shape, the engine status, and the match journal.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
 the payload is ignored), and a row id belonging to someone else reads as 404.
 """
 
+import re
+
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import BigIntegerField
 from django.urls import path
 from rest_framework import serializers, status
 from rest_framework.exceptions import NotFound
@@ -20,6 +23,13 @@ from project.app.rules.models import Rule
 # A write naming the console's tree is refused rather than dropped; the UI
 # calls a rule a circuit and a comparison a gate.
 CONDITION_NOT_WRITABLE = "Circuits can't save gates from the console yet (#44)."
+
+# The journal's page size when ``?page_size=`` is left out, and the most it can ask for.
+JOURNAL_PAGE_SIZE = 50
+JOURNAL_MAX_PAGE_SIZE = 100
+PAGE_SIZE_OUT_OF_RANGE = f"Use a page size from 1 to {JOURNAL_MAX_PAGE_SIZE}."
+# A journal cursor: a row's position, "<block>.<index>.<rule id>.<match id>".
+CURSOR_RE = re.compile(r"[0-9]+(?:\.[0-9]+){3}")
 
 
 class CatalogPagination(PageNumberPagination):
@@ -182,10 +192,99 @@ class EngineStatusView(APIView):
         return Response(services.engine_status(request.user))
 
 
+class JournalCursorField(serializers.CharField):
+    """A journal cursor, read as the position it names (``services.journal_page``).
+
+    The console passes a page's ``next`` back as ``cursor`` and its ``head`` as
+    ``after``, and reads neither. A cursor is readable all the same, as the
+    console's demo data writes one: the row's block number, transaction index
+    and rule id, and then its match id, which keeps two matches of one rule and
+    transaction apart.
+    """
+
+    default_error_messages = {"malformed": "Not a cursor from this journal."}
+
+    def to_internal_value(self, data):
+        text = super().to_internal_value(data)
+        if not CURSOR_RE.fullmatch(text):
+            self.fail("malformed")
+        position = tuple(int(part) for part in text.split("."))
+        # Each part is a BigIntegerField's or a BigAutoField's, and SQLite
+        # refuses to compare an int past their range at all.
+        if max(position) > BigIntegerField.MAX_BIGINT:
+            self.fail("malformed")
+        return position
+
+
+def _cursor(position):
+    """The cursor naming a journal row's ``position``, as :class:`JournalCursorField` reads one."""
+    return ".".join(str(part) for part in position)
+
+
+class JournalQuerySerializer(serializers.Serializer):
+    """The journal's query string; a parameter left blank reads as left out."""
+
+    rule = serializers.IntegerField(required=False)
+    cursor = JournalCursorField(required=False)
+    after = JournalCursorField(required=False)
+    page_size = serializers.IntegerField(
+        default=JOURNAL_PAGE_SIZE,
+        min_value=1,
+        max_value=JOURNAL_MAX_PAGE_SIZE,
+        error_messages={
+            problem: PAGE_SIZE_OUT_OF_RANGE
+            for problem in ("invalid", "min_value", "max_value", "max_string_length")
+        },
+    )
+
+
+class MatchListView(APIView):
+    """GET /api/matches/ — the signed-in user's match journal, newest first.
+
+    ``?rule=`` narrows it to one of the user's rules; someone else's, or an id
+    naming none, reads as 404. Pages are keyset pages: ``?cursor=`` starts one
+    after a row and ``?after=`` keeps only the rows before one, and ``head``
+    names the newest row whatever the page, for a poll's ``after``; it is ""
+    while the journal is empty.
+    """
+
+    # The catalog's scope: a scope of its own would need a rate in settings.
+    throttle_scope = "rules_catalog"
+
+    def get(self, request, *args, **kwargs):
+        query = JournalQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        page = services.journal_page(
+            request.user,
+            rule=self._rule(request, params["rule"]) if "rule" in params else None,
+            older_than=params.get("cursor"),
+            newer_than=params.get("after"),
+            size=params["page_size"],
+        )
+        return Response(
+            {
+                "results": page.rows,
+                "next": None if page.next is None else _cursor(page.next),
+                "head": "" if page.head is None else _cursor(page.head),
+            }
+        )
+
+    def _rule(self, request, pk):
+        # No id is below 1 or past a BigAutoField's range, and SQLite refuses
+        # to compare an int past it at all.
+        in_range = 0 < pk <= BigIntegerField.MAX_BIGINT
+        rule = services.rule_for(request.user, pk) if in_range else None
+        if rule is None:
+            raise NotFound("No rule with this id.")
+        return rule
+
+
 # Appended to the `api/` urlpatterns as flat patterns (not include()d): the
 # auth suite audits every pattern's permission classes and expects callbacks.
 urlpatterns = [
     path("rules/", RuleListCreateView.as_view(), name="rules-list"),
     path("rules/<int:pk>/", RuleDetailView.as_view(), name="rules-detail"),
     path("engine/status/", EngineStatusView.as_view(), name="engine-status"),
+    path("matches/", MatchListView.as_view(), name="matches-list"),
 ]
