@@ -4,38 +4,58 @@ The five sample mainnet blocks in ``raw_data/`` (94 to 133 transactions each,
 with their receipts) are served by a fake node, so a tick does everything but
 wait on the network: it stores each block with its receipts, decodes its
 transactions and evaluates every enabled rule against it. Each user owns ten
-rules: the five demo rules and five variants of them with other thresholds, so
-every kind of rule (block, transaction, withdrawal, token transfer) is in the mix.
+rules, from one of two workloads:
+
+- ``persona``: the rules of ``PRODUCT.md``'s treasury and risk desks, each
+  watching its own wallets ("more than 1M USDT leaves our hot wallet", "our
+  governance token sent to an exchange"). A rule names addresses no other
+  user's does, so it matches only when its desk's wallets move. A share of the
+  desks (``STRESS_ACTIVE_SHARE``, 2% by default) watch wallets that move in the
+  sample blocks, which comes to about 0.1 matches per user per block: some 700
+  alerts a day for each user, more than a desk would keep, so the matches
+  written err high;
+- ``demo``: the five demo rules and a variant of each with another threshold,
+  the same for every user. Every user then matches about 30 rows a block, so
+  this is the worst case for writing matches, not a likely one.
 
 ``QueryScalingTests`` always runs: it pins that a block's rows are read once
-and shared by every rule, so adding users adds no queries to a tick, only the
-work of checking their rules against rows already read. ``PipelineStressTests`` runs only with ``STRESS_USERS`` set, as it
-takes minutes at scale::
+and shared by every rule, so adding users adds no queries to a tick, and that
+the rule index answers what each rule answers alone, for both workloads.
+``PipelineStressTests`` runs only with ``STRESS_USERS`` set, as it takes
+minutes at scale::
 
-    STRESS_USERS=10,100,500,1000 python manage.py test project.app.tests.tests_pipeline_stress
+    STRESS_USERS=10000,50000,100000 STRESS_WORKLOAD=persona \\
+        python manage.py test project.app.tests.tests_pipeline_stress
 
 For each user count it runs five one-block ticks, as live polling does,
 keeping the rules across them as ``run_pipeline`` does: the first reads and
 indexes them all, the fourth follows ``STRESS_EDITS`` rules written again
 (10 by default) and indexes just those, and the rest find them unchanged. It
-checks every user's rules matched what one user's do, prints the seconds of a
-warm tick by stage, of the edit tick and of the cold one, then fits a line
-through the warm ticks and prints how many users fit in Ethereum's 12 second
-block time (``STRESS_BLOCK_SECONDS`` to change it). Run it against Postgres (``DATABASE_URL``) for numbers that mean
+checks a sample of users' recorded matches against what their rules answer
+alone, and prints the seconds of a warm tick by stage, of the edit tick and of
+the cold one, with the matches a user gets a block and the memory the kept
+index holds. It then fits a line through the warm ticks and prints how many
+users it puts in Ethereum's 12 second block time (``STRESS_BLOCK_SECONDS`` to
+change it). Run it against Postgres (``DATABASE_URL``) for numbers that mean
 something in production.
 """
 
 import contextlib
+import gc
 import io
 import json
 import os
+import random
 import time
+import tracemalloc
 import unittest
+from collections import Counter
 from unittest import mock
 
 import httpx
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import caches
 from django.core.management import call_command
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
@@ -53,15 +73,22 @@ from project.app.models import (
     Transaction,
     Withdrawal,
 )
-from project.app.rules import onchain
+from project.app.rules import onchain, utils
 from project.app.rules import services as rules_services
+from project.app.rules.utils import _all_of, _any_of, _cond
 from project.app.tests.tests_evm_block import FakeNode, NodeTestCase
 
 RULES_PER_USER = 10
 STRESS_USERS = os.environ.get("STRESS_USERS", "")
+WORKLOAD = os.environ.get("STRESS_WORKLOAD", "persona")
+ACTIVE_SHARE = float(os.environ.get("STRESS_ACTIVE_SHARE", "0.02"))
 BLOCK_SECONDS = float(os.environ.get("STRESS_BLOCK_SECONDS", "12"))
 # Rules written before one of the timed ticks, as users editing theirs between blocks.
 EDITS = int(os.environ.get("STRESS_EDITS", "10"))
+# The users whose recorded matches are checked against their rules alone, at most.
+CHECKED_USERS = 50
+# The rules the kept index's memory is measured on, at most.
+MEASURED_RULES = 20_000
 
 
 def _raw(name):
@@ -72,6 +99,10 @@ def _raw(name):
 SAMPLE_BLOCKS = _raw("blocks.json")
 SAMPLE_RECEIPTS = _raw("receipts.json")  # one list per block, in block order
 
+
+# --------------------------------------------------------------------------
+# the demo workload: the same ten rules for every user
+# --------------------------------------------------------------------------
 
 # Each demo rule's threshold, and the one its variant compares against instead.
 VARIANT_THRESHOLDS = {
@@ -85,7 +116,7 @@ VARIANT_THRESHOLDS = {
 
 
 def template_rules():
-    """The ten rules each user owns: the demo rules, and each again with another threshold."""
+    """The ten rules each demo user owns: the demo rules, and each again with another threshold."""
     demo = _raw("demo_rules.json")
     variants = [
         {"name": f"{rule['name']} (variant)", "conditions": _varied(rule["conditions"])}
@@ -104,6 +135,128 @@ def _varied(node):
     elif node.get("threshold") in VARIANT_THRESHOLDS:
         node["threshold"] = VARIANT_THRESHOLDS[node["threshold"]]
     return node
+
+
+# --------------------------------------------------------------------------
+# the persona workload: each desk's rules over its own wallets
+# --------------------------------------------------------------------------
+
+USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+APPROVE = "0x095ea7b3"  # approve(address,uint256)'s selector
+TRANSFER = "0xa9059cbb"  # transfer(address,uint256)'s selector
+
+
+def _moving(blocks):
+    """The addresses moving in ``blocks``, by the role a desk's wallet would play in them."""
+    roles = {role: set() for role in ("sender", "recipient", "contract", "validator")}
+    for raw in blocks:
+        for transaction in raw["transactions"]:
+            roles["sender"].add(transaction["from"])
+            if transaction["to"]:
+                roles["contract"].add(transaction["to"])
+            calldata = transaction.get("input") or ""
+            if calldata.startswith(TRANSFER) and len(calldata) >= 74:
+                roles["recipient"].add("0x" + calldata[34:74])
+        roles["validator"].update(withdrawal["address"] for withdrawal in raw["withdrawals"])
+    return {role: sorted(address.lower() for address in found) for role, found in roles.items()}
+
+
+MOVING = _moving(SAMPLE_BLOCKS)
+# Stand-ins for exchange deposit addresses, the same for every desk: the five
+# addresses the sample blocks send to most.
+EXCHANGES = [
+    address
+    for address, _ in Counter(
+        transaction["to"]
+        for raw in SAMPLE_BLOCKS
+        for transaction in raw["transactions"]
+        if transaction["to"]
+    ).most_common(5)
+]
+
+
+def desk_wallets(desk):
+    """Desk ``desk``'s wallets by role, the same every run.
+
+    A share :data:`ACTIVE_SHARE` of the desks watch wallets that move in the
+    sample blocks, each drawn from the addresses playing that role in them;
+    the rest watch addresses of their own, which move in none.
+    """
+    chance = random.Random(desk)
+    active = chance.random() < ACTIVE_SHARE
+
+    def wallet(role):
+        if active:
+            return chance.choice(MOVING[role])
+        return "0x%040x" % chance.getrandbits(160)
+
+    return {
+        "hot": wallet("sender"),
+        "cold": wallet("sender"),
+        "treasury": wallet("recipient"),
+        "protocol": wallet("contract"),
+        "validator": wallet("validator"),
+        "token": "0x%040x" % chance.getrandbits(160),  # its own governance token
+    }
+
+
+def persona_rules(wallets):
+    """The ten rules a desk owns over its ``wallets``, as ``(name, conditions)``."""
+
+    def transfer(field, operator, threshold):
+        return _cond(field, operator, threshold, source="token_transfer")
+
+    def tx(field, operator, threshold):
+        return _cond(field, operator, threshold, source="transaction")
+
+    hot, cold, treasury = wallets["hot"], wallets["cold"], wallets["treasury"]
+    return [
+        (
+            "More than 1M USDT leaves the hot wallet",
+            _all_of(
+                transfer("token", "==", USDT),
+                transfer("from_address", "==", hot),
+                transfer("raw_value", ">", 10**12),
+            ),
+        ),
+        (
+            "More than 1M USDC leaves the hot wallet",
+            _all_of(
+                transfer("token", "==", USDC),
+                transfer("from_address", "==", hot),
+                transfer("raw_value", ">", 10**12),
+            ),
+        ),
+        (
+            "More than 100 ETH leaves the hot wallet",
+            _all_of(tx("from_address", "==", hot), tx("value", ">", 100 * 10**18)),
+        ),
+        (
+            "The hot wallet approves a spender",
+            _all_of(tx("from_address", "==", hot), tx("input", "contains", APPROVE)),
+        ),
+        (
+            "Anything touching the cold wallet",
+            _all_of(_any_of(tx("from_address", "==", cold), tx("to_address", "==", cold))),
+        ),
+        (
+            "Our governance token sent to an exchange",
+            _all_of(
+                transfer("token", "==", wallets["token"]), transfer("to_address", "in", EXCHANGES)
+            ),
+        ),
+        ("Tokens into the treasury", _all_of(transfer("to_address", "==", treasury))),
+        (
+            "10 ETH or more into the treasury",
+            _all_of(tx("to_address", "==", treasury), tx("value", ">=", 10 * 10**18)),
+        ),
+        ("Calls to our protocol", _all_of(tx("to_address", "==", wallets["protocol"]))),
+        (
+            "Withdrawals to our validators",
+            _all_of(_cond("address", "==", wallets["validator"], source="withdrawal")),
+        ),
+    ]
 
 
 class SampleNode(FakeNode):
@@ -134,32 +287,35 @@ class StressTestCase(NodeTestCase):
         patcher = mock.patch("project.app.evm.rpc.httpx.post", side_effect=self.node.client.post)
         patcher.start()
         self.addCleanup(patcher.stop)
-        call_command("load_function_signatures", stdout=io.StringIO())
-        # The first tick on a chain stores only the head: start before the first block.
-        IngestCursor.objects.create(
-            chain=ChainId.ETHEREUM, last_indexed_block=min(self.node.by_number) - 1
-        )
-        template_owner = get_user_model().objects.create_user(username="template@stress.example")
-        self.templates = [
-            rules_services.create_rule(template_owner, fields) for fields in template_rules()
-        ]
-        Rule.objects.filter(owner=template_owner).update(enabled=False)
 
-    def add_users(self, count, start=0):
-        """``count`` users, each owning an enabled copy of every template rule."""
+    @staticmethod
+    def prepare(node):
+        """The function signatures decoding reads, and a cursor just before ``node``'s blocks.
+
+        The first tick on a chain stores only the head, so it starts before the first block.
+        """
+        call_command("load_function_signatures", stdout=io.StringIO())
+        IngestCursor.objects.create(
+            chain=ChainId.ETHEREUM, last_indexed_block=min(node.by_number) - 1
+        )
+
+    def add_users(self, count, start=0, workload="demo"):
+        """``count`` users from the ``start``-th, each owning ten enabled rules of ``workload``; answers the rules."""
         users = get_user_model().objects.bulk_create(
             get_user_model()(username=f"user{start + index}@stress.example")
             for index in range(count)
         )
-        rules = Rule.objects.bulk_create(
-            Rule(owner=user, name=template.name) for user in users for template in self.templates
+        if workload == "demo":
+            owned = [(fields["name"], fields["conditions"]) for fields in template_rules()]
+            trees = [owned for _ in users]
+        else:
+            trees = [persona_rules(desk_wallets(start + index)) for index in range(count)]
+        pairs = [(user, rule) for user, rules in zip(users, trees, strict=True) for rule in rules]
+        rules = Rule.objects.bulk_create(Rule(owner=user, name=name) for user, (name, _) in pairs)
+        _plant_trees(
+            [(rule, conditions) for rule, (_, (_, conditions)) in zip(rules, pairs, strict=True)]
         )
-        _clone_trees(
-            [
-                (template, rule)
-                for template, rule in zip(self.templates * len(users), rules, strict=True)
-            ]
-        )
+        return rules
 
     def timed_tick(self, rules):
         """One pipeline tick with ``rules`` kept across ticks; answers its result and each stage's seconds.
@@ -202,44 +358,53 @@ class StressTestCase(NodeTestCase):
 STAGES = ("ingest_new_blocks", "decode_transactions", "index", "evaluate_blocks")
 
 
-def _clone_trees(pairs):
-    """Copy each ``(template, rule)`` pair's condition tree onto ``rule``, a level at a time."""
-    children = {}  # template condition id (None for a root) -> its children, per template
-    for template in {template for template, _ in pairs}:
-        for node in template.all_conditions.order_by("id"):
-            children.setdefault((template.pk, node.parent_id), []).append(node)
-    # Each (template, rule, template condition, the clone of its parent) still to copy.
-    level = [
-        (template, rule, node, None)
-        for template, rule in pairs
-        for node in children[template.pk, None]
-    ]
+def _plant_trees(pairs):
+    """Store each ``(rule, conditions)`` pair's payload as the rule's tree, a level at a time.
+
+    It stores what ``utils.build_tree`` does, thresholds lowercased as the
+    write path stores them, with one insert per level of every tree rather
+    than one per node.
+    """
+    level = [(rule, None, utils.lowercase_thresholds(conditions)) for rule, conditions in pairs]
     while level:
-        clones = Condition.objects.bulk_create(
+        nodes = Condition.objects.bulk_create(
             Condition(
                 rule=rule,
                 parent=parent,
-                type=node.type,
-                field_name=node.field_name,
-                operator=node.operator,
-                value=node.value,
-                source=node.source,
+                type=utils.TREE_TYPE_COMPARISON,
+                field_name=node["field"],
+                operator=node["operator"],
+                source=node["source"],
+                value=node.get("threshold"),
             )
-            for _, rule, node, parent in level
+            if "field" in node
+            else Condition(
+                rule=rule, parent=parent, type=utils.TREE_TYPE_BY_GROUP[node["operator"]]
+            )
+            for rule, parent, node in level
         )
         level = [
-            (template, rule, child, clone)
-            for (template, rule, node, _), clone in zip(level, clones, strict=True)
-            for child in children.get((template.pk, node.pk), [])
+            (rule, stored, child)
+            for (rule, _, node), stored in zip(level, nodes, strict=True)
+            for child in node.get("conditions", ())
         ]
 
 
 class QueryScalingTests(StressTestCase):
-    def setUp(self):
-        super().setUp()
-        # Ingest and decode the sample blocks, leaving evaluation to each test.
-        with mock.patch.object(pipeline, "evaluate_blocks", lambda rules=None: None):
+    @classmethod
+    def setUpTestData(cls):
+        # Ingest and decode the sample blocks once for every test, leaving evaluation to
+        # each. Once, too, since each ingest a Postgres test run writes and rolls back
+        # leaves autovacuum an emptier view of the receipt tables to plan the next by.
+        node = SampleNode()
+        caches["rpc"].clear()
+        with (
+            mock.patch("project.app.evm.rpc.httpx.post", side_effect=node.client.post),
+            mock.patch.object(pipeline, "evaluate_blocks", lambda rules=None: None),
+        ):
+            cls.prepare(node)
             pipeline.run_tick()
+        caches["rpc"].clear()
 
     def evaluate_again(self):
         """Evaluate every sample block afresh; answer the queries it made and what it did."""
@@ -250,14 +415,29 @@ class QueryScalingTests(StressTestCase):
         self.assertEqual(run.blocks, len(SAMPLE_BLOCKS))
         return len(queries), run
 
-    def test_the_rules_are_copied_whole(self):
-        self.add_users(2)
+    def assert_index_answers_each_rule_alone(self):
+        rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
+        index = onchain.RuleIndex(rules)
+        matched = 0
+        for block in Block.objects.order_by("number"):
+            found = onchain.matches_for_rules(index, block)
+            self.assertEqual(index.refused, {})
+            for rule in rules:
+                with self.subTest(block=block.number, rule=rule.name):
+                    alone = onchain.matches_in_block(rule, block)
+                    self.assertEqual(found.get(rule, []), alone)
+                    matched += len(alone)
+        return matched
 
-        copies = Rule.objects.filter(enabled=True).order_by("id")
-
-        self.assertEqual(copies.count(), 2 * RULES_PER_USER)
-        for copy, template in zip(copies, self.templates * 2, strict=True):
-            self.assertEqual(copy.conditions_payload(), template.conditions_payload())
+    def test_the_rules_are_stored_as_the_write_path_stores_them(self):
+        owner = get_user_model().objects.create_user(username="written@stress.example")
+        for start, workload in enumerate(("demo", "persona")):
+            with self.subTest(workload=workload):
+                for rule in self.add_users(1, start=start, workload=workload):
+                    written = rules_services.create_rule(
+                        owner, {"name": rule.name, "conditions": rule.conditions_payload()}
+                    )
+                    self.assertEqual(written.conditions_payload(), rule.conditions_payload())
 
     def test_every_user_adds_the_same_matches_and_no_queries(self):
         counts, matches = [], []
@@ -271,17 +451,16 @@ class QueryScalingTests(StressTestCase):
         self.assertGreater(matches[0], 0)
         self.assertEqual(matches, [matches[0], 2 * matches[0], 3 * matches[0]])
 
-    def test_the_rule_index_matches_what_each_rule_matches_alone_on_the_sample_blocks(self):
+    def test_the_rule_index_matches_what_each_demo_rule_matches_alone(self):
         self.add_users(1)
-        rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
-        index = onchain.RuleIndex(rules)
 
-        for block in Block.objects.order_by("number"):
-            found = onchain.matches_for_rules(index, block)
-            self.assertEqual(index.refused, {})
-            for rule in rules:
-                with self.subTest(block=block.number, rule=rule.name):
-                    self.assertEqual(found.get(rule, []), onchain.matches_in_block(rule, block))
+        self.assertGreater(self.assert_index_answers_each_rule_alone(), 0)
+
+    def test_the_rule_index_matches_what_each_persona_rule_matches_alone(self):
+        with mock.patch(f"{__name__}.ACTIVE_SHARE", 0.5):
+            self.add_users(20, workload="persona")
+
+        self.assertGreater(self.assert_index_answers_each_rule_alone(), 0)
 
 
 @unittest.skipUnless(STRESS_USERS, "set STRESS_USERS=10,100,... to run the pipeline stress tests")
@@ -296,15 +475,18 @@ class PipelineStressTests(StressTestCase):
     are the warm ticks'.
     """
 
+    def setUp(self):
+        super().setUp()
+        self.prepare(self.node)
+
     def test_one_block_ticks_at_each_user_count(self):
         counts = sorted(int(count) for count in STRESS_USERS.split(","))
         rows = []
-        baseline = None
         for count in counts:
             with self.subTest(users=count):
                 self._reset()
                 users = Rule.objects.filter(enabled=True).count() // RULES_PER_USER
-                self.add_users(count - users, start=users)
+                self.add_users(count - users, start=users, workload=WORKLOAD)
                 rules = rules_services.EnabledRules()
                 ticks = []
                 for tick, number in enumerate(sorted(self.node.by_number)):
@@ -315,10 +497,8 @@ class PipelineStressTests(StressTestCase):
                     self.assertEqual((result.ingested, result.evaluation.blocks), (1, 1))
                     self.assertEqual(result.evaluation.refused, {})
                     ticks.append((result.evaluation.matches, seconds))
-                per_user = sum(matches for matches, _ in ticks) / count
-                if baseline is None:
-                    baseline = per_user
-                self.assertEqual(per_user, baseline)
+                self._check_a_sample(count)
+                per_block = sum(matches for matches, _ in ticks) / len(ticks) / count
                 seconds = [tick for _, tick in ticks]
                 warm = [seconds[tick] for tick in (1, 2, 4)]
                 self.assertTrue(all(tick["index"] < seconds[0]["index"] for tick in warm))
@@ -331,13 +511,37 @@ class PipelineStressTests(StressTestCase):
                     if stage != "index"
                 }
                 stages["index"] = sum(tick["index"] for tick in warm) / len(warm)
-                rows.append((count, stages, seconds[3]["index"], seconds[0]["index"]))
+                held = _held_per_rule() * count * RULES_PER_USER / 2**20
+                rows.append(
+                    (count, stages, seconds[3]["index"], seconds[0]["index"], per_block, held)
+                )
         self._report(rows)
 
     def _edit(self, count):
         """Write ``count`` enabled rules again through the catalog, their conditions as they were."""
         for rule in Rule.objects.filter(enabled=True).order_by("?")[:count]:
             rules_services.update_rule(rule, {"conditions": rule.conditions_payload()})
+
+    def _check_a_sample(self, count):
+        """Each of a sample of users' rules recorded what it matches alone, on every sample block."""
+        step = max(1, count // CHECKED_USERS)
+        sample = [f"user{index}@stress.example" for index in range(0, count, step)]
+        rules = Rule.objects.filter(owner__username__in=sample).prefetch_related("all_conditions")
+        recorded = {}
+        for match in MatchedRule.objects.filter(rule__in=rules):
+            key = match.transaction_id or match.withdrawal_id
+            recorded.setdefault((match.rule_id, match.block_id), []).append(key)
+        expected = {}
+        for block in Block.objects.all():
+            rows = onchain.BlockRows(block)
+            for rule in rules:
+                for row in onchain.matches_in_block(rule, block, rows):
+                    key = row.pk if isinstance(row, (Transaction, Withdrawal)) else None
+                    expected.setdefault((rule.pk, block.pk), []).append(key)
+        self.assertEqual(
+            {key: sorted(found, key=str) for key, found in recorded.items()},
+            {key: sorted(found, key=str) for key, found in expected.items()},
+        )
 
     def _reset(self):
         """Forget the sample blocks, so the next ticks ingest, decode and evaluate them afresh."""
@@ -348,31 +552,55 @@ class PipelineStressTests(StressTestCase):
     def _report(self, rows):
         lines = [
             "",
-            f"Pipeline stress: one-block ticks over {len(SAMPLE_BLOCKS)} sample mainnet blocks, "
-            f"{RULES_PER_USER} rules per user, {connection.vendor}; seconds",
-            f"{'users':>8} {'rules':>8} {'ingest':>8} {'decode':>8} {'evaluate':>9} "
-            f"{'index':>8} {'warm tick':>10} {'+ edits':>8} {'+ cold':>8}",
+            f"Pipeline stress, {WORKLOAD} workload: one-block ticks over {len(SAMPLE_BLOCKS)} "
+            f"sample mainnet blocks, {RULES_PER_USER} rules per user, {connection.vendor}; seconds",
+            f"{'users':>8} {'rules':>9} {'ingest':>7} {'decode':>7} {'evaluate':>9} "
+            f"{'index':>7} {'warm tick':>10} {'+ edits':>8} {'+ cold':>8} "
+            f"{'matches/user/block':>19} {'index MB':>9}",
         ]
-        for count, stages, edited, cold in rows:
+        for count, stages, edited, cold, per_block, held in rows:
             lines.append(
-                f"{count:>8} {count * RULES_PER_USER:>8} {stages['ingest_new_blocks']:>8.3f} "
-                f"{stages['decode_transactions']:>8.3f} {stages['evaluate_blocks']:>9.3f} "
-                f"{stages['index']:>8.3f} {sum(stages.values()):>10.3f} "
-                f"{edited - stages['index']:>8.3f} {cold - stages['index']:>8.3f}"
+                f"{count:>8} {count * RULES_PER_USER:>9} {stages['ingest_new_blocks']:>7.3f} "
+                f"{stages['decode_transactions']:>7.3f} {stages['evaluate_blocks']:>9.3f} "
+                f"{stages['index']:>7.3f} {sum(stages.values()):>10.3f} "
+                f"{edited - stages['index']:>8.3f} {cold - stages['index']:>8.3f} "
+                f"{per_block:>19.4f} {held:>9.0f}"
             )
         lines.append(
             f"index: checking the rules are unchanged. + edits: what indexing {EDITS} rules "
             "written since adds to a tick. + cold: what indexing every rule adds, as the first "
-            "tick does"
+            "tick does. index MB: what the kept index holds, its rules included, from a "
+            f"sample of up to {MEASURED_RULES:,} rules"
         )
         if len(rows) > 1:
             fixed, per_user = _fit([(count, sum(stages.values())) for count, stages, *_ in rows])
-            lines.append(
-                f"fit: {fixed:.3f}s + {per_user * 1000:.3f}ms per user per warm tick; "
-                f"about {int((BLOCK_SECONDS - fixed) / per_user):,} users fit in a "
-                f"{BLOCK_SECONDS:g}s block"
-            )
+            fit = f"fit: {fixed:.3f}s + {per_user * 1000:.4f}ms per user per warm tick"
+            if per_user <= 0:
+                lines.append(f"{fit}: the warm tick did not grow with the users measured")
+            else:
+                reach = int((BLOCK_SECONDS - fixed) / per_user)
+                past = ", past the counts measured" if reach > rows[-1][0] else ""
+                lines.append(
+                    f"{fit}; that line reaches {BLOCK_SECONDS:g}s at {reach:,} users{past}"
+                )
         print("\n".join(lines))
+
+
+def _held_per_rule():
+    """The bytes the kept index holds for each rule, the rule itself included, on a sample."""
+    gc.collect()
+    tracemalloc.start()
+    try:
+        rules = list(Rule.objects.filter(enabled=True)[:MEASURED_RULES])
+        trees = rules_services._trees(Condition.objects.filter(rule__in=[r.pk for r in rules]))
+        index = onchain.RuleIndex(rules, trees)
+        del trees
+        gc.collect()
+        held = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    assert index.rules
+    return held / len(rules)
 
 
 def _fit(points):
