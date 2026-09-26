@@ -1,0 +1,527 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-25T15:37:58+00:00",
+  "title": "Design System: Onchain Rule Triggers (working name)",
+  "extensions": {
+    "colorMeta": {
+      "phosphor": {
+        "role": "primary",
+        "displayName": "Full Phosphor",
+        "canonical": "#5dff8f",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "phosphor-hot": {
+        "role": "primary",
+        "displayName": "Hot Phosphor",
+        "canonical": "#9dffbd",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "phosphor-2": {
+        "role": "secondary",
+        "displayName": "Phosphor 2",
+        "canonical": "#3fd873",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "phosphor-3": {
+        "role": "secondary",
+        "displayName": "Phosphor 3",
+        "canonical": "#2aa452",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "phosphor-4": {
+        "role": "secondary",
+        "displayName": "Phosphor 4 (lines only)",
+        "canonical": "#1c6e37",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "phosphor-5": {
+        "role": "secondary",
+        "displayName": "Phosphor 5 (fills)",
+        "canonical": "#103f20",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "phosphor-6": {
+        "role": "secondary",
+        "displayName": "Phosphor 6 (hover)",
+        "canonical": "#0a2814",
+        "tonalRamp": [
+          "#0a2814",
+          "#103f20",
+          "#1c6e37",
+          "#2aa452",
+          "#3fd873",
+          "#5dff8f",
+          "#9dffbd",
+          "#d4ffe2"
+        ]
+      },
+      "screen": {
+        "role": "neutral",
+        "displayName": "Tube Black",
+        "canonical": "#03120a",
+        "tonalRamp": [
+          "#010804",
+          "#03120a",
+          "#051c0e",
+          "#062012",
+          "#062a15",
+          "#0a2814",
+          "#103f20",
+          "#1c6e37"
+        ]
+      },
+      "screen-glow": {
+        "role": "neutral",
+        "displayName": "Tube Glow",
+        "canonical": "#062a15",
+        "tonalRamp": [
+          "#010804",
+          "#03120a",
+          "#051c0e",
+          "#062012",
+          "#062a15",
+          "#0a2814",
+          "#103f20",
+          "#1c6e37"
+        ]
+      },
+      "screen-edge": {
+        "role": "neutral",
+        "displayName": "Tube Edge",
+        "canonical": "#010804",
+        "tonalRamp": [
+          "#010804",
+          "#03120a",
+          "#051c0e",
+          "#062012",
+          "#062a15",
+          "#0a2814",
+          "#103f20",
+          "#1c6e37"
+        ]
+      },
+      "field": {
+        "role": "neutral",
+        "displayName": "Field Green",
+        "canonical": "#062012",
+        "tonalRamp": [
+          "#010804",
+          "#03120a",
+          "#051c0e",
+          "#062012",
+          "#062a15",
+          "#0a2814",
+          "#103f20",
+          "#1c6e37"
+        ]
+      },
+      "inspector-top": {
+        "role": "neutral",
+        "displayName": "Inspector Top",
+        "canonical": "#051c0e",
+        "tonalRamp": [
+          "#010804",
+          "#03120a",
+          "#051c0e",
+          "#062012",
+          "#062a15",
+          "#0a2814",
+          "#103f20",
+          "#1c6e37"
+        ]
+      },
+      "housing": {
+        "role": "neutral",
+        "displayName": "Housing",
+        "canonical": "#25281f",
+        "tonalRamp": [
+          "#0f110c",
+          "#1b1d16",
+          "#22251c",
+          "#25281f",
+          "#2f3327",
+          "#3b3f31",
+          "#4a4f3d",
+          "#6b715a"
+        ]
+      },
+      "bezel-top": {
+        "role": "neutral",
+        "displayName": "Bezel Top",
+        "canonical": "#3b3f31",
+        "tonalRamp": [
+          "#0f110c",
+          "#1b1d16",
+          "#22251c",
+          "#25281f",
+          "#2f3327",
+          "#3b3f31",
+          "#4a4f3d",
+          "#6b715a"
+        ]
+      },
+      "bezel-bottom": {
+        "role": "neutral",
+        "displayName": "Bezel Bottom",
+        "canonical": "#22251c",
+        "tonalRamp": [
+          "#0f110c",
+          "#1b1d16",
+          "#22251c",
+          "#25281f",
+          "#2f3327",
+          "#3b3f31",
+          "#4a4f3d",
+          "#6b715a"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Wordmark only (VT323 30px; 24px at 860px and below)."
+      },
+      "numeral": {
+        "displayName": "Numeral",
+        "purpose": "Transfer amount, backtest count, circuit match count."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Circuit name above a trace and on circuit rows; inspector title."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Uppercase pane headings."
+      },
+      "tab": {
+        "displayName": "Tab",
+        "purpose": "JOURNAL / CIRCUITS tabs (19px at 860px and below); NEW RULE at 20px (16px at 860px and below); coil-chain end row."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default text, values, hashes and addresses."
+      },
+      "body-sm": {
+        "displayName": "Body small",
+        "purpose": "Status line, header readouts, kv terms, notes, small buttons."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase column heads, section heads, form labels in phosphor-3."
+      },
+      "gate-subject": {
+        "displayName": "Gate subject",
+        "purpose": "Uppercase field name above a gate, phosphor-3; 12.5px in the trace."
+      },
+      "gate-test": {
+        "displayName": "Gate test",
+        "purpose": "Operator and value on a gate, phosphor; 14.5px in the trace."
+      },
+      "gate-number": {
+        "displayName": "Gate number",
+        "purpose": "G1, G2\u2026 left of the incoming wire; at least phosphor-3 by The Ink Floor Rule."
+      }
+    },
+    "shadows": [
+      {
+        "name": "bezel",
+        "value": "inset 0 2px 0 rgba(255,255,255,.07), inset 0 -2px 0 rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45)",
+        "purpose": "Monitor bezel only."
+      },
+      {
+        "name": "tube-recess",
+        "value": "inset 0 0 0 2px #0b0d08, inset 0 0 60px rgba(0,0,0,.85), inset 0 0 12px rgba(93,255,143,.12)",
+        "purpose": "The glass only."
+      },
+      {
+        "name": "phosphor-text-glow",
+        "value": "text-shadow: 0 0 6px rgba(93,255,143,.35)",
+        "purpose": "Set once on the tube, inherited; removed on inverse blocks."
+      },
+      {
+        "name": "lit-line-glow",
+        "value": "filter: drop-shadow(0 0 3px rgba(93,255,143,.8))",
+        "purpose": "Lit wires and held contact bars (rails at .7 alpha)."
+      },
+      {
+        "name": "coil-glow",
+        "value": "filter: drop-shadow(0 0 4px rgba(93,255,143,.9))",
+        "purpose": "Energised coil arcs."
+      },
+      {
+        "name": "inspector-lift",
+        "value": "0 -14px 28px rgba(0,0,0,.65)",
+        "purpose": "Sticky inspector at desktop only."
+      },
+      {
+        "name": "scanlines",
+        "value": "repeating-linear-gradient(180deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.22) 2px 3px); mix-blend-mode: multiply",
+        "purpose": "Tube overlay, pointer-events none."
+      },
+      {
+        "name": "vignette",
+        "value": "radial-gradient(120% 90% at 50% 40%, transparent 60%, rgba(0,0,0,.45) 100%)",
+        "purpose": "Tube overlay above content, pointer-events none."
+      }
+    ],
+    "motion": {
+      "powerSpeedPxPerSec": 820,
+      "gateHoldSec": 0.6,
+      "gateLight": "0.22s ease-out",
+      "valueFlash": "0.6s ease-out",
+      "coilBurst": "0.9s ease-out",
+      "chainRowIn": "0.35s ease-out",
+      "reducedMotion": "final lit state, no animation"
+    },
+    "breakpoints": [
+      {
+        "name": "desktop",
+        "value": "861px"
+      },
+      {
+        "name": "stack",
+        "value": "860px"
+      },
+      {
+        "name": "compact",
+        "value": "520px"
+      },
+      {
+        "name": "composer-stack",
+        "value": "1100px"
+      }
+    ],
+    "identity": {
+      "tagPattern": "^[A-Z0-9][A-Z0-9-]{0,11}$",
+      "tagUnique": "per owner",
+      "glyphs": [
+        "triangle",
+        "diamond",
+        "target",
+        "square",
+        "star",
+        "bars",
+        "chevron",
+        "bolt",
+        "hexagon",
+        "circle",
+        "xmark",
+        "ring"
+      ],
+      "glyphGrid": "16px, stroke 1.5, round joins, no fill"
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one inverse action in a view (Save and arm, Wire circuit before a draft exists).",
+      "html": "<div class=\"ds-scr\"><button class=\"ds-btn ds-btn-primary\">SAVE AND ARM</button></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:16px;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-btn{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;font-size:15px;font-weight:400;text-transform:uppercase;letter-spacing:.06em;padding:7px 12px;border:1px solid var(--ph-3);border-radius:0;background:transparent;color:var(--ph);cursor:pointer} .ds-btn:hover{background:var(--ph-6)} .ds-btn:focus-visible{outline:2px solid var(--ph);outline-offset:2px} .ds-btn-primary{background:var(--ph);border-color:var(--ph);color:var(--scr);text-shadow:none} .ds-btn-primary:hover{background:var(--ph-hot)} .ds-btn:disabled{opacity:.45;cursor:not-allowed}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Default terminal key; small variant for pane actions (Replay, Edit circuit).",
+      "html": "<div class=\"ds-scr\"><button class=\"ds-btn\">CANCEL</button> <button class=\"ds-btn ds-sm\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linejoin=\"round\"><path d=\"M5 3.5v9l7-4.5z\"/></svg>REPLAY</button></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:16px;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-btn{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;display:inline-flex;align-items:center;gap:8px;font-size:15px;text-transform:uppercase;letter-spacing:.06em;padding:7px 12px;border:1px solid var(--ph-3);border-radius:0;background:transparent;color:var(--ph);cursor:pointer} .ds-sm{font-size:13px;padding:4px 9px} .ds-btn:hover{background:var(--ph-6)} .ds-btn:focus-visible{outline:2px solid var(--ph);outline-offset:2px}"
+    },
+    {
+      "name": "Terminal Tabs",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "JOURNAL and CIRCUITS tabs on a phosphor underline, with the inverse NEW RULE tab at the far right.",
+      "html": "<div class=\"ds-scr\"><nav class=\"ds-tabs\"><button aria-current=\"page\">JOURNAL <span>40</span></button><button>CIRCUITS <span>8</span></button><i></i><button class=\"ds-new\">NEW RULE</button></nav></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:16px 16px 0;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-tabs{display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid var(--ph-3)} .ds-tabs i{flex:1} .ds-tabs button{font-family:VT323,'Share Tech Mono',ui-monospace,monospace;font-size:22px;line-height:1;letter-spacing:.06em;color:var(--ph-3);background:none;border:1px solid transparent;border-bottom:0;padding:5px 12px 4px;margin-bottom:-1px;display:flex;gap:8px;align-items:baseline;text-shadow:inherit;cursor:pointer} .ds-tabs button span{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;font-size:13px} .ds-tabs button:hover{color:var(--ph)} .ds-tabs button[aria-current=page]{color:var(--ph);border-color:var(--ph-3);background:var(--scr)} .ds-tabs .ds-new{font-size:20px;background:var(--ph);color:var(--scr);border-color:var(--ph-3);text-shadow:none} .ds-tabs .ds-new:hover{background:var(--ph-hot)} .ds-tabs button:focus-visible{outline:2px solid var(--ph);outline-offset:2px}"
+    },
+    {
+      "name": "Filter Chips",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Circuit filters above the journal; selected chip inverts. No longer used to pick circuits: that is the Channel List.",
+      "html": "<div class=\"ds-scr\"><button class=\"ds-chip\" aria-pressed=\"true\">All rules<span>40</span></button> <button class=\"ds-chip\" aria-pressed=\"false\">R-002<span>13</span></button></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:16px;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-chip{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.3;padding:3px 8px;border:1px solid var(--ph-4);border-radius:0;background:transparent;color:var(--ph-2);cursor:pointer} .ds-chip span{font-size:11px;margin-left:4px;opacity:.8} .ds-chip:hover{background:var(--ph-6)} .ds-chip[aria-pressed=true]{background:var(--ph);border-color:var(--ph);color:var(--scr);text-shadow:none} .ds-chip:focus-visible{outline:2px solid var(--ph);outline-offset:2px}"
+    },
+    {
+      "name": "Tags",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "Outline tags for codes and labels; inverse tags for power states.",
+      "html": "<div class=\"ds-scr\"><span class=\"ds-tag\">R-008</span> <span class=\"ds-tag\">BLOCKED</span> <span class=\"ds-tag ds-inv\">CARRIED POWER</span> <span class=\"ds-tag ds-inv\">ENERGISED</span></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:16px;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-tag{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;display:inline-flex;font-size:11.5px;line-height:1;letter-spacing:.04em;text-transform:uppercase;padding:3px 6px;border:1px solid var(--ph-4);border-radius:0;color:var(--ph-2)} .ds-inv{background:var(--ph);border-color:var(--ph);color:var(--scr);text-shadow:none}"
+    },
+    {
+      "name": "Sentence Input",
+      "kind": "input",
+      "refersTo": "input-sentence",
+      "description": "Field-green well for the rule sentence; editor fields use the same treatment at 14.5px.",
+      "html": "<div class=\"ds-scr\"><label class=\"ds-lbl\">DESCRIBE THE TRANSACTIONS TO CATCH<input class=\"ds-in\" value=\"USDT transfers over 10k\"></label></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:16px;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-lbl{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;display:grid;gap:8px;font-size:12px;letter-spacing:.06em;color:var(--ph-3)} .ds-in{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;font-size:20px;letter-spacing:0;padding:10px 12px;background:var(--field);border:1px solid var(--ph-4);border-radius:0;color:var(--ph);caret-color:var(--ph)} .ds-in:focus-visible{outline:2px solid var(--ph);outline-offset:2px}"
+    },
+    {
+      "name": "Journal Row",
+      "kind": "custom",
+      "refersTo": "journal-row-selected",
+      "description": "One match in the journal; selected row gets a phosphor-5 fill and inset ring.",
+      "html": "<div class=\"ds-scr\"><button class=\"ds-row\"><span>16:22:23</span><span class=\"ds-d\">18,000,004<br>tx 41</span><span>R-002</span><span><b>54,783.36</b> <span class=\"ds-d\">ANKR</span><br><span class=\"ds-d ds-s\">Binance 14 \u2192 0xeb57\u2026f1bc</span></span></button><button class=\"ds-row\" aria-selected=\"true\"><span>16:22:23</span><span class=\"ds-d\">18,000,004<br>tx 39</span><span>R-008</span><span><b>397.09</b> <span class=\"ds-d\">USDT</span><br><span class=\"ds-d ds-s\">Binance 15 \u2192 0xccb8\u20261df1</span></span></button></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:8px 0;text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-row{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;display:grid;grid-template-columns:74px 92px 56px 1fr;gap:10px;align-items:center;width:100%;text-align:left;min-height:50px;padding:6px 14px;border:0;border-bottom:1px solid var(--ph-5);background:transparent;color:var(--ph);font-size:12.5px;text-shadow:inherit;cursor:pointer} .ds-row b{font-weight:400;font-size:15px} .ds-d{color:var(--ph-2)} .ds-s{font-size:11.5px;color:var(--ph-3)} .ds-row:hover{background:var(--ph-6)} .ds-row[aria-selected=true]{background:var(--ph-5);box-shadow:inset 0 0 0 1px var(--ph-3)} .ds-row:focus-visible{outline:2px solid var(--ph);outline-offset:-2px}"
+    },
+    {
+      "name": "Circuit Diagram",
+      "kind": "custom",
+      "refersTo": "value-highlight",
+      "description": "Rail, lit wire through a held gate with its powering value boxed, a dotted open branch, and the energised coil.",
+      "html": "<div class=\"ds-scr\"><svg class=\"ds-rg\" width=\"420\" height=\"190\" viewBox=\"0 0 420 190\"><line class=\"rail on\" x1=\"4\" y1=\"2\" x2=\"4\" y2=\"188\"/><path class=\"w on\" d=\"M4 54H22\"/><path class=\"w on\" d=\"M22 54H42\"/><path class=\"w on\" d=\"M22 54V150\"/><path class=\"w\" d=\"M22 150H42\"/><g class=\"held\"><text class=\"gi\" x=\"46\" y=\"49\">G1</text><text class=\"t1\" x=\"106\" y=\"21\" text-anchor=\"middle\">TRANSFER TOKEN</text><text class=\"t2\" x=\"106\" y=\"37\" text-anchor=\"middle\">is USDT</text><path class=\"w on\" d=\"M42 54H100M112 54H170\"/><rect class=\"fillc\" x=\"101\" y=\"52.25\" width=\"10\" height=\"3.5\"/><path class=\"bar\" d=\"M100 43V65M112 43V65\"/><rect class=\"hl\" x=\"82\" y=\"70\" width=\"48\" height=\"17\"/><text class=\"act inv\" x=\"106\" y=\"82\" text-anchor=\"middle\">USDT</text></g><g class=\"open\"><text class=\"gi\" x=\"46\" y=\"145\">G2</text><text class=\"t1\" x=\"106\" y=\"117\" text-anchor=\"middle\">TRANSFER TOKEN</text><text class=\"t2\" x=\"106\" y=\"133\" text-anchor=\"middle\">is USDC</text><path class=\"w\" d=\"M42 150H100M112 150H170\"/><path class=\"bar\" d=\"M100 139V161M112 139V161\"/><text class=\"act\" x=\"106\" y=\"178\" text-anchor=\"middle\">USDT</text></g><path class=\"w\" d=\"M170 150H190V54\"/><path class=\"w on\" d=\"M170 54H320\"/><g class=\"coilg on\"><circle class=\"coilfill\" cx=\"336\" cy=\"54\" r=\"14\"/><path class=\"coil\" d=\"M328 41A15 15 0 0 0 328 67M344 41A15 15 0 0 1 344 67\"/><text class=\"ct\" x=\"336\" y=\"32\" text-anchor=\"middle\">R-008</text><text class=\"ct\" x=\"336\" y=\"86\" text-anchor=\"middle\">MATCH</text></g><path class=\"w\" d=\"M352 54H416\"/><line class=\"rail\" x1=\"416\" y1=\"2\" x2=\"416\" y2=\"188\"/></svg></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-scr{background:var(--scr);padding:12px} .ds-rg text{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;} .ds-rg path,.ds-rg line{fill:none} .ds-rg .rail{stroke:var(--ph-3);stroke-width:3} .ds-rg .rail.on{stroke:var(--ph);filter:drop-shadow(0 0 3px rgba(93,255,143,.7))} .ds-rg .w{stroke:var(--ph-4);stroke-width:1.5;stroke-dasharray:2 4} .ds-rg .w.on{stroke:var(--ph);stroke-width:4.5;stroke-dasharray:none;filter:drop-shadow(0 0 3px rgba(93,255,143,.8))} .ds-rg .bar{stroke:var(--ph-4);stroke-width:2.5} .ds-rg .held .bar{stroke:var(--ph);stroke-width:3.5;filter:drop-shadow(0 0 3px rgba(93,255,143,.8))} .ds-rg .fillc,.ds-rg .hl{fill:var(--ph)} .ds-rg .t1{fill:var(--ph-3);font-size:12.5px;letter-spacing:.04em} .ds-rg .t2{fill:var(--ph);font-size:14.5px} .ds-rg .act{fill:var(--ph-3);font-size:12.5px} .ds-rg .act.inv{fill:var(--scr)} .ds-rg .gi{fill:var(--ph-3);font-size:10px} .ds-rg .coil{stroke:var(--ph);stroke-width:2.5;filter:drop-shadow(0 0 4px rgba(93,255,143,.9))} .ds-rg .coilfill{fill:rgba(93,255,143,.28)} .ds-rg .ct{fill:var(--ph);font-size:13px}"
+    },
+    {
+      "name": "Inspector Power Chain",
+      "kind": "custom",
+      "refersTo": "value-highlight",
+      "description": "Coil view: the lit chain of gates that carried power, ending at the coil, then the dark branches.",
+      "html": "<div class=\"ds-insp\"><h3>COIL R-008 <span class=\"ds-inv\">ENERGISED</span></h3><div class=\"ds-t\">Power reached the coil through 2 gates</div><ol class=\"ds-chain\"><li><button><span class=\"gn\">G1</span>Transfer token is USDT<span class=\"val\">USDT</span></button></li><li><button><span class=\"gn\">G3</span>Transfer amount \u2265 250<span class=\"val\">397.09</span></button></li><li class=\"end\">COIL R-008 \u00b7 MATCH</li></ol><p class=\"ds-lbl\">BRANCHES THAT STAYED DARK</p><ul class=\"ds-chain dark\"><li><button><span class=\"gn\">G2</span>Transfer token is USDC<span class=\"val\">USDT</span></button></li></ul></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-insp{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;background:linear-gradient(180deg,#051c0e,var(--scr) 40%);border-top:1px solid var(--ph-3);padding:12px 16px 14px;color:var(--ph);text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-insp h3{font-size:13px;font-weight:400;color:var(--ph-2);margin:0 0 10px;display:flex;gap:10px;align-items:center} .ds-inv{font-size:11.5px;padding:3px 6px;background:var(--ph);color:var(--scr);text-shadow:none} .ds-t{font-family:VT323,'Share Tech Mono',ui-monospace,monospace;font-size:26px;line-height:1.1;letter-spacing:.02em;margin:2px 0 12px} .ds-chain{list-style:none;margin:0 0 0 8px;padding:0;border-left:2px solid var(--ph)} .ds-chain.dark{border-left:2px dotted var(--ph-4)} .ds-chain button{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;display:grid;grid-template-columns:38px 1fr auto;gap:10px;align-items:baseline;width:100%;text-align:left;background:none;border:0;padding:7px 10px;color:var(--ph);font-size:14px;line-height:1.3;text-shadow:inherit;cursor:pointer} .ds-chain button:hover{background:var(--ph-6)} .ds-chain button:focus-visible{outline:2px solid var(--ph);outline-offset:2px} .ds-chain .gn{color:var(--ph-3)} .ds-chain .val{background:var(--ph);color:var(--scr);padding:0 5px;text-shadow:none} .ds-chain.dark button{color:var(--ph-3)} .ds-chain.dark .val{background:none;color:var(--ph-3);border:1px dotted var(--ph-4)} .ds-chain .end{font-family:VT323,'Share Tech Mono',ui-monospace,monospace;padding:7px 10px;font-size:22px;letter-spacing:.06em} .ds-lbl{font-size:12px;letter-spacing:.06em;color:var(--ph-3);margin:12px 0 6px}"
+    },
+    {
+      "name": "Monitor Frame",
+      "kind": "card",
+      "description": "Bezel and tube with scanlines, vignette and phosphor glow; the only rounded, shadowed surfaces.",
+      "html": "<div class=\"ds-bezel\"><div class=\"ds-tube\"><div class=\"ds-logo\">ONCHAIN RULE TRIGGERS <span>WORKING NAME</span></div><div class=\"ds-sl\">SHEET <b>Match journal</b> <span class=\"ds-cur\">\u2588</span></div></div></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;} .ds-bezel{border-radius:22px;padding:14px;background:linear-gradient(180deg,#3b3f31,#22251c);box-shadow:inset 0 2px 0 rgba(255,255,255,.07),inset 0 -2px 0 rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.45)} .ds-tube{position:relative;overflow:hidden;border-radius:14px;padding:14px 18px;background:radial-gradient(130% 100% at 50% 45%,#062a15 0%,var(--scr) 70%,#010804 100%);box-shadow:inset 0 0 0 2px #0b0d08,inset 0 0 60px rgba(0,0,0,.85),inset 0 0 12px rgba(93,255,143,.12);color:var(--ph);text-shadow:0 0 6px rgba(93,255,143,.35)} .ds-tube::after{content:'';position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(180deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.22) 2px 3px);mix-blend-mode:multiply} .ds-tube::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:2;background:radial-gradient(120% 90% at 50% 40%,transparent 60%,rgba(0,0,0,.45) 100%)} .ds-logo{font-family:VT323,'Share Tech Mono',ui-monospace,monospace;font-size:30px;letter-spacing:.04em;display:flex;gap:12px;align-items:baseline} .ds-logo span{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--ph-3);border:1px solid var(--ph-4);padding:2px 6px} .ds-sl{font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--ph-3);border-top:1px solid var(--ph-4);margin-top:14px;padding-top:6px} .ds-sl b{font-weight:400;color:var(--ph)} .ds-cur{animation:ds-blink 1.1s steps(1) infinite} @keyframes ds-blink{50%{opacity:0}} @media (prefers-reduced-motion: reduce){.ds-cur{animation:none}}"
+    },
+    {
+      "name": "Circuit Ident",
+      "kind": "badge",
+      "description": "Glyph + tag, the only way a circuit is referred to in the UI (journal rows, channels, trace heading, coil, toasts).",
+      "html": "<div class=\"ds-scr\"><span class=\"ds-id\"><svg viewBox=\"0 0 16 16\"><path d=\"M9.5 1.5 3.5 9H8l-1.5 5.5 6-7.5H8Z\"/></svg>BNB-OUT</span> <span class=\"ds-id big\"><svg viewBox=\"0 0 16 16\"><path d=\"M8 2 14.5 13.5H1.5Z\"/></svg>STABLE-2K</span></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;}.ds-scr{background:#03120a;padding:16px;font-family:'Share Tech Mono',monospace;color:var(--ph)}.ds-id{display:inline-flex;align-items:center;gap:6px;letter-spacing:.04em}.ds-id svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round}.ds-id.big{border:1px solid var(--ph-4);padding:2px 7px;font-size:15px}.ds-id.big svg{width:16px;height:16px}"
+    },
+    {
+      "name": "Channel List",
+      "kind": "navigation",
+      "description": "Journal filter: a '>' command line that filters as you type (Enter tunes, Esc clears, '/' focuses) over one row per circuit: glyph, tag, name, match count. Selected row is inverse; disarmed rows dim with OFF.",
+      "html": "<div class=\"ds-scr\"><div class=\"ds-cmd\">&gt; <span>TUNE BNB</span></div><div class=\"ds-ch on\">ALL<b>40</b></div><div class=\"ds-ch\">BNB-OUT<b>7</b></div><div class=\"ds-ch off\">LINK-BNB<b>OFF</b></div></div>",
+      "css": ":host{--ph:#5dff8f;--ph-hot:#9dffbd;--ph-2:#3fd873;--ph-3:#2aa452;--ph-4:#1c6e37;--ph-5:#103f20;--ph-6:#0a2814;--scr:#03120a;--field:#062012;}.ds-scr{background:#03120a;padding:12px;font-family:'Share Tech Mono',monospace;color:var(--ph-2);width:220px}.ds-cmd{color:var(--ph);border-bottom:1px dashed var(--ph-4);padding:4px 0;margin-bottom:6px}.ds-cmd span{color:var(--ph-3)}.ds-ch{display:flex;justify-content:space-between;padding:7px 10px;border-bottom:1px solid var(--ph-5);color:var(--ph)}.ds-ch.on{background:var(--ph);color:#03120a}.ds-ch.off{color:var(--ph-3)}.ds-ch b{font-weight:400}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Phosphor Ladder",
+    "overview": "Every rule is drawn as a ladder-logic circuit on a green-phosphor CRT, and the trace is the product. The screen sits inside a rugged olive-grey monitor bezel; everything on the glass is one hue of phosphor at six intensities, plus the near-black of the tube. There is no second accent colour. State is carried by brightness, by line form (solid glowing stroke versus dim dotted trace, dashed for unknown) and by inversion (phosphor block with screen-black text), which is how a monochrome terminal has always shown emphasis.\n\nDensity is operator-grade: a match journal on the left, the energised circuit of the selected match on the right, and an inspector that explains any gate in plain words with the exact value that powered it. Chrome and data share one monospace face (Share Tech Mono); VT323, a bitmap-terminal face, is kept for headings, tab labels, the wordmark and big numerals. When a match is opened, power visibly travels the wire from the left rail at a fixed speed, lights each gate it passes, flashes the value that satisfied the gate, and bursts the coil.\n\nThe user's vocabulary is part of the world: a rule is a **circuit**, a condition is a **gate** (numbered G1, G2\u2026 in drawing order), a match output is the **coil**, enabled is **armed**. Navigation is two terminal tabs, **JOURNAL** and **CIRCUITS**, plus the inverse **NEW RULE** tab. There is no Blocks page and there are no hardware buttons on the bezel. This one dark world has no light variant: the phosphor tokens override both `prefers-color-scheme` branches and both `data-theme` values.",
+    "keyCharacteristics": [
+      "One hue, six phosphor intensities on a near-black tube; no second accent.",
+      "Emphasis by inversion: phosphor block, screen-black text, glow removed.",
+      "Lit is solid and glowing; unlit is a dim dotted trace; unknown is dashed with a blinking `?`.",
+      "Square everything on the glass (0 radius); only the bezel and tube are rounded.",
+      "Scanlines, vignette and a faint text glow are applied once, to the tube, never per component.",
+      "Power-on animation driven by wire position at 820 px/s, fully static under reduced motion."
+    ],
+    "rules": [
+      {
+        "name": "The One Hue Rule",
+        "body": "Everything on the glass is a step of the phosphor ramp or tube black. State is intensity, line form and inversion, never a new hue. No amber, no red.",
+        "section": "colors"
+      },
+      {
+        "name": "The Inversion Rule",
+        "body": "The strongest emphasis is a solid phosphor block with tube-black text and `text-shadow: none`. It is reserved for the primary action, the NEW RULE tab, selected filter chips, power-state tags, the value that powered a gate, and the toast.",
+        "section": "colors"
+      },
+      {
+        "name": "The Ink Floor Rule",
+        "body": "Text on the glass is `phosphor-3` or brighter. `phosphor-4` and dimmer are for lines, borders and fills.",
+        "section": "colors"
+      },
+      {
+        "name": "The Bitmap Headline Rule",
+        "body": "VT323 is for headings, tabs, the wordmark and big numerals only. Values, addresses, hashes, labels and running text are Share Tech Mono.",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Weight Rule",
+        "body": "Never set a weight other than 400. Emphasis is size, case, intensity or inversion.",
+        "section": "typography"
+      },
+      {
+        "name": "The Glass Is Flat Rule",
+        "body": "Nothing on the glass casts a shadow except the inspector sheet. Glow means power, never elevation.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep every glass colour on the phosphor ramp (`phosphor` through `phosphor-6`) or tube black, and express state as intensity, line form (solid, dotted `2 4`, dashed `3 3`) or inversion.",
+      "Do remove the text glow (`text-shadow: none`) on every inverse block.",
+      "Do draw lit wires solid at 3.5px (4.5px in the trace) with the 3px phosphor glow, and unlit wires dotted at 1.5px in `phosphor-4`.",
+      "Do number gates G1, G2\u2026 in drawing order and use the same number in the diagram, the inspector, the coil chain and the accessible name.",
+      "Do box the value only on gates that power actually passed through.",
+      "Do drive the power-on animation from x-position at 820 px/s and render the final state directly under `prefers-reduced-motion: reduce`.",
+      "Do fold wide circuits only at top-level AND boundaries, with matching lettered continuation markers.",
+      "Do apply scanlines, vignette and phosphor glow once, at the tube, over the whole screen.",
+      "Do use VT323 only for the wordmark, tabs, pane titles, circuit names, inspector titles and big numerals; use Share Tech Mono at 400 for everything else."
+    ],
+    "donts": [
+      "Don't add a second hue for warnings or errors; this world has none.",
+      "Don't add a light theme or honour `data-theme=\"light\"`; the phosphor tokens override both schemes.",
+      "Don't round anything on the glass; radius belongs to the bezel (22px) and the tube (14px) only.",
+      "Don't put shadows on panes, cards or buttons; the inspector sheet is the only raised thing on the glass.",
+      "Don't set text in `phosphor-4` or dimmer; those steps are for lines and fills.",
+      "Don't use VT323 for values, hashes, addresses or running text.",
+      "Don't add hardware buttons or controls to the bezel, or a Blocks tab."
+    ]
+  }
+}

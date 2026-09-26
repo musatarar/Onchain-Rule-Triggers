@@ -1,0 +1,97 @@
+{
+  "1": {
+    "enabled": true,
+    "match_count": 7,
+    "unevaluable_count": 0,
+    "match_tx_hashes": [
+      "0x75bf9657e1bcd9e6f4706c82c90d36306275c0752e5a730df2c5067f64375951",
+      "0xbc007545f4d5e55c0b9cc25eef6b088aabab0ef4a61f2fcaffa8c96ce0d75d54",
+      "0xf3afd85449655d75c12c22d3dac0e29a785a3dd864b4e7023dd4edf2b8414153",
+      "0xc2d77e851bc02f857c223eb49d1185274e1a1bb0ec70e75756a2d029ecfcbd61",
+      "0x05c9c59145387faa91370e56d717d42856bd20f8f19306814d5b7afbe837efe3",
+      "0x07daf0397f330eb3b921c0f3e022cfb54d3697c5da8ba396248b88fa5442c1c9",
+      "0x5238c3ea21ced59aa7e9836054159f70d0945e8fe80348a721f0b7d471168e5a"
+    ]
+  },
+  "2": {
+    "enabled": true,
+    "match_count": 13,
+    "unevaluable_count": 0,
+    "match_tx_hashes": [
+      "0x73ee5f2594e154c73590ba8339e69a553b14ccce29b5a976b2725885cf86e185",
+      "0xa60736e99248c01ba02957b84ecc01b4ebc4c22318b223702d924fbdf7e98df8",
+      "0x831b4c265b7b03bf169e3760afad30b985632dad46826e3b76705bda64579f96",
+      "0xfaabd2e68af7e2020397ace92e16c688c664d88cc0a1e9a3dffa8cb03fc0dd1b",
+      "0xf428eab3386d37e0dec00dd168da9f797bce93d87628f8b25120efde041c663a",
+      "0xc0273ef04fb55bd3eaa6d92d46b19209ebe0cce953036c1b442f80ec27c2248d",
+      "0xd315f3a3bb24e2cc6d4d256d8e568ff862a2b7b14ecb070fe5182a97a4eb155b",
+      "0x586a6417cbb67f28de92d4a34dd48fcae97c49f38c7e58a5d17320623f491987",
+      "0x7b46a74fd8caaa94ab10346ee54ed0aad862e0a71d832f94dc23a6e1416dc4b6",
+      "0x3266982fe13e591a4d52c05dac89063180dec8d089a6e7171f74d9edffca31fd",
+      "0x930a4e188ea908664632762ed9d7f3e94d01c44ee5d64cba390d73278f38a17b",
+      "0x43f37e76f3634812851b4dc6e4ebec71ab49696352a4d82a57e3e029c374795d",
+      "0x3e4394f59e1698234943584360afeba304cc67cb5a780d2cda188f64397e0c82"
+    ]
+  },
+  "3": {
+    "enabled": true,
+    "match_count": 4,
+    "unevaluable_count": 0,
+    "match_tx_hashes": [
+      "0x8bd66e08dbe4a169dc82834cc382976ee80f39012e028195aa7f092929d96af5",
+      "0xc214997a04bcbddc60988ea5749440a0a29c7ed6c1d181db75a3cfc851ac2d7f",
+      "0xbee8304fb70e3a76644396e165dfa119c392482f18a94e563c60e62adbd01f37",
+      "0xf54bf6bfa5ec33fc7ba58fdcde27bc5987b48a8ca6b0ca49c8e9d7e42738e42d"
+    ]
+  },
+  "4": {
+    "enabled": true,
+    "match_count": 5,
+    "unevaluable_count": 0,
+    "match_tx_hashes": [
+      "0x8befcc3063adc04df21c9a9f58f0745421cb917e87d01f52e124b752b8de066f",
+      "0x5f6715635e2d64c1a92f81b60dc68dce862a5030d1a7a83661f1fc6041f9bc32",
+      "0xb5d3996d80274cdc2f41ecdb5e1481c88a01945b38b67a66bba34389c1a2a6ed",
+      "0x545f18c7d17eec2433b653750a9ffadfa5d88e3d73488c061225692141646a52",
+      "0xeb7cd6385eaf22ff5c53e115cb461fcace18b32820061d444949966c80c3ae3b"
+    ]
+  },
+  "5": {
+    "enabled": true,
+    "match_count": 1,
+    "unevaluable_count": 0,
+    "match_tx_hashes": [
+      "0xd60f1db3043195c4d6bb2a9d87c672ce5fef9a13d69dc8cf3188c9280a38fbbb"
+    ]
+  },
+  "6": {
+    "enabled": true,
+    "match_count": 3,
+    "unevaluable_count": 9,
+    "match_tx_hashes": [
+      "0xd3923be46728460ed1c9fcea012fa2c5976e02e07c13741ee807a0c1fbaf01fc",
+      "0xd60f1db3043195c4d6bb2a9d87c672ce5fef9a13d69dc8cf3188c9280a38fbbb",
+      "0x7b46a74fd8caaa94ab10346ee54ed0aad862e0a71d832f94dc23a6e1416dc4b6"
+    ]
+  },
+  "7": {
+    "enabled": false,
+    "match_count": 0,
+    "unevaluable_count": 0,
+    "match_tx_hashes": []
+  },
+  "8": {
+    "enabled": true,
+    "match_count": 7,
+    "unevaluable_count": 0,
+    "match_tx_hashes": [
+      "0x73ee5f2594e154c73590ba8339e69a553b14ccce29b5a976b2725885cf86e185",
+      "0x831b4c265b7b03bf169e3760afad30b985632dad46826e3b76705bda64579f96",
+      "0xf428eab3386d37e0dec00dd168da9f797bce93d87628f8b25120efde041c663a",
+      "0x02796739c427ebe7c2c453bc59812cbe005b294ea057e4a18912f634a68ba66a",
+      "0xbee8304fb70e3a76644396e165dfa119c392482f18a94e563c60e62adbd01f37",
+      "0x7b46a74fd8caaa94ab10346ee54ed0aad862e0a71d832f94dc23a6e1416dc4b6",
+      "0x3266982fe13e591a4d52c05dac89063180dec8d089a6e7171f74d9edffca31fd"
+    ]
+  }
+}
