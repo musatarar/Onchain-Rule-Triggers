@@ -7,7 +7,8 @@ are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
 row they match as a ``MatchedRule``; the engine status reports the stored
-window with each owner's own rule and match counts.
+window with each owner's own rule and match counts, and each rule's stats
+count its matches the same way.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
@@ -59,6 +60,35 @@ def matches_for(owner):
     return MatchedRule.objects.filter(
         rule__owner=owner, rule__enabled=True, transaction__isnull=False
     )
+
+
+def match_stats(owner, rules):
+    """The console's ``stats`` for each of ``owner``'s ``rules``, by rule id, from one grouped query.
+
+    ``match_count`` counts the rule's matches :func:`matches_for` answers, so a
+    disabled rule reads 0, and ``last_match_at`` is the block time of the
+    latest transaction among them, ``None`` with none, as the console dates a
+    match by its block. ``unevaluable_count`` is always 0: this evaluator
+    never records an unevaluable outcome, since a rule matches a transaction
+    or not, is refused, or waits with its block for decoding. Asked for a
+    whole page of rules at once, it is one query however many rules.
+    """
+    counted = {
+        row["rule"]: (row["match_count"], row["last_match_at"])
+        for row in matches_for(owner)
+        .filter(rule__in=rules)
+        .values("rule")
+        .annotate(match_count=Count("pk"), last_match_at=Max("transaction__block_timestamp"))
+    }
+    stats = {}
+    for rule in rules:
+        match_count, last_match_at = counted.get(rule.pk, (0, None))
+        stats[rule.pk] = {
+            "match_count": match_count,
+            "unevaluable_count": 0,
+            "last_match_at": last_match_at,
+        }
+    return stats
 
 
 # --------------------------------------------------------------------------

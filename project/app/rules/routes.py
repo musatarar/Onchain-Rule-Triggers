@@ -1,4 +1,5 @@
-"""Rules-catalog API: CRUD over the signed-in user's rules, and the engine status.
+"""Rules-catalog API: CRUD over the signed-in user's rules, in the console's
+``Rule`` shape, and the engine status.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
@@ -15,6 +16,10 @@ from rest_framework.views import APIView
 
 from project.app.rules import services
 from project.app.rules.models import Rule
+
+# A write naming the console's tree is refused rather than dropped; the UI
+# calls a rule a circuit and a comparison a gate.
+CONDITION_NOT_WRITABLE = "Circuits can't save gates from the console yet (#44)."
 
 
 class CatalogPagination(PageNumberPagination):
@@ -36,19 +41,47 @@ class ConditionsField(serializers.JSONField):
 
 
 class RuleSerializer(serializers.ModelSerializer):
+    """A rule in the console's ``Rule`` shape, with its v1 ``conditions`` alongside.
+
+    ``tag``, ``glyph``, ``sentence`` and ``revision`` are the model's, derived
+    until #47 stores them, and ``condition`` is its tree in the console's
+    shape; all read-only, and a write naming ``condition`` is refused.
+    ``stats`` come from the view, which reads a whole page's in one query
+    (``context["stats"]``, by rule id).
+    """
+
     conditions = ConditionsField(required=False)
+    condition = serializers.ReadOnlyField(source="console_condition")
+    stats = serializers.SerializerMethodField()
 
     class Meta:
         model = Rule
         fields = [
             "id",
             "name",
-            "conditions",
+            "tag",
+            "glyph",
+            "sentence",
             "enabled",
+            "revision",
+            "condition",
+            "conditions",
             "created_at",
             "updated_at",
+            "stats",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_stats(self, rule):
+        return self.context["stats"][rule.pk]
+
+    def validate(self, attrs):
+        # DRF drops a read-only field from a write without a word, so the
+        # console's save would report success and leave the tree as it was.
+        # `conditions` writes a tree until #44 stores the console's.
+        if "condition" in self.initial_data:
+            raise serializers.ValidationError({"condition": [CONDITION_NOT_WRITABLE]})
+        return attrs
 
 
 class _CatalogView(APIView):
@@ -82,10 +115,17 @@ class _CatalogView(APIView):
         but nothing caps how many rules a user writes."""
         paginator = CatalogPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
-        return paginator.get_paginated_response(self.serializer_class(page, many=True).data)
+        return paginator.get_paginated_response(self._data(page, many=True))
 
     def _render(self, instance, http_status=status.HTTP_200_OK):
-        return Response(self.serializer_class(instance).data, status=http_status)
+        return Response(self._data(instance), status=http_status)
+
+    def _data(self, instance, many=False):
+        """``instance``, or the page of rules it is when ``many``, serialized
+        with the match stats of every rule in it, read in one query."""
+        rules = instance if many else [instance]
+        stats = services.match_stats(self.request.user, rules)
+        return self.serializer_class(instance, many=many, context={"stats": stats}).data
 
     def _found(self, instance, what):
         if instance is None:

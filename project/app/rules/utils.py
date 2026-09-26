@@ -10,11 +10,19 @@ A payload reads the rows of one stored block: its ``block``, and its
 ``transaction`` rows with their ``token_transfer`` rows, or its ``withdrawal``
 rows. The vocabulary is fixed (:data:`ONCHAIN_FIELDS`), so every payload is
 checked against the same fields.
+
+The Phosphor console reads a rule's tree in its own ``ConditionNode`` shape
+(``docs/api/frontend-contract.md``), which :func:`render_condition` renders
+from the same rows. It only reads that shape: trees are written as v1
+payloads until #44 validates and stores the console's.
 """
 
 import datetime
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+
+from project.app.evm.chains import ChainId
 
 SCHEMA_VERSION = 1
 
@@ -195,6 +203,111 @@ def _render_node(node, children):
     }
 
 
+# The Phosphor console's names (docs/api/frontend-contract.md) for a group's
+# ``Condition.type`` and for each v1 comparison operator. `contains`, `exists`
+# and `absent` have none yet (#44), so they pass through as they are.
+CONSOLE_GROUP_TYPES = {"AND": "and", "OR": "or"}
+CONSOLE_OPERATORS = {
+    "==": "eq",
+    "!=": "ne",
+    ">": "gt",
+    ">=": "gte",
+    "<": "lt",
+    "<=": "lte",
+    "in": "in",
+}
+# A transaction's value is stored in wei, and the console reads it in ETH.
+ETH_DECIMALS = 18
+
+
+def render_condition(nodes):
+    """A rule's tree in the console's ``ConditionNode`` shape; ``None`` when it has none.
+
+    ``nodes`` is every node of one rule's tree, as :func:`render_tree` takes
+    them, so a prefetched tree renders with no query. Each node carries its
+    ``Condition`` id and children keep id order. The root is a group, as the
+    contract's always is: the write path stores no other tree, since
+    :func:`validate_conditions` wants a group at the root.
+
+    A comparison names its ``field_name`` as ``field`` and reads its threshold
+    as a console value (:func:`_console_value`). The console knows only the
+    ``transaction`` and ``token_transfer`` sources, so a ``block`` or
+    ``withdrawal`` comparison passes through as stored, and the console labels
+    it by its field and types it by its value.
+    """
+    root, children = root_and_children(nodes)
+    if root is None:
+        return None
+    return _console_node(root, children)
+
+
+def _console_node(node, children):
+    if node.type == TREE_TYPE_COMPARISON:
+        return {
+            "id": node.pk,
+            "type": "comparison",
+            "source": node.source,
+            "field": node.field_name,
+            "operator": CONSOLE_OPERATORS.get(node.operator, node.operator),
+            "value": _console_value(node),
+        }
+    return {
+        "id": node.pk,
+        "type": CONSOLE_GROUP_TYPES[node.type],
+        "children": [_console_node(child, children) for child in children.get(node.pk, [])],
+    }
+
+
+def _console_value(node):
+    """A comparison's threshold as the console's ``ComparisonValue``.
+
+    A token is ``{chain, address}`` and an ``in`` list is ``{addresses}`` of
+    strings, the contract's only list shape. `exists` and `absent` take no
+    threshold, and read ``""``, not null: the console tells a value's type by
+    its shape, and ``'addresses' in null`` throws. Every other threshold is a
+    string (:func:`_console_text`). Addresses are lowercase as stored, since
+    the write path lowercases them.
+    """
+    threshold = node.value
+    if node.operator in NO_THRESHOLD_OPERATORS:
+        return ""
+    if node.operator == "in":
+        return {"addresses": [_console_text(node, item) for item in threshold]}
+    token = (node.source, node.field_name) == (SOURCE_TOKEN_TRANSFER, "token")
+    if token and node.operator in ("==", "!="):
+        # A v1 condition names a token by its address alone: Ethereum's, until
+        # conditions carry a chain (#44). A `contains` phrase is part of an
+        # address, so it stays text.
+        return {"chain": ChainId.ETHEREUM, "address": threshold}
+    return _console_text(node, threshold)
+
+
+def _console_text(node, threshold):
+    """A threshold as a string: a number as an exact decimal string, anything else as stored.
+
+    A uint256 is past what a JSON number holds, so every number is a decimal
+    string. A transaction's ``value`` is in ETH, as the console's "ETH value"
+    field reads it; every other number keeps its stored unit.
+    """
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        return threshold
+    in_eth = (node.source, node.field_name) == (SOURCE_TRANSACTION, "value")
+    return decimal_string(threshold, ETH_DECIMALS if in_eth else 0)
+
+
+def decimal_string(number, decimals=0):
+    """``number`` ÷ 10^``decimals`` as a plain decimal string, exactly: ``"0.05"``, never ``5E-2``.
+
+    ``number`` is read by :func:`exact_number`, so a float is its shortest repr
+    and an int keeps every digit. The division moves the exponent rather than
+    doing arithmetic, which rounds to the context's 28 digits where a uint256
+    has up to 78. Zeros ending a fraction go, and the point with them.
+    """
+    sign, digits, exponent = exact_number(number).as_tuple()
+    text = format(Decimal((sign, digits, exponent - decimals)), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def tree_sources(nodes):
     """The sources a rule's tree compares, as a frozenset; groups read none.
 
@@ -252,6 +365,22 @@ def lowercase_thresholds(payload):
         **payload,
         "conditions": [lowercase_thresholds(child) for child in payload["conditions"]],
     }
+
+
+def exact_number(number):
+    """A number threshold as a ``Decimal``, so a uint256 is never rounded through a float.
+
+    An int converts exactly. A float threshold is read from its shortest repr
+    (``1e+18`` rather than its binary expansion). Anything else, ``None``
+    among it, is returned as it was. The evaluator compares with this and
+    :func:`render_condition` prints it, so the console shows the number a rule
+    compares.
+    """
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        return number
+    if isinstance(number, float):
+        return Decimal(repr(number))
+    return Decimal(number)
 
 
 def validate_conditions(payload):

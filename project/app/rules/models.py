@@ -22,12 +22,31 @@ class Rule(models.Model):
     The predicate is a tree of :class:`Condition` rows, read and written as the
     structured, versioned ``conditions`` payload of
     :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
-    ``rules.services`` on write).
+    ``rules.services`` on write). The console reads the same tree in its own
+    shape (:meth:`console_condition`), and names the rule by a :attr:`tag` and
+    a :attr:`glyph`; those two, its :attr:`sentence` and its :attr:`revision`
+    are derived here until #47 stores them, under the same names.
     """
 
     # The ``conditions`` schema, its vocabulary, its validator and its tree
     # conversion all live in utils.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
+    # The console's twelve glyphs, in the order docs/api/frontend-contract.md
+    # lists them.
+    GLYPHS = (
+        "triangle",
+        "diamond",
+        "target",
+        "square",
+        "star",
+        "bars",
+        "chevron",
+        "bolt",
+        "hexagon",
+        "circle",
+        "xmark",
+        "ring",
+    )
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="rules"
@@ -55,6 +74,56 @@ class Rule(models.Model):
         if self.pk is None:
             return {}
         return utils.render_tree(self.all_conditions.all())
+
+    def console_condition(self):
+        """This rule's tree in the console's ``ConditionNode`` shape; ``None`` when it has none.
+
+        One read of ``all_conditions``, as :meth:`conditions_payload` makes, so
+        a prefetched catalog renders free (:func:`utils.render_condition`).
+        """
+        if self.pk is None:
+            return None
+        return utils.render_condition(self.all_conditions.all())
+
+    @property
+    def tag(self):
+        """The rule's short name in the console: ``R`` and its id, as in ``R7``.
+
+        Derived until #47 stores the tag a user picks. The id is unique, so the
+        tag is unique per owner, as the contract requires, and it keeps to the
+        contract's A-Z, 0-9 and hyphens, up to 12 characters, for any id of up
+        to 11 digits.
+        """
+        return f"R{self.pk}"
+
+    @property
+    def glyph(self):
+        """The rule's drawn symbol in the console: the rules take :attr:`GLYPHS` in turn, by id.
+
+        Derived until #47 stores the glyph a user picks. The contract lets two
+        rules share a glyph; taken in turn, each run of twelve rules by id
+        shows twelve different ones.
+        """
+        return self.GLYPHS[(self.pk - 1) % len(self.GLYPHS)]
+
+    @property
+    def sentence(self):
+        """What the user typed to describe the rule: ``""``, the contract's value for one built by hand.
+
+        Nothing turns a sentence into conditions yet, so every rule is built by
+        hand until #47 stores the sentence a rule was proposed from.
+        """
+        return ""
+
+    @property
+    def revision(self):
+        """Which version of its conditions the rule is on: 1, its first, until #47 counts them.
+
+        The contract bumps it on every change to the conditions, but nothing
+        records one yet, so every rule reads as its first. A journal row's
+        ``rule_revision`` is to read this too, so the two agree.
+        """
+        return 1
 
     def __str__(self):
         return f"rule {self.name!r} of user {self.owner_id}"
