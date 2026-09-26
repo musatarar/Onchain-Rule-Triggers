@@ -30,7 +30,7 @@ A comparison on a source the binding leaves unbound (a ``token_transfer``
 comparison with no transfer bound) reads no value: ``absent`` holds of it,
 ``exists`` and every other operator do not. Quantities are compared exactly,
 as ``Decimal``: a uint256 is past what a float holds. A block's ``timestamp``
-is compared by its UTC date, as the lead vocabulary compares dates.
+is compared by its UTC date, since a date threshold names a day.
 
 The block's rows are read once, whatever the number of transactions:
 :func:`matches_in_block` runs one query for the transactions (or withdrawals),
@@ -67,19 +67,12 @@ def matches_in_block(rule, block):
     for a rule reading transactions or token transfers, the matching
     :class:`~project.app.evm.block.models.Withdrawal` rows for a withdrawal
     rule, and ``[block]`` or ``[]`` for a block-only rule. Raises
-    :class:`ConditionError` for a rule that reads
-    lead sources, has no tree, or names something this evaluator cannot read,
-    and :class:`NotDecodedError` for a rule reading token transfers before
-    decoding has finished with the block.
+    :class:`ConditionError` for a rule that has no tree or names something
+    this evaluator cannot read, and :class:`NotDecodedError` for a rule
+    reading token transfers before decoding has finished with the block.
     """
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
-    if utils.reads_lead(sources):
-        raise ConditionError(
-            f"Rule {rule.pk} reads lead sources "
-            f"({', '.join(sorted(sources & utils.LEAD_SOURCES))}); only an on-chain rule "
-            "is evaluated against a block."
-        )
     root, children = utils.root_and_children(nodes)
     if root is None:
         raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")

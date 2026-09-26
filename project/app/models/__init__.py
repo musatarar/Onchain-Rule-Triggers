@@ -10,21 +10,17 @@ from project.app.evm.tokens import Token
 from project.app.rules.models import Condition, Rule
 
 from .auth import LoginToken
-from .lead import Event, Lead, Shape
 
 __all__ = [
     "Block",
     "Condition",
     "Contract",
-    "Event",
     "FunctionInput",
     "FunctionSignature",
-    "Lead",
     "Log",
     "LoginToken",
     "Receipt",
     "Rule",
-    "Shape",
     "Token",
     "TokenStandard",
     "TokenTransfer",

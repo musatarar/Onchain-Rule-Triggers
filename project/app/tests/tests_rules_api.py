@@ -10,7 +10,6 @@ from django.test import TestCase
 
 from project.app.models import Rule
 from project.app.rules import utils
-from project.app.tests.tests_shape_utils import shape_for
 
 RULES_URL = "/api/rules/"
 
@@ -20,7 +19,7 @@ def _conditions():
         "version": Rule.CONDITIONS_SCHEMA_VERSION,
         "operator": "all_of",
         "conditions": [
-            {"field": "deals_closed", "operator": ">", "threshold": 20, "source": "lead"}
+            {"field": "value", "operator": ">", "threshold": 10**18, "source": "transaction"}
         ],
     }
 
@@ -33,13 +32,11 @@ class RulesApiTestCase(TestCase):
         cache.clear()
         self.user = get_user_model().objects.create_user(username="planner@lockedin.example")
         self.other = get_user_model().objects.create_user(username="teammate@lockedin.example")
-        self.shape = shape_for(self.user)
-        shape_for(self.other)
         self.client.force_login(self.user)
 
     def _rule(self, owner=None, **kwargs):
         kwargs.setdefault("owner", owner or self.user)
-        kwargs.setdefault("name", "Reward power users")
+        kwargs.setdefault("name", "Large transfers")
         conditions = kwargs.pop("conditions", _conditions())
         rule = Rule.objects.create(**kwargs)
         utils.build_tree(rule, conditions)
@@ -59,7 +56,7 @@ class RuleApiTests(RulesApiTestCase):
         created = self.client.post(
             RULES_URL,
             {
-                "name": "Reward power users",
+                "name": "Large transfers",
                 "conditions": _conditions(),
             },
             content_type="application/json",
@@ -91,9 +88,9 @@ class RuleApiTests(RulesApiTestCase):
         created = self.client.post(
             RULES_URL,
             {
-                "name": "Reward power users",
+                "name": "Large transfers",
                 "kind": "inference",
-                "inference_prompt": "the notes say they need help",
+                "inference_prompt": "ask the model",
                 "conditions": _conditions(),
             },
             content_type="application/json",
@@ -107,8 +104,7 @@ class RuleApiTests(RulesApiTestCase):
         self.assertNotIn("kind", listed)
         self.assertNotIn("inference_prompt", listed)
 
-    def test_onchain_conditions_are_written_without_a_shape_and_read_back_lowercased(self):
-        self.shape.delete()
+    def test_address_thresholds_are_read_back_lowercased(self):
         conditions = {
             "version": Rule.CONDITIONS_SCHEMA_VERSION,
             "operator": "all_of",
@@ -141,42 +137,23 @@ class RuleApiTests(RulesApiTestCase):
         )
         self.assertEqual(created.json()["conditions"]["conditions"][1]["threshold"], 10**30)
 
-    def test_conditions_mixing_lead_and_onchain_sources_are_rejected(self):
-        mixed = dict(_conditions())
-        mixed["conditions"] = mixed["conditions"] + [
-            {"field": "miner", "operator": "exists", "source": "block"}
-        ]
-        response = self.client.post(
-            RULES_URL, {"name": "Both", "conditions": mixed}, content_type="application/json"
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "validation_error")
+    def test_conditions_on_a_lead_source_are_rejected(self):
+        lead = {"field": "deals_closed", "operator": ">", "threshold": 20, "source": "lead"}
+        for leaves in ([lead], _conditions()["conditions"] + [lead]):
+            with self.subTest(leaves=leaves):
+                response = self.client.post(
+                    RULES_URL,
+                    {"name": "Leads", "conditions": dict(_conditions(), conditions=leaves)},
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["code"], "validation_error")
+        self.assertEqual(Rule.objects.count(), 0)
 
     def test_a_rule_still_needs_its_conditions(self):
         response = self.client.post(
             RULES_URL,
             {"name": "No predicate at all"},
-            content_type="application/json",
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "validation_error")
-
-    def test_a_conditions_payload_satisfiable_by_crm_text_alone_is_rejected(self):
-        notes_only = dict(_conditions())
-        notes_only["conditions"] = [
-            {
-                "field": "hubspot_notes",
-                "operator": "contains",
-                "threshold": "waiting on budget",
-                "source": "notes",
-            }
-        ]
-        response = self.client.post(
-            RULES_URL,
-            {
-                "name": "CRM text alone",
-                "conditions": notes_only,
-            },
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
@@ -194,10 +171,10 @@ class RuleApiTests(RulesApiTestCase):
                 "operator": "all_of",
                 "conditions": [
                     {
-                        "field": "favourite_colour",
+                        "field": "gas",
                         "operator": "==",
-                        "threshold": "blue",
-                        "source": "lead",
+                        "threshold": 21000,
+                        "source": "transaction",
                     }
                 ],
             },
@@ -239,8 +216,8 @@ class RuleApiTests(RulesApiTestCase):
         )
 
     def test_the_rules_list_comes_back_in_a_stable_order(self):
-        first = self._rule(name="modest momentum")
-        second = self._rule(name="dormant account")
+        first = self._rule(name="whales")
+        second = self._rule(name="new contracts")
         listed = self.client.get(RULES_URL).json()
         self.assertEqual([row["id"] for row in listed["results"]], [first.pk, second.pk])
 

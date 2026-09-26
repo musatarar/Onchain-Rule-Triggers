@@ -657,7 +657,6 @@ class UnauthenticatedAccessTests(APITestCase):
     `SessionAuthenticationWith401` in place."""
 
     PREVIOUSLY_PUBLIC = [
-        ("get", "/api/leads/"),
         ("get", "/api/rules/"),
         # The permission check runs before the view, so an id that does not
         # exist still answers 401 rather than 404.
@@ -680,7 +679,7 @@ class UnauthenticatedAccessTests(APITestCase):
 
     def test_the_401_carries_a_www_authenticate_header(self):
         # This header is *why* the status is 401 rather than 403.
-        resp = self.client.get("/api/leads/")
+        resp = self.client.get("/api/rules/")
         self.assertEqual(resp.headers["WWW-Authenticate"], 'Session realm="api"')
 
     def test_the_allow_any_exemption_list_is_exactly_three_endpoints(self):

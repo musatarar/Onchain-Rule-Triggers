@@ -1,9 +1,10 @@
-"""Migration 0011's data steps, run on rows seeded at 0010.
+"""The data steps of the migrations whose reverse restores no data, each run on
+rows seeded just before it.
 
-Its forward run deletes inference rules, fails the jobs the inference pass
-left open, and lowercases stored addresses and the thresholds that compare
-against them. Its reverse restores none of that, so these pin what it does
-to the rows, and that a contract case clash stops it rather than losing a row.
+0011 deletes inference rules, fails the jobs the inference pass left open, and
+lowercases stored addresses and the thresholds that compare against them; a
+contract case clash stops it rather than losing a row. 0016 deletes the rules
+that read a lead source and drops the lead, event and shape tables.
 """
 
 import datetime
@@ -249,3 +250,66 @@ class RemoveRuleKindsMigrationTests(TransactionTestCase):
         self.assertEqual(Contract.objects.get(pk=first.pk).address, MIXED)
         # Merged, as the error asks, so the migration can run again.
         second.delete()
+
+
+class RemoveLeadsMigrationTests(TransactionTestCase):
+    BEFORE = [("app", "0015_remove_action_jobs")]
+    AFTER = [("app", "0016_remove_leads")]
+
+    def setUp(self):
+        super().setUp()
+        self.before = _migrate(self.BEFORE)
+        self.owner = get_user_model().objects.create_user(username="planner@lockedin.example")
+
+    def tearDown(self):
+        # Every test after this one expects every migration applied.
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+    def _rule(self, name, leaves):
+        """A rule at 0015, its tree an AND of ``(source, field)`` ``exists`` leaves."""
+        rule = self.before.get_model("app", "Rule").objects.create(
+            owner_id=self.owner.pk, name=name
+        )
+        Condition = self.before.get_model("app", "Condition")
+        if leaves:
+            root = Condition.objects.create(rule=rule, type="AND")
+            for source, field in leaves:
+                Condition.objects.create(
+                    rule=rule,
+                    parent=root,
+                    type="COMPARISON",
+                    source=source,
+                    field_name=field,
+                    operator="exists",
+                )
+        return rule
+
+    def test_rules_reading_a_lead_source_go_with_their_trees_and_the_rest_stay(self):
+        self._rule("lead", [("lead", "deals_closed")])
+        self._rule("events", [("events", "type")])
+        self._rule("both", [("block", "number"), ("notes", "hubspot_notes")])
+        onchain = self._rule("onchain", [("transaction", "value")])
+        self._rule("no tree", [])
+
+        after = _migrate(self.AFTER)
+
+        Rule = after.get_model("app", "Rule")
+        Condition = after.get_model("app", "Condition")
+        self.assertEqual(
+            sorted(Rule.objects.values_list("name", flat=True)), ["no tree", "onchain"]
+        )
+        self.assertEqual(set(Condition.objects.values_list("rule_id", flat=True)), {onchain.pk})
+
+    def test_the_lead_event_and_shape_tables_are_dropped_with_their_rows(self):
+        lead = self.before.get_model("app", "Lead").objects.create(
+            id="lead_1", owner_id=self.owner.pk
+        )
+        self.before.get_model("app", "Event").objects.create(lead=lead, timestamp=FINISHED)
+        self.before.get_model("app", "Shape").objects.create(owner_id=self.owner.pk)
+
+        _migrate(self.AFTER)
+
+        tables = set(connection.introspection.table_names())
+        self.assertFalse({"app_lead", "app_event", "app_shape"} & tables)

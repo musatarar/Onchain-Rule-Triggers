@@ -40,7 +40,6 @@ from project.app.tests.tests_evm_block import (
     legacy_transaction,
     withdrawal,
 )
-from project.app.tests.tests_shape_utils import shape_for
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
@@ -76,7 +75,6 @@ def transfer(field, operator, threshold=None):
 class OnchainTestCase(TestCase):
     def setUp(self):
         super().setUp()
-        # No shape: an on-chain rule names nothing a shape declares.
         self.owner = get_user_model().objects.create_user(username="watcher@lockedin.example")
 
     def _store(self, raw=None, *, decoded=True):
@@ -459,13 +457,6 @@ class StoredQuantityTests(OnchainTestCase):
 
 
 class RefusalTests(OnchainTestCase):
-    def test_a_rule_reading_lead_sources_is_refused(self):
-        shape_for(self.owner)
-        rule = self._rule(_all_of(_cond("deals_closed", ">", 2, source="lead")))
-
-        with self.assertRaisesMessage(ConditionError, "reads lead sources (lead)"):
-            onchain.matches_in_block(rule, self._store())
-
     def test_a_rule_with_no_tree_is_refused(self):
         rule = Rule.objects.create(owner=self.owner, name="no tree")
 
