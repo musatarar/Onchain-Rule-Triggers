@@ -27,7 +27,12 @@
         --display: VT323, 'Share Tech Mono', ui-monospace, monospace;
         --body: 'Share Tech Mono', ui-monospace, Menlo, Consolas, monospace;
         color-scheme: dark;
+        /* Triangle pointer in phosphor with a screen-black edge; hotspot at the tip. */
+        --cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M1 1 L1 18 L15 12 Z' fill='%235dff8f' stroke='%2303120a' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 1 1, default;
+        --cursor-pointer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M1 1 L1 18 L15 12 Z' fill='%239dffbd' stroke='%2303120a' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 1 1, pointer;
       }
+      html { cursor: var(--cursor); }
+      a[href], button { cursor: var(--cursor-pointer); }
       * { box-sizing: border-box; }
       html, body { margin: 0; }
       body {
