@@ -86,7 +86,10 @@ class DecodeTransactionsTests(TestCase):
         transfer = TokenTransfer.objects.get()
         self.assertEqual(transfer.token, Token.objects.get(contract__address=USDT))
         self.assertEqual(transfer.transaction_hash, tx_hash)
-        self.assertEqual((transfer.block_number, transfer.block_hash), (0x112A880, BLOCK_HASH))
+        self.assertEqual(
+            (transfer.chain, transfer.block_number, transfer.block_hash),
+            (ChainId.ETHEREUM, 0x112A880, BLOCK_HASH),
+        )
         self.assertEqual(transfer.from_address, SENDER)
         self.assertEqual(transfer.to_address, RECIPIENT)
         self.assertEqual(transfer.raw_value, Decimal(1_500_000))
