@@ -78,8 +78,8 @@ def get_llm_client():
 
 
 def build_client(provider):
-    """Return the LLM client for an explicitly named provider (used by the
-    copy eval harness). An unknown name raises ``ValueError``.
+    """Return the LLM client for an explicitly named provider. An unknown name
+    raises ``ValueError``.
     """
     return _build_client(*_resolve_build_args(provider))
 

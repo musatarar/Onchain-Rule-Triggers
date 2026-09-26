@@ -54,9 +54,8 @@ services:
     # `python scripts/setup_env.py` first: DJANGO_SECRET_KEY is required and
     # .env.example ships it blank on purpose. DATABASE_URL in the shared block
     # points at the Postgres service whatever .env says (the SQLite fallback in
-    # project/settings.py is for running outside Docker). Set an LLM provider
-    # key too for the copy step -- without one the server still starts and
-    # serves the seeded demo data.
+    # project/settings.py is for running outside Docker). No LLM provider key is
+    # needed: nothing the server runs calls a provider.
     environment: *app-env
 
 volumes:

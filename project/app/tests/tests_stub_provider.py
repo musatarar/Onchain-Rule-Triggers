@@ -1,14 +1,19 @@
 """The fake provider: good enough to test against, and impossible to reach from
-the app without the ``OUTREACH_ALLOW_STUB_LLM`` opt-in."""
+the app without the ``ALLOW_STUB_LLM`` opt-in."""
 
+import asyncio
 import os
 from unittest import mock
 
 from django.test import SimpleTestCase, TestCase
+from pydantic import BaseModel
 
 from project.app.services.llm import _REGISTRY, _build_client, build_client, get_llm_client
+from project.app.services.llm.chat_types import Message, ToolSpec
+from project.app.services.llm.errors import LLMMalformedResponseError
 from project.app.services.llm.stub import (
     ALLOW_ENV_VAR,
+    CANNED_ANSWER,
     PROVIDER_NAME,
     StubClient,
     StubLLMNotAllowed,
@@ -130,8 +135,9 @@ class StubBehaviourTests(SimpleTestCase):
         with _allowed():
             client = StubClient(seed=1, latency_mean_s=0.001, latency_stddev_s=0.0)
 
-        result = client.generate("- Contact: Dana Lee (dana@x.test)\n- Agency: Acme (CO, 2 p")
+        result = client.generate("Summarise block 18000000 in one line.")
 
+        self.assertEqual(result.text, CANNED_ANSWER)
         self.assertGreater(result.input_tokens, 0)
         self.assertGreater(result.output_tokens, 0)
         self.assertEqual(result.provider, PROVIDER_NAME)
@@ -155,3 +161,42 @@ class StubBehaviourTests(SimpleTestCase):
         elapsed = asyncio.run(two_at_once())
 
         self.assertLess(elapsed, 0.28, "agenerate appears to block the event loop")
+
+
+class StubAnswerTests(SimpleTestCase):
+    """What the stub answers: one faked schema for a structured call, and a
+    chat that asks for the first tool offered before it answers."""
+
+    def _client(self):
+        with _allowed():
+            return StubClient(seed=1, latency_mean_s=0.001, latency_stddev_s=0.0)
+
+    def test_a_structured_call_fakes_the_answer_schema_and_no_other(self):
+        class Answer(BaseModel):
+            answer: str
+
+        class Verdict(BaseModel):
+            holds: bool
+
+        client = self._client()
+
+        self.assertEqual(
+            client.generate_structured("anything", Answer).parsed.answer, CANNED_ANSWER
+        )
+        with self.assertRaises(LLMMalformedResponseError):
+            client.generate_structured("anything", Verdict)
+
+    def test_a_chat_asks_for_the_first_tool_then_answers(self):
+        client = self._client()
+        tool = ToolSpec(name="get_balance", description="d", parameters={"type": "object"})
+        asked = [Message(role="user", content="What is the balance?")]
+
+        first = asyncio.run(client.agenerate_chat(asked, tools=[tool]))
+        told = asked + [
+            Message(role="assistant", tool_calls=first.tool_calls),
+            Message(role="tool_result", tool_call_id=first.tool_calls[0].id, content="1 ETH"),
+        ]
+        answered = asyncio.run(client.agenerate_chat(told, tools=[tool]))
+
+        self.assertEqual([call.name for call in first.tool_calls], ["get_balance"])
+        self.assertEqual((answered.text, answered.tool_calls), (CANNED_ANSWER, ()))
