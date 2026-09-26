@@ -1,5 +1,5 @@
 ---
-name: Onchain Rule Triggers (working name)
+name: Phosphor
 description: Ladder-logic rule tracing drawn on a green-phosphor CRT set into a rugged monitor bezel.
 colors:
   phosphor: "#5dff8f"
@@ -168,7 +168,7 @@ components:
     padding: "9px 14px"
 ---
 
-# Design System: Onchain Rule Triggers (working name)
+# Design System: Phosphor
 
 ## Overview
 
@@ -227,7 +227,7 @@ A single green-phosphor ramp lit on a black tube, framed by a matte olive housin
 **Character:** VT323 is a bitmap CRT face, used large and sparse so its pixels read as the terminal's own lettering. Share Tech Mono is a clean technical monospace that holds hashes, amounts and labels at small sizes. Both faces ship only weight 400; hierarchy comes from face, size, case and phosphor intensity, never weight.
 
 ### Hierarchy
-- **Display** (VT323 400, 30px, 1, 0.04em): the wordmark "ONCHAIN RULE TRIGGERS" with its outlined WORKING NAME badge (Share Tech Mono 13px, `phosphor-3` on a `phosphor-4` outline).
+- **Display** (VT323 400, 30px, 1, 0.04em): the wordmark "PHOSPHOR", led by the brand mark (see Brand mark).
 - **Numeral** (VT323 400, 34px): the transfer amount in the trace, the backtest count, the match count on a circuit row.
 - **Headline** (VT323 400, 26px, 1.05, 0.03em): the circuit name above a trace and on circuit rows; the inspector title at 26px/1.1, 0.02em.
 - **Title** (VT323 400, 24px, 1, 0.05em, uppercase): pane headings (MATCH JOURNAL, TRACE, CIRCUITS, BACKTEST).
@@ -293,6 +293,13 @@ Outline terminal keys; inversion marks the one primary.
 - **Primary:** `phosphor` block, tube-black text, no glow; hover `phosphor-hot`.
 - **Disabled:** 45% opacity, not-allowed cursor.
 - **Focus:** 2px solid `phosphor` outline, 2px offset (global).
+
+### Brand mark
+The product is **Phosphor**. Its mark is an energised coil, the same symbol that ends every circuit diagram: two facing arcs around a lit disc, on a short lead and tail wire. On a 48 grid: wires `M2 24H9` and `M39 24H46`, arcs `M18 11A14 14 0 0 0 18 37` and `M30 11A14 14 0 0 1 30 37`, disc at 24,24 radius 5. Strokes 3.5 with butt caps; the disc is filled; everything else is unfilled.
+- **Lockup:** mark (28px, 22px at 860px and below) then the wordmark "PHOSPHOR" in VT323, 10px gap, both `phosphor`, the mark with a 3px phosphor drop-shadow glow. Header left.
+- **Favicon:** the mark in `phosphor` on a `screen` square.
+- **Inverse:** the mark in `screen` on a `phosphor` block, no glow (The Inversion Rule).
+- The mark is always one colour from the ramp or tube black. It is never animated, and it never stands in for a circuit's own coil in a trace.
 
 ### Circuit identity (tag + glyph)
 Every circuit is known by a **tag** (up to 12 characters of A–Z, 0–9 and hyphens, unique per owner: `BNB-OUT`, `STABLE-2K`, `PEPE-1B`) and a **glyph**, one of 12 stroke-drawn symbols on a 16px grid: triangle, diamond, target, square, star, bars, chevron, bolt, hexagon, circle, xmark and ring (1.5 stroke, round joins, no fill), like the channel markers on a scope. The glyph makes a row scannable at a glance and the tag makes it readable. They always appear together as the **ident**: glyph 14px + tag in Share Tech Mono, 6px gap, `phosphor`. The large ident (16px glyph, 15px text, 1px `phosphor-4` outline) heads the trace and each circuit row. On the circuits sheet a 30px glyph with a soft glow replaces row numbers. Glyphs are never the only carrier of meaning; the tag is always next to them.
@@ -376,6 +383,23 @@ A panel under the trace that explains the coil or one gate.
 - **Coil view (default when a match opens):** tag ENERGISED; title "Power reached the coil through N gates"; then the power chain, a list with a 2px solid `phosphor` left border (8px inset). Each row is a button (38px number column / condition / value), 14px/1.3, padding 7px 10px: number `phosphor-3`, condition `phosphor`, value in an inverse block (padding 0 5px). Hover `phosphor-6`. The chain ends with "COIL BNB-OUT · MATCH" in VT323 22px. Under the label "Branches that stayed dark" come the gates that power reached but that blocked it: a 2px dotted `phosphor-4` border, text `phosphor-3`, values in a dotted `phosphor-4` outline with no fill. Clicking any row inspects that gate.
 - **Gate view:** tag CARRIED POWER (inverse), NO DATA, or BLOCKED (outline); the title is the full condition; then a key/value list (96px term column, terms 13px `phosphor-3`): Reads (the source field), This tx (numbered derivation steps, 13.5px; step numbers follow The Ink Floor Rule), Test, Power (whether power arrived, passed, stopped, or never came), Wiring (position in series or parallel and how many siblings held). An abnormal note follows when relevant: `phosphor` text with a dashed underline, next to a warning icon.
 
+### Sign-in (the tuning shell)
+Signing in is tuning the monitor in. Every signed-out route (/signin, /register, /signin?via=link, /auth/consume, and RequireAuth's session check) renders inside the same bezel and tube as the console, with the console's header wordmark and no readouts.
+- **Tabs:** SIGN IN · NEW OPERATOR · EMAIL LINK, styled exactly like the console tabs (VT323 22px). At 520px and below they shorten to SIGN IN · NEW · LINK. The session check shows no tabs.
+- **Not available yet:** EMAIL LINK and the "Email me a link instead" alt link are switched off until email is supported officially: `phosphor-4`, not-allowed cursor, not links (the alt link also struck through in `phosphor-5`). Hover or keyboard focus shows a tooltip, NOT AVAILABLE YET (Share Tech Mono 12px `phosphor` on `screen`, 1px `phosphor-3` border): to the right of the tab so the sideways-scrolling tab strip never clips it, above the alt link. `/signin?via=link` itself still works.
+- **The static:** a 192×108 canvas of phosphor noise stretched over the whole glass (pixelated, `screen` blend, 12fps, with a slow rolling hold bar). Opacity is the signal: 0.22 at rest (NO SIGNAL), 0.3 while TUNING, 0.42 for 400ms on a fault, then 0 once LOCKED. Paused while the tab is hidden; a single still frame under reduced motion.
+- **Caption:** NO SIGNAL / TUNING in VT323 34px (26px ≤860px), 0.3em tracking, `phosphor-2`, on a strip of 85% tube-black so it reads over the static. It steps aside (space kept) while locking so the panel alone says SIGNAL LOCKED.
+- **Panel:** the only clear patch of glass. 400px max, `screen` fill, 1px `phosphor-3` border and a 6px flat tube-black ring (a matte surround, not a lift shadow; dropped at ≤520px). Heading VT323 30px `phosphor` (TUNE IN, NEW OPERATOR, EMAIL LINK, LINK SENT, LINK EXPIRED, SIGNAL LOCKED); lede 13.5px `phosphor-2`; alt links underlined in `phosphor-4`.
+- **Terminal fields:** 12px uppercase label in `phosphor-3`, then a `field` well with a VT323 `>` prompt (lights to `phosphor` on focus), 16px input, focus ring 1px `phosphor` plus a soft 8px glow. Password fields carry a SHOW/HIDE key cell (aria-pressed) and a CAPS LOCK IS ON note. Hints are 12.5px `phosphor-3`; an error replaces the hint in `phosphor` with the dashed underline, and the field border goes dashed.
+- **Banner:** a dashed `phosphor` box (never a block) with a VT323 22px heading and the server's sentence under it: LOGIN INCORRECT, TOO MANY ATTEMPTS, SESSION CHECK FAILED, else NO SIGNAL. A wrong password clears the password field and jolts the panel (4 steps, 0.32s).
+- **Signed-out note:** a left-ruled `phosphor-4` line, label `phosphor` (nowrap) + sentence `phosphor-2`.
+- **Dev link:** the magic link returned in DEBUG sits in a dashed `phosphor-3` box tagged DEV MODE so it can't be mistaken for product chrome.
+- **Lock (success):** the static fades out, the panel rolls once (7 steps, 0.55s) and the SIGNAL LOCKED heading flares (0.9s), centred, with OPERATOR name under it and "Opening the console…". After 900ms (0 under reduced motion) the app replaces the route with the saved destination or the journal.
+- **Status line:** SIGNAL NONE / TUNING / LOCKING / LOCKED plus a plain status (AWAITING OPERATOR, ENROLLING A NEW OPERATOR, LINK REJECTED…).
+
+### Operator control
+In the console header after the readouts, right-aligned: OPERATOR (13px `phosphor-2`, hidden ≤520px) + the username in `phosphor` (ellipsis) + a small outline SIGN OUT button (SIGNING OUT… while pending). Sign-out returns to /signin with the signed-out note.
+
 ## Do's and Don'ts
 
 ### Do:
@@ -387,7 +411,7 @@ A panel under the trace that explains the coil or one gate.
 - **Do** drive the power-on animation from x-position at 820 px/s and render the final state directly under `prefers-reduced-motion: reduce`.
 - **Do** fold wide circuits only at top-level AND boundaries, with matching lettered continuation markers.
 - **Do** apply scanlines, vignette and phosphor glow once, at the tube, over the whole screen.
-- **Do** use VT323 only for the wordmark, tabs, pane titles, circuit names, inspector titles and big numerals; use Share Tech Mono at 400 for everything else.
+- **Do** use VT323 only for the wordmark, tabs, pane titles, circuit names, inspector titles, big numerals, and the sign-in caption, panel headings, banner headings and field prompts; use Share Tech Mono at 400 for everything else.
 
 ### Don't:
 - **Don't** add a second hue for warnings or errors; this world has none.
