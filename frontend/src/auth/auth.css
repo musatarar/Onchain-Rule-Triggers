@@ -212,3 +212,35 @@
   .phosphor .stabs .tab .t-short { display: inline; }
   .phosphor .tp { padding: 16px 14px 18px; box-shadow: none; }
 }
+
+/* ----- switched-off entry points (auth/Unavailable.tsx) ----- */
+/* Dimmed to phosphor-4 and inert; hover or focus shows the tooltip instead. */
+.phosphor .off { position: relative; color: var(--ph-4); cursor: not-allowed; }
+.phosphor .stabs .tab.off:hover { color: var(--ph-4); }
+.phosphor .alt-off { text-decoration: line-through; text-decoration-color: var(--ph-5); }
+.phosphor .soon {
+  position: absolute;
+  z-index: 5;
+  white-space: nowrap;
+  font: 400 12px/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  color: var(--ph);
+  background: var(--scr);
+  border: 1px solid var(--ph-3);
+  padding: 5px 7px 4px;
+  pointer-events: none;
+  visibility: hidden;
+  text-decoration: none;
+}
+.phosphor .off:hover .soon,
+.phosphor .off:focus-visible .soon { visibility: visible; }
+.phosphor .soon-right { left: calc(100% + 6px); bottom: 5px; }
+.phosphor .soon-above { left: 0; bottom: calc(100% + 6px); }
+@media (max-width: 520px) {
+  /* Too little room to hang the tooltip off LINK: pin it to the strip's right
+     edge instead (the strip, not the tab, is its containing block here). */
+  .phosphor .soon { font-size: 11px; letter-spacing: 0.02em; padding: 4px 5px 3px; }
+  .phosphor .stabs { position: relative; }
+  .phosphor .stabs .tab.off { position: static; }
+  .phosphor .stabs .soon-right { left: auto; right: 8px; }
+}

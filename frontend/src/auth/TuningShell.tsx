@@ -4,16 +4,19 @@ import { Link } from 'react-router-dom';
 import { pageTitle } from '../console/product.ts';
 import { Mark } from '../console/ui/Mark.tsx';
 import { NoSignal } from './NoSignal.tsx';
+import { Unavailable } from './Unavailable.tsx';
 import type { Signal } from './NoSignal.tsx';
 import '../console/console.css';
 import './auth.css';
 
 export type AuthTab = 'signin' | 'register' | 'link';
 
-const TABS: { id: AuthTab; to: string; label: string; short: string }[] = [
+/** `off` tabs render dimmed with a "not available yet" tooltip instead of a link. */
+const TABS: { id: AuthTab; to: string; label: string; short: string; off?: boolean }[] = [
   { id: 'signin', to: '/signin', label: 'SIGN IN', short: 'SIGN IN' },
   { id: 'register', to: '/register', label: 'NEW OPERATOR', short: 'NEW' },
-  { id: 'link', to: '/signin?via=link', label: 'EMAIL LINK', short: 'LINK' },
+  // Email sign-in is not offered yet; /signin?via=link still works for anyone sent there.
+  { id: 'link', to: '/signin?via=link', label: 'EMAIL LINK', short: 'LINK', off: true },
 ];
 
 const STATUS: Record<Signal, string> = {
@@ -60,14 +63,25 @@ export function TuningShell({ title, tab, signal, status, children }: Props) {
             </header>
             <nav className="stabs" aria-label="Ways to sign in">
               {tab &&
-                TABS.map((t) => (
-                  <Link key={t.id} to={t.to} className={t.id === tab ? 'tab active' : 'tab'} aria-current={t.id === tab ? 'page' : undefined}>
-                    <span className="t-long">{t.label}</span>
-                    <span className="t-short" aria-hidden="true">
-                      {t.short}
-                    </span>
-                  </Link>
-                ))}
+                TABS.map((t) => {
+                  const label = (
+                    <>
+                      <span className="t-long">{t.label}</span>
+                      <span className="t-short" aria-hidden="true">
+                        {t.short}
+                      </span>
+                    </>
+                  );
+                  return t.off && t.id !== tab ? (
+                    <Unavailable key={t.id} className="tab" side="right">
+                      {label}
+                    </Unavailable>
+                  ) : (
+                    <Link key={t.id} to={t.to} className={t.id === tab ? 'tab active' : 'tab'} aria-current={t.id === tab ? 'page' : undefined}>
+                      {label}
+                    </Link>
+                  );
+                })}
             </nav>
             <main className={`main tune sig-${signal}`}>
               <NoSignal signal={signal} />

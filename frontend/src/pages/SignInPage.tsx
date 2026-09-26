@@ -7,11 +7,13 @@ import { bannerHeading, LOCK_MS, looksLikeEmail, messageOf, minutesFrom, prefers
 import { Field, PasswordField } from '../auth/Field.tsx';
 import type { Signal } from '../auth/NoSignal.tsx';
 import { TuneAlert, TunePanel, TuningShell } from '../auth/TuningShell.tsx';
+import { Unavailable } from '../auth/Unavailable.tsx';
 import { takeDestination } from '../hooks/authDestination';
 
 /**
- * `password` is the default way in. `enter` → `sent` is the email-link flow,
- * reached from the EMAIL LINK tab (`?via=link`). `expired` is entered only
+ * `password` is the default way in. `enter` → `sent` is the email-link flow at
+ * `?via=link`; its EMAIL LINK tab and "Email me a link" entry are switched off
+ * (not available yet), but the URL still works. `expired` is entered only
  * from ConsumePage after the backend rejects a token.
  */
 type State = 'password' | 'enter' | 'sent' | 'expired';
@@ -138,7 +140,7 @@ function PasswordForm({ onLocked, onFault, busy }: { onLocked: (name: string) =>
         </div>
       </form>
       <p className="alt">
-        <Link to="/signin?via=link">Email me a link instead</Link>
+        <Unavailable className="alt-off">Email me a link instead</Unavailable>
         <Link to="/register">Create an operator account</Link>
       </p>
     </TunePanel>
