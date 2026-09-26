@@ -3,7 +3,7 @@ rows seeded just before it.
 
 0011 deletes inference rules, fails the jobs the inference pass left open, and
 lowercases stored addresses and the thresholds that compare against them; a
-contract case clash stops it rather than losing a row. 0016 deletes the rules
+contract case clash stops it rather than losing a row. 0017 deletes the rules
 that read a lead source and drops the lead, event and shape tables.
 """
 
@@ -253,8 +253,8 @@ class RemoveRuleKindsMigrationTests(TransactionTestCase):
 
 
 class RemoveLeadsMigrationTests(TransactionTestCase):
-    BEFORE = [("app", "0015_remove_action_jobs")]
-    AFTER = [("app", "0016_remove_leads")]
+    BEFORE = [("app", "0016_remove_action_jobs")]
+    AFTER = [("app", "0017_remove_leads")]
 
     def setUp(self):
         super().setUp()
@@ -268,7 +268,7 @@ class RemoveLeadsMigrationTests(TransactionTestCase):
         super().tearDown()
 
     def _rule(self, name, leaves):
-        """A rule at 0015, its tree an AND of ``(source, field)`` ``exists`` leaves."""
+        """A rule at 0016, its tree an AND of ``(source, field)`` ``exists`` leaves."""
         rule = self.before.get_model("app", "Rule").objects.create(
             owner_id=self.owner.pk, name=name
         )

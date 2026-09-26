@@ -33,7 +33,7 @@ def delete_lead_rules(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0015_remove_action_jobs"),
+        ("app", "0016_remove_action_jobs"),
     ]
 
     operations = [
