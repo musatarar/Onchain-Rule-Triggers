@@ -1,8 +1,8 @@
 """The realtime pipeline's entry point: ingest, decode and evaluate, every --interval seconds.
 
 Each tick stores the node's new blocks with their receipts, decodes every
-transaction not decoded yet, and evaluates every enabled rule against the
-blocks just stored, printing the ones that match. See :mod:`project.app.pipeline`.
+transaction not decoded yet, and evaluates every enabled rule against each
+block not evaluated yet, recording what they match. See :mod:`project.app.pipeline`.
 """
 
 from project.app import pipeline
@@ -18,18 +18,18 @@ class Command(PollingCommand):
 
     def tick(self):
         result = pipeline.run_tick()
+        evaluation = result.evaluation
         if result.ingest_error is not None:
             self.stderr.write(f"ingestion failed, resuming next tick: {result.ingest_error!r}")
-        self.stdout.write(
-            f"ingested {len(result.blocks)} block(s); decoded {result.decoded} transfer(s), "
-            f"{result.undecodable} without one; {len(result.matches)} match(es)"
+        for rule, error in evaluation.refused.items():
+            self.stderr.write(f"rule {rule.pk} {rule.name!r} could not be evaluated: {error}")
+        ingested = (
+            "ingestion failed"
+            if result.ingested is None
+            else f"ingested {result.ingested} block(s)"
         )
-        for match in result.matches:
-            self.stdout.write(
-                f"rule {match.rule.pk} {match.rule.name!r} matched {len(match.rows)} row(s) "
-                f"in block {match.block.number} ({match.block.hash})"
-            )
-        for skip in result.skips:
-            self.stderr.write(
-                f"rule {skip.rule.pk} skipped on block {skip.block.number}: {skip.error}"
-            )
+        self.stdout.write(
+            f"{ingested}; decoded {result.decoded} transfer(s), {result.undecodable} without one; "
+            f"evaluated {evaluation.blocks} block(s) and recorded {evaluation.matches} match(es); "
+            f"{evaluation.undecoded} block(s) wait for decoding"
+        )

@@ -9,13 +9,13 @@ from django.test import override_settings
 
 from project.app import pipeline
 from project.app.evm import rpc
+from project.app.evm.block import services as block_services
 from project.app.evm.block.models import DecodeStatus
 from project.app.evm.chains import ChainId
-from project.app.models import IngestCursor, Rule, Transaction
-from project.app.rules import onchain
+from project.app.models import Block, IngestCursor, MatchedRule, Rule, Transaction
 from project.app.rules import services as rules_services
 from project.app.rules.utils import _all_of, _cond
-from project.app.tests.tests_evm_block import HEAD, NodeTestCase, block_hash
+from project.app.tests.tests_evm_block import HEAD, NodeTestCase
 
 
 def block_number(operator, threshold):
@@ -27,10 +27,11 @@ class PipelineTestCase(NodeTestCase):
         super().setUp()
         self.owner = get_user_model().objects.create_user(username="watcher@lockedin.example")
 
-    def rule(self, conditions, name="watch", enabled=True):
-        return rules_services.create_rule(
-            self.owner, {"name": name, "conditions": conditions, "enabled": enabled}
-        )
+    def rule(self, conditions, name="watch"):
+        return rules_services.create_rule(self.owner, {"name": name, "conditions": conditions})
+
+    def matched_blocks(self):
+        return [match.block.number for match in MatchedRule.objects.select_related("block")]
 
 
 class RunTickTests(PipelineTestCase):
@@ -39,12 +40,13 @@ class RunTickTests(PipelineTestCase):
 
         result = pipeline.run_tick()
 
-        self.assertEqual([block.number for block in result.blocks], [HEAD])
-        self.assertFalse(Transaction.objects.filter(decode_status=DecodeStatus.INGESTED).exists())
+        self.assertEqual(result.ingested, 1)
         self.assertEqual(result.decoded + result.undecodable, 1)
-        [match] = result.matches
+        self.assertFalse(Transaction.objects.filter(decode_status=DecodeStatus.INGESTED).exists())
+        self.assertEqual((result.evaluation.blocks, result.evaluation.matches), (1, 1))
+        match = MatchedRule.objects.get()
         self.assertEqual((match.rule, match.block.number), (rule, HEAD))
-        self.assertEqual(match.rows, [match.block])
+        self.assertIsNotNone(Block.objects.get().evaluated_at)
         self.assertIsNone(result.ingest_error)
 
     def test_every_block_ingested_this_tick_is_evaluated(self):
@@ -53,44 +55,38 @@ class RunTickTests(PipelineTestCase):
 
         result = pipeline.run_tick()
 
-        self.assertEqual([block.number for block in result.blocks], [HEAD - 2, HEAD - 1, HEAD])
-        self.assertEqual([match.block.number for match in result.matches], [HEAD - 1, HEAD])
+        self.assertEqual((result.ingested, result.evaluation.blocks), (3, 3))
+        self.assertEqual(self.matched_blocks(), [HEAD - 1, HEAD])
 
-    def test_a_tick_with_no_new_block_evaluates_nothing(self):
+    def test_a_tick_with_no_new_block_evaluates_nothing_again(self):
+        self.rule(_all_of(block_number(">=", 0)))
         pipeline.run_tick()
+
+        result = pipeline.run_tick()
+
+        self.assertEqual((result.ingested, result.evaluation.blocks), (0, 0))
+        self.assertEqual(MatchedRule.objects.count(), 1)
+
+    def test_a_block_stored_but_not_evaluated_is_evaluated_by_the_next_tick(self):
+        block_services.ingest_new_blocks()
         self.rule(_all_of(block_number(">=", 0)))
 
         result = pipeline.run_tick()
 
-        self.assertEqual((result.blocks, result.matches), ([], []))
+        self.assertEqual((result.ingested, result.evaluation.blocks), (0, 1))
+        self.assertEqual(self.matched_blocks(), [HEAD])
 
-    def test_a_failed_ingestion_still_evaluates_what_it_stored(self):
+    def test_a_failed_ingestion_still_decodes_and_evaluates_what_it_stored(self):
         IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 3)
         self.node.failing_receipts = {HEAD - 1}
         self.rule(_all_of(block_number(">=", 0)))
 
         result = pipeline.run_tick()
 
+        self.assertIsNone(result.ingested)
         self.assertIsInstance(result.ingest_error, rpc.RPCError)
-        self.assertEqual([block.number for block in result.blocks], [HEAD - 2])
-        self.assertEqual([match.block.number for match in result.matches], [HEAD - 2])
         self.assertFalse(Transaction.objects.filter(decode_status=DecodeStatus.INGESTED).exists())
-
-    def test_disabled_rules_are_not_evaluated(self):
-        self.rule(_all_of(block_number(">=", 0)), enabled=False)
-
-        self.assertEqual(pipeline.run_tick().matches, [])
-
-    def test_a_rule_the_evaluator_refuses_is_skipped_and_the_rest_still_run(self):
-        broken = Rule.objects.create(owner=self.owner, name="no tree")
-        working = self.rule(_all_of(block_number(">=", 0)))
-
-        result = pipeline.run_tick()
-
-        [skip] = result.skips
-        self.assertEqual(skip.rule, broken)
-        self.assertIsInstance(skip.error, onchain.ConditionError)
-        self.assertEqual([match.rule for match in result.matches], [working])
+        self.assertEqual(self.matched_blocks(), [HEAD - 2])
 
     @override_settings(EVM_RPC_URL="")
     def test_no_node_configured_raises(self):
@@ -99,26 +95,27 @@ class RunTickTests(PipelineTestCase):
 
 
 class RunPipelineCommandTests(PipelineTestCase):
-    def test_once_prints_the_tick_and_each_match(self):
-        rule = self.rule(_all_of(block_number(">=", HEAD)), name="big block")
+    def test_once_prints_what_the_tick_did(self):
+        self.rule(_all_of(block_number(">=", HEAD)))
         out, err = io.StringIO(), io.StringIO()
 
         call_command("run_pipeline", "--once", stdout=out, stderr=err)
 
         self.assertEqual(
             out.getvalue(),
-            "ingested 1 block(s); decoded 0 transfer(s), 1 without one; 1 match(es)\n"
-            f"rule {rule.pk} 'big block' matched 1 row(s) in block {HEAD} ({block_hash(HEAD)})\n",
+            "ingested 1 block(s); decoded 0 transfer(s), 1 without one; "
+            "evaluated 1 block(s) and recorded 1 match(es); 0 block(s) wait for decoding\n",
         )
         self.assertEqual(err.getvalue(), "")
 
-    def test_a_failed_ingestion_and_a_skipped_rule_are_reported(self):
+    def test_a_failed_ingestion_and_a_refused_rule_are_reported(self):
         IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 2)
         self.node.failing_receipts = {HEAD}
         broken = Rule.objects.create(owner=self.owner, name="no tree")
-        err = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
 
-        call_command("run_pipeline", "--once", stdout=io.StringIO(), stderr=err)
+        call_command("run_pipeline", "--once", stdout=out, stderr=err)
 
         self.assertIn("ingestion failed, resuming next tick: RPCError", err.getvalue())
-        self.assertIn(f"rule {broken.pk} skipped on block {HEAD - 1}: ", err.getvalue())
+        self.assertIn(f"rule {broken.pk} 'no tree' could not be evaluated: ", err.getvalue())
+        self.assertTrue(out.getvalue().startswith("ingestion failed; decoded 0 transfer(s)"))
