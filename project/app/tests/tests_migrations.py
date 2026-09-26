@@ -4,7 +4,8 @@ rows seeded just before it.
 0011 deletes inference rules, fails the jobs the inference pass left open, and
 lowercases stored addresses and the thresholds that compare against them; a
 contract case clash stops it rather than losing a row. 0017 deletes the rules
-that read a lead source and drops the lead, event and shape tables.
+that read a lead source and drops the lead, event and shape tables. 0018
+lowercases the receipt and log addresses 0011 never reached.
 """
 
 import datetime
@@ -313,3 +314,88 @@ class RemoveLeadsMigrationTests(TransactionTestCase):
 
         tables = set(connection.introspection.table_names())
         self.assertFalse({"app_lead", "app_event", "app_shape"} & tables)
+
+
+class ReceiptAddressFieldsMigrationTests(TransactionTestCase):
+    BEFORE = [("app", "0017_remove_leads")]
+    AFTER = [("app", "0018_receipt_address_fields")]
+
+    def setUp(self):
+        super().setUp()
+        self.before = _migrate(self.BEFORE)
+
+    def tearDown(self):
+        # Every test after this one expects every migration applied.
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+    def _receipt(self, transaction_hash, index, sender, recipient):
+        return self.before.get_model("app", "Receipt").objects.create(
+            transaction_hash=transaction_hash,
+            chain=1,
+            type=2,
+            status=1,
+            cumulative_gas_used=21_000,
+            logs_bloom="0x",
+            transaction_index=index,
+            block_hash=BLOCK_HASH,
+            block_number=18_000_000,
+            gas_used=21_000,
+            effective_gas_price=0,
+            from_address=sender,
+            to_address=recipient,
+        )
+
+    def _log(self, receipt, address):
+        return self.before.get_model("app", "Log").objects.create(
+            receipt=receipt,
+            receipt_index=0,
+            address=address,
+            data="0x",
+            block_hash=BLOCK_HASH,
+            block_number=18_000_000,
+            transaction_hash=receipt.transaction_hash,
+            transaction_index=receipt.transaction_index,
+            log_index=receipt.transaction_index,
+        )
+
+    def test_stored_receipt_and_log_addresses_are_lowercased(self):
+        self._log(self._receipt(MIXED_HASH, 0, MIXED, MIXED), MIXED)
+        self._log(self._receipt(LOWER_HASH, 1, ALREADY_LOWER, None), ALREADY_LOWER)
+
+        after = _migrate(self.AFTER)
+
+        def rows(name, *columns):
+            return sorted(after.get_model("app", name).objects.values_list(*columns))
+
+        self.assertEqual(
+            rows("Receipt", "transaction_hash", "from_address", "to_address"),
+            [(MIXED_HASH, LOWER, LOWER), (LOWER_HASH, ALREADY_LOWER, None)],
+        )
+        self.assertEqual(
+            rows("Log", "transaction_hash", "address"),
+            [(MIXED_HASH, LOWER), (LOWER_HASH, ALREADY_LOWER)],
+        )
+
+    @unittest.skipUnless(
+        connection.vendor == "postgresql", "only Postgres says which transaction last wrote a row"
+    )
+    def test_only_rows_holding_an_upper_case_letter_are_rewritten(self):
+        self._receipt(MIXED_HASH, 0, MIXED, MIXED)
+        self._receipt(LOWER_HASH, 1, ALREADY_LOWER, None)
+
+        def writer(transaction_hash):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT xmin::text FROM app_receipt WHERE transaction_hash = %s",
+                    [transaction_hash],
+                )
+                return cursor.fetchone()[0]
+
+        mixed_writer, lower_writer = writer(MIXED_HASH), writer(LOWER_HASH)
+
+        _migrate(self.AFTER)
+
+        self.assertNotEqual(writer(MIXED_HASH), mixed_writer)
+        self.assertEqual(writer(LOWER_HASH), lower_writer)
