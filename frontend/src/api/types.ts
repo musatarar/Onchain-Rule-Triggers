@@ -28,6 +28,27 @@ export interface AuthConsumeResult {
   session_expires_at: string;  // ISO 8601
 }
 
+// ===== username/password auth =====================================
+
+export interface AuthRegisterInput {
+  username: string;
+  password: string;
+  /** Optional and unverified; not used for sign-in yet. */
+  email?: string;
+}
+
+export interface AuthPasswordLoginInput {
+  username: string;
+  password: string;
+}
+
+export interface AuthPasswordResult {
+  authenticated: true;
+  username: string;
+  email: string | null;
+  session_expires_at: string;  // ISO 8601
+}
+
 /** Every non-2xx body in this API. `detail` is always present. */
 export interface ApiErrorBody {
   code: ApiErrorCode;
@@ -39,6 +60,10 @@ export type ApiErrorCode =
   | 'invalid_email'
   | 'invalid_token'
   | 'expired_token'
+  | 'invalid_username'
+  | 'weak_password'
+  | 'username_taken'
+  | 'invalid_credentials'
   | 'validation_error'
   | 'not_authenticated'
   | 'csrf_failed'

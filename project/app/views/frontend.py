@@ -7,8 +7,14 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 
 @ensure_csrf_cookie
 def signin(request):
-    """Render the sign-in page (magic-link request). Public: no data on it."""
+    """Render the sign-in page (password or magic link). Public: no data on it."""
     return render(request, "app/signin.html")
+
+
+@ensure_csrf_cookie
+def register(request):
+    """Render the username/password registration page. Public: no data on it."""
+    return render(request, "app/register.html")
 
 
 @ensure_csrf_cookie
