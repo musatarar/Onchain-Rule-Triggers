@@ -1,4 +1,4 @@
-"""Storing EVM blocks: the hex a node returns, as block, transaction and withdrawal rows."""
+"""Storing EVM blocks: the hex a node returns, as block, transaction and withdrawal rows, and ingesting new ones."""
 
 import contextlib
 import datetime
@@ -6,16 +6,23 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from decimal import Decimal
+from unittest import mock
 
+import httpx
+from django.core.cache import caches
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
 from django.db import connection
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
+from project.app.evm import rpc
 from project.app.evm.block import models as block_models
 from project.app.evm.block import services
 from project.app.evm.chains import ChainId
-from project.app.models import Block, Transaction, Withdrawal
+from project.app.models import Block, IngestCursor, Receipt, Transaction, Withdrawal
 from scripts.load_blocks import load_blocks
 
 BLOCK_HASH = "0x95b198e154acbfc64109dfd22d8224fe927fd8dfdedfae01587674482ba4baf3"
@@ -404,3 +411,337 @@ class LoadBlocksScriptTests(TestCase):
 
         self.assertEqual(Block.objects.count(), 1)
         self.assertEqual(Transaction.objects.count(), 2)
+
+
+HEAD = 18_000_000
+
+
+def block_hash(number):
+    return f"0x{number:064x}"
+
+
+def transaction_hash(number):
+    return f"0x{number:063x}f"
+
+
+def numbered_block(number):
+    """Block ``number``, carrying one transaction whose hash is its own."""
+    return block(
+        hash=block_hash(number),
+        number=hex(number),
+        transactions=[
+            dynamic_fee_transaction(
+                hash=transaction_hash(number),
+                blockHash=block_hash(number),
+                blockNumber=hex(number),
+            )
+        ],
+        withdrawals=[withdrawal(index=hex(number))],
+    )
+
+
+def numbered_receipts(number):
+    # tests_evm_receipt imports this module, so its fixture cannot be imported at the top.
+    from project.app.tests.tests_evm_receipt import receipt
+
+    return [
+        receipt(
+            transactionHash=transaction_hash(number),
+            blockHash=block_hash(number),
+            blockNumber=hex(number),
+        )
+    ]
+
+
+class FakeNode:
+    """A JSON-RPC node serving blocks up to ``head``, reached through ``httpx.MockTransport``.
+
+    ``calls`` lists each method asked, with its params. A block number in
+    ``missing`` is answered with no block, as a node does for one it does not
+    have yet, and one in ``failing_receipts`` has its receipts answered with an
+    RPC error.
+    """
+
+    def __init__(self, head=HEAD, chain=ChainId.ETHEREUM):
+        self.head = head
+        self.chain = chain
+        self.calls = []
+        self.missing = set()
+        self.failing_receipts = set()
+        self.client = httpx.Client(transport=httpx.MockTransport(self.handle))
+
+    def handle(self, request):
+        body = json.loads(request.content)
+        method, params = body["method"], body["params"]
+        self.calls.append((method, params))
+        if method == "eth_chainId":
+            result = hex(self.chain)
+        elif method == "eth_blockNumber":
+            result = hex(self.head)
+        elif method == "eth_getBlockByNumber":
+            number = int(params[0], 16)
+            served = number <= self.head and number not in self.missing
+            result = numbered_block(number) if served else None
+        elif method == "eth_getBlockReceipts":
+            number = int(params[0], 16)
+            if number in self.failing_receipts:
+                return httpx.Response(
+                    200,
+                    json={"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32000}},
+                )
+            result = numbered_receipts(number) if number <= self.head else None
+        else:
+            raise AssertionError(f"unexpected method {method}")
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    def fetched(self, method):
+        """The block numbers ``method`` was asked for, in order."""
+        return [int(params[0], 16) for called, params in self.calls if called == method]
+
+
+@override_settings(EVM_RPC_URL="http://node.test")
+class NodeTestCase(TestCase):
+    def setUp(self):
+        caches["rpc"].clear()
+        self.addCleanup(caches["rpc"].clear)
+        self.node = FakeNode()
+        patcher = mock.patch("project.app.evm.rpc.httpx.post", side_effect=self.node.client.post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class IngestNewBlocksTests(NodeTestCase):
+    def test_the_first_tick_stores_only_the_head_with_its_receipts(self):
+        self.assertEqual(services.ingest_new_blocks(), 1)
+
+        self.assertEqual(list(Block.objects.values_list("number", flat=True)), [HEAD])
+        self.assertEqual(Transaction.objects.get().hash, transaction_hash(HEAD))
+        self.assertEqual(Receipt.objects.get().transaction_hash, transaction_hash(HEAD))
+        cursor = IngestCursor.objects.get()
+        self.assertEqual((cursor.chain, cursor.last_indexed_block), (ChainId.ETHEREUM, HEAD))
+
+    def test_a_tick_behind_the_head_stores_every_block_after_the_cursor(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 3)
+
+        self.assertEqual(services.ingest_new_blocks(), 3)
+
+        stored = [HEAD - 2, HEAD - 1, HEAD]
+        self.assertEqual(
+            list(Block.objects.order_by("number").values_list("number", flat=True)), stored
+        )
+        self.assertEqual(
+            list(Receipt.objects.order_by("block_number").values_list("block_number", flat=True)),
+            stored,
+        )
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD)
+
+    def test_a_failed_fetch_leaves_the_cursor_on_the_last_block_stored(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 3)
+        self.node.failing_receipts = {HEAD - 1}
+
+        with self.assertRaises(rpc.RPCError):
+            services.ingest_new_blocks()
+
+        self.assertEqual(list(Block.objects.values_list("number", flat=True)), [HEAD - 2])
+        self.assertEqual(Receipt.objects.get().block_number, HEAD - 2)
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD - 2)
+
+    def test_the_next_tick_resumes_after_the_last_block_stored(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 3)
+        self.node.failing_receipts = {HEAD - 1}
+        with self.assertRaises(rpc.RPCError):
+            services.ingest_new_blocks()
+        self.node.failing_receipts = set()
+
+        self.assertEqual(services.ingest_new_blocks(), 2)
+
+        self.assertEqual(Block.objects.count(), 3)
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD)
+
+    def test_a_tick_with_no_new_block_stores_nothing(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD)
+
+        self.assertEqual(services.ingest_new_blocks(), 0)
+
+        self.assertFalse(Block.objects.exists())
+        self.assertEqual(self.node.fetched("eth_getBlockByNumber"), [])
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD)
+
+    def test_a_block_the_node_does_not_serve_yet_stops_the_tick_before_it(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 2)
+        self.node.missing = {HEAD}
+
+        with self.assertRaises(rpc.RPCError):
+            services.ingest_new_blocks()
+
+        self.assertEqual(list(Block.objects.values_list("number", flat=True)), [HEAD - 1])
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD - 1)
+
+
+SLEEP = "project.app.management.commands.ingest_blocks.time.sleep"
+
+
+class IngestBlocksCommandTests(NodeTestCase):
+    def run_command(self, *args, sleeps=1):
+        """Run the command, stopping it as Ctrl-C would at sleep number ``sleeps``; answer its output."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch(SLEEP, side_effect=[None] * (sleeps - 1) + [KeyboardInterrupt]) as sleep:
+            call_command("ingest_blocks", *args, stdout=out, stderr=err)
+        self.sleep = sleep
+        return out.getvalue(), err.getvalue()
+
+    def test_once_runs_one_tick_and_prints_how_many_blocks_it_stored(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 2)
+
+        out, _ = self.run_command("--once")
+
+        self.assertEqual(out, "stored 2 block(s)\n")
+        self.sleep.assert_not_called()
+
+    def test_it_polls_every_interval_until_stopped(self):
+        out, _ = self.run_command("--interval", "2", sleeps=2)
+
+        # The node's head never moves, so the second tick finds no new block.
+        self.assertEqual(
+            out,
+            "ingesting a tick every 2s; Ctrl-C to stop\n"
+            "stored 1 block(s)\nstored 0 block(s)\nstopped\n",
+        )
+        self.assertEqual(self.sleep.call_args_list, [mock.call(2.0), mock.call(2.0)])
+
+    def test_it_waits_five_seconds_by_default(self):
+        self.run_command()
+
+        self.sleep.assert_called_once_with(5)
+
+    def test_a_failed_tick_is_reported_and_the_next_resumes(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 2)
+        self.node.failing_receipts = {HEAD}
+
+        def sleep(_seconds):
+            # The node recovers during the first wait; the second is Ctrl-C.
+            if not self.node.failing_receipts:
+                raise KeyboardInterrupt
+            self.node.failing_receipts = set()
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch(SLEEP, side_effect=sleep):
+            call_command("ingest_blocks", stdout=out, stderr=err)
+
+        self.assertIn("tick failed, retrying next interval: RPCError", err.getvalue())
+        self.assertIn("stored 1 block(s)\nstopped\n", out.getvalue())
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD)
+
+    @override_settings(EVM_RPC_URL="")
+    def test_no_node_configured_stops_the_polling(self):
+        with mock.patch(SLEEP) as sleep, self.assertRaises(ImproperlyConfigured):
+            call_command("ingest_blocks", stdout=io.StringIO())
+
+        sleep.assert_not_called()
+
+
+class RPCCacheTests(NodeTestCase):
+    def test_a_block_asked_for_again_within_the_ttl_is_served_from_the_cache(self):
+        first = rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+        started = time.time()
+
+        with mock.patch("time.time", return_value=started + rpc.CACHE_TTL_SECONDS - 1):
+            again = rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+
+        self.assertEqual(again, first)
+        self.assertEqual(self.node.fetched("eth_getBlockByNumber"), [HEAD])
+
+    def test_a_block_asked_for_after_the_ttl_is_fetched_again(self):
+        rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+        started = time.time()
+
+        with mock.patch("time.time", return_value=started + rpc.CACHE_TTL_SECONDS + 1):
+            rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+
+        self.assertEqual(self.node.fetched("eth_getBlockByNumber"), [HEAD, HEAD])
+
+    def test_receipts_asked_for_again_within_the_ttl_are_served_from_the_cache(self):
+        first = rpc.block_receipts(ChainId.ETHEREUM, HEAD)
+        started = time.time()
+
+        with mock.patch("time.time", return_value=started + rpc.CACHE_TTL_SECONDS - 1):
+            again = rpc.block_receipts(ChainId.ETHEREUM, HEAD)
+
+        self.assertEqual(again, first)
+        self.assertEqual(self.node.fetched("eth_getBlockReceipts"), [HEAD])
+
+    def test_receipts_asked_for_after_the_ttl_are_fetched_again(self):
+        rpc.block_receipts(ChainId.ETHEREUM, HEAD)
+        started = time.time()
+
+        with mock.patch("time.time", return_value=started + rpc.CACHE_TTL_SECONDS + 1):
+            rpc.block_receipts(ChainId.ETHEREUM, HEAD)
+
+        self.assertEqual(self.node.fetched("eth_getBlockReceipts"), [HEAD, HEAD])
+
+    def test_the_next_ticks_process_reads_what_this_one_cached(self):
+        rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+        rpc.block_receipts(ChainId.ETHEREUM, HEAD)
+
+        # A new backend over the same settings is what the next tick's process opens.
+        fresh = caches.create_connection("rpc")
+
+        self.assertEqual(fresh.get(f"block:{ChainId.ETHEREUM.value}:{HEAD}"), numbered_block(HEAD))
+        self.assertEqual(
+            fresh.get(f"receipts:{ChainId.ETHEREUM.value}:{HEAD}"), numbered_receipts(HEAD)
+        )
+
+    def test_one_block_number_on_two_chains_is_cached_apart(self):
+        rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+        rpc.block_by_number(ChainId.GNOSIS, HEAD)
+
+        self.assertEqual(self.node.fetched("eth_getBlockByNumber"), [HEAD, HEAD])
+
+    def test_the_head_is_never_cached(self):
+        self.assertEqual(rpc.latest_block_number(), HEAD)
+        self.node.head = HEAD + 1
+
+        self.assertEqual(rpc.latest_block_number(), HEAD + 1)
+        self.assertEqual(
+            [method for method, _ in self.node.calls], ["eth_blockNumber", "eth_blockNumber"]
+        )
+
+    def test_the_chain_id_is_the_nodes(self):
+        self.node.chain = ChainId.BASE
+
+        self.assertEqual(rpc.chain_id(), ChainId.BASE)
+
+    def test_a_block_is_asked_for_with_full_transactions(self):
+        rpc.block_by_number(ChainId.ETHEREUM, HEAD)
+
+        self.assertEqual(self.node.calls, [("eth_getBlockByNumber", [hex(HEAD), True])])
+
+    def test_an_rpc_error_raises_and_is_not_cached(self):
+        self.node.failing_receipts = {HEAD}
+        with self.assertRaises(rpc.RPCError):
+            rpc.block_receipts(ChainId.ETHEREUM, HEAD)
+        self.node.failing_receipts = set()
+
+        self.assertEqual(rpc.block_receipts(ChainId.ETHEREUM, HEAD), numbered_receipts(HEAD))
+        self.assertEqual(self.node.fetched("eth_getBlockReceipts"), [HEAD, HEAD])
+
+    def test_a_block_the_node_does_not_have_raises_and_is_not_cached(self):
+        with self.assertRaises(rpc.RPCError):
+            rpc.block_by_number(ChainId.ETHEREUM, HEAD + 1)
+
+        self.assertIsNone(caches["rpc"].get(f"block:{ChainId.ETHEREUM.value}:{HEAD + 1}"))
+
+    def test_an_http_error_raises(self):
+        self.node.client = httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(502))
+        )
+        with mock.patch("project.app.evm.rpc.httpx.post", side_effect=self.node.client.post):
+            with self.assertRaises(httpx.HTTPStatusError):
+                rpc.latest_block_number()
+
+    @override_settings(EVM_RPC_URL="")
+    def test_no_node_configured_refuses_to_call(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "EVM_RPC_URL"):
+            rpc.latest_block_number()
+
+        self.assertEqual(self.node.calls, [])

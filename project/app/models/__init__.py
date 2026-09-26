@@ -1,6 +1,6 @@
 """Domain-split models; every model is importable from ``project.app.models``."""
 
-from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.block.models import Block, IngestCursor, Transaction, Withdrawal
 from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import FunctionInput, FunctionSignature
 from project.app.evm.receipt.models import Log, Receipt, Topic
@@ -17,6 +17,7 @@ __all__ = [
     "Contract",
     "FunctionInput",
     "FunctionSignature",
+    "IngestCursor",
     "Log",
     "LoginToken",
     "Receipt",
