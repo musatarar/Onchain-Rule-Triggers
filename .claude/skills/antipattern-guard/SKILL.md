@@ -42,24 +42,26 @@ decision. Say so once and build it as asked. The goal is to give them the choice
 
 ### Example
 
-Request: "add a method into services that returns leads for the demo"
+Request: "add a method into services that returns the large USDT transfers for the demo"
 
-Weak response: a function in `services/` with a list of dicts of agency names and emails.
+Weak response: a function in `services/` with a list of dicts of transaction hashes, addresses
+and amounts copied from the sample block.
 
-Strong response, said before coding: "I read this as a reusable selector over Lead rows, not a
-function containing demo rows. Demo data already lives in `raw_data/` and is loaded by the
-ingest command, so I'm adding a query function in services that takes the filter criteria as
-arguments, and leaving the data where it is. Say the word if you actually wanted a fixture."
+Strong response, said before coding: "I read this as a reusable selector over TokenTransfer
+rows, not a function containing demo rows. Demo data already lives in `raw_data/` and is loaded
+by `scripts/load_blocks.py`, `scripts/load_receipts.py` and the `load_tokens` command, so I'm
+adding a query function that takes the token and a minimum raw value as arguments, and leaving
+the data where it is. Say the word if you actually wanted a fixture."
 
 ## Where things belong in this repo
 
 | Concern | Home | Not here |
 |---|---|---|
-| Reusable business logic, rules, selectors | `project/app/services/` (pure where possible, explicit args, no request or session objects) | views, serializers, model methods with side effects |
-| HTTP shape: auth, pagination, throttling, status codes | `project/app/views/`, `serializers/` | services |
-| Test data | factory helpers in the test module (`make_lead`, `_lead`) or `tests/fixtures/` | any production module |
-| Demo or seed data | `raw_data/*.json` via the `ingest_data` management command | services, migrations, settings |
-| Constants and enums | `services/actions.py`, module-level constants | inline magic strings |
+| Reusable business logic, rules, selectors | `project/app/rules/services.py`, `project/app/evm/**/services.py`, `project/app/services/` (pure where possible, explicit args, no request or session objects) | views, serializers, model methods with side effects |
+| HTTP shape: auth, pagination, throttling, status codes | `project/app/views/`, `serializers/`, `rules/routes.py` | services |
+| Test data | helpers in the test module (`_store`, `_token`, `_transfer`, `_rule` in `tests_rules_onchain.py`) | any production module |
+| Demo or seed data | `raw_data/*.json` via `scripts/load_*.py` and the `load_tokens` / `load_function_signatures` commands | services, migrations, settings |
+| Constants and enums | `evm/constants.py`, `evm/chains.py`, module-level constants | inline magic strings |
 | Configuration | environment variables read in `settings.py` with the `_env_*` helpers | hardcoded literals, database rows, API-editable fields |
 | Provider selection and retry | `services/llm/config.py`, `errors.py` | call sites |
 
@@ -69,14 +71,14 @@ Each entry: what it looks like, why it is wrong here, what to do instead. When y
 your plan, say which entry it is.
 
 ### Fixture data in production code
-Looks like: literal lead names, emails, dates, or event payloads inside a service, view, or
-model; a function whose body is `return [...]` of sample rows; a "demo mode" branch. The subtle
-form: a query that only works because of how one dataset is shaped, such as
-`filter(id__startswith="lead_")` to mean "the demo leads". That is fixture knowledge in
-disguise, and it breaks the day someone loads different data.
+Looks like: literal transaction hashes, addresses, amounts, or block payloads inside a
+service, view, or model; a function whose body is `return [...]` of sample rows; a "demo mode"
+branch. The subtle form: a query that only works because of how one dataset is shaped, such as
+`filter(block_number=<the sample block's number>)` to mean "the demo transactions". That is
+fixture knowledge in disguise, and it breaks the day someone loads different data.
 Why: the module now has two jobs, and the second one silently becomes production behaviour.
 Callers cannot tell the data is fake, tests pass against it, and the real path is untested.
-Instead: the function takes its inputs as arguments (a stage, a set of ids, a date window) or
+Instead: the function takes its inputs as arguments (a token, a set of hashes, a block range) or
 queries the ORM on real fields. Sample data goes in a test factory helper or `raw_data/`, and
 "which rows are the demo" stays a caller's decision.
 
@@ -84,8 +86,7 @@ queries the ORM on real fields. Sample data goes in a test factory helper or `ra
 Looks like: `if settings.TESTING`, `if "test" in sys.argv`, `if settings.DEBUG`, an env var
 that skips a check, a parameter defaulting to "skip verification".
 Why: the tested code is no longer the shipped code, and the skipped step is usually the one
-that matters (here: the verifier, the approval gate, sanitization). CLAUDE.md lists these as
-human-gated for exactly this reason.
+that matters (here: owner scoping of rules, conditions validation, the login allowlist).
 Instead: mock the collaborator at the seam (subclass `LLMClient`, patch `timezone.now`), or
 make the real path fast enough. Never let a switch disable a security invariant.
 
@@ -96,8 +97,8 @@ Why: it reads as finished in a diff and gets built on.
 Instead: build it, or say plainly which part is missing and why.
 
 ### Making the check pass instead of fixing the cause
-Looks like: editing or deleting an existing test, raising a query budget in
-`tests_planner_perf.py`, regenerating an eval baseline, adding `# noqa`/`# type: ignore`,
+Looks like: editing or deleting an existing test, raising an `assertNumQueries` budget,
+adding `# noqa`/`# type: ignore`,
 loosening an assertion, catching the exception and continuing.
 Why: every one of those is a signal being muted. Budgets and baselines change only by an
 explicit human decision.
@@ -105,16 +106,17 @@ Instead: find why the check fails. If the check itself is wrong, say so and stop
 decision belongs to a human.
 
 ### Duplicated helper
-Looks like: a new `_normalize`, `_days_since`, `_hash_key` when `normalize_copy`, `_days_since`,
-or `dedupe_key` already exist; a second copy of a prompt-building function.
-Why: two implementations drift, and the security-relevant ones (sanitization, dedupe identity)
-must not.
+Looks like: a new `_lower_address` when `AddressField` already folds case on every write and
+lookup, or a second `.lower()` of thresholds beside `rules.utils.lowered`; a second walker over
+a condition tree beside `root_and_children` and `render_tree`.
+Why: two implementations drift, and the identity-relevant ones (address case, how a tree is
+read) must not: a rule written one way and evaluated another silently stops matching.
 Instead: grep for the behaviour before writing it. Reuse, or extend the existing one.
 
 ### Business logic in the wrong layer
 Looks like: a rule decision inside a view or serializer; ORM writes in a model method; a
 service that takes `request`; a Django signal doing a write.
-Why: the rules engine and planner are testable without HTTP because nothing about HTTP leaks
+Why: the rules engine and the decoder are testable without HTTP because nothing about HTTP leaks
 into them. Signals hide writes from the explicit service functions that own them.
 Instead: decide in services, expose through views, write through explicit service functions
 inside one `transaction.atomic` block.
@@ -122,20 +124,21 @@ inside one `transaction.atomic` block.
 ### Read-then-check where a race is possible
 Looks like: `if not Token.objects.filter(used=True).exists(): token.used = True; token.save()`.
 Why: two requests both pass the check. This app already has the correct patterns (conditional
-UPDATE on login-token redemption, partial unique constraint on the dismiss revoke).
+UPDATE on login-token redemption, `select_for_update(skip_locked=True)` claims in
+`evm/decoding.py`).
 Instead: copy one of those.
 
 ### ORM calls in the async provider phase
-Looks like: `lead.events.all()` or `.save()` inside the coroutine that calls the provider, or a
-module-level Django import in `services/llm/`.
+Looks like: `rule.all_conditions.all()` or `.save()` inside the coroutine that calls the
+provider, or any Django import in `services/llm/`.
 Why: `SynchronousOnlyOperation` at runtime with no static warning, and the LLM layer must stay
 importable without Django.
-Instead: gather everything the coroutine needs before entering the event loop; keep Django
-imports function-local in `runtime.py`.
+Instead: gather everything the coroutine needs before entering the event loop, and pass it in
+as plain values; `services/llm/` reads its configuration from the environment in `config.py`.
 
 ### Schema shortcuts
 Looks like: editing a committed migration, a `RunPython` data step, a non-nullable column with
-no default, a plain index add on `outreachaction`, `lead`, or `event`.
+no default, a plain index add on `transaction`, `tokentransfer`, or `block`.
 Why: the first breaks every environment that already applied it; the others stall Postgres or
 require a rewrite. All migrations are human-reviewed.
 Instead: additive follow-up migration; nullable-or-default first, backfill via management
@@ -160,7 +163,7 @@ Instead: change the source and run the build.
 Looks like: `except Exception: pass`, retrying on every error class, logging a prompt or
 completion, printing a token.
 Why: retryability is a property of the error class, retries are spend, and raw prompts carry
-untrusted lead text.
+untrusted user text.
 Instead: catch the specific class, let `errors.py` decide retryability, log identifiers only.
 
 ## What this skill is not

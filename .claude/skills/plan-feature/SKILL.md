@@ -5,12 +5,12 @@ description: Plan a feature, behaviour change, or refactor as the smallest diff 
 
 # Plan a feature at MVP scope
 
-This is an MVP. The failure this skill exists to prevent: an ask like "make leads
+This is an MVP. The failure this skill exists to prevent: an ask like "make rules
 multitenant" becoming a plan with four migrations, four management commands, admin
-registration, a frontend change, README and CLAUDE.md sections, and a follow-ups list,
+registration, API changes, README and CLAUDE.md sections, and a follow-ups list,
 because each piece seemed to belong. Each piece is reasonable alone. Together they turn a
-week of value into a month of review. `references/example.md` shows that real case and the
-minimal plan that should have replaced it.
+week of value into a month of review. `references/example.md` shows that case and the
+minimal plan that should replace it.
 
 The rule: the plan contains what the ask *requires*, never what it merely *suggests*.
 Everything suggested is a question for the user, not a line item.
@@ -21,11 +21,11 @@ Write two things down first:
 
 - **Ask**: the user's request in one sentence, in their words. Do not expand it.
 - **Done when**: one to three observable checks a reviewer could run. Each is a behaviour
-  ("a reviewer in workspace A cannot list workspace B's leads"), not an artefact ("a
-  Tenant model exists").
+  ("a user in workspace A cannot list workspace B's rules"), not an artefact ("a
+  Workspace model exists").
 
 Every done-when comes from the ask. If a third check appears that the user never mentioned
-("only pending drafts can be snoozed"), it is an extra wearing a done-when's clothes: move it
+("only enabled rules can be shared"), it is an extra wearing a done-when's clothes: move it
 to section 4. If "done when" cannot be written without guessing, ask the user one question
 now, before investigating. A plan built on a guess is wrong in proportion to its
 thoroughness.
@@ -40,8 +40,8 @@ lines to existing structure.
 Keep two lists while reading: what the change **requires**, and what you **noticed**.
 Noticed things go to section 4. They never go to section 3, however good they are.
 
-A prerequisite you discover mid-implementation ("the engine needs a real owner on the
-lead first") is an ask in its own right and goes through sections 1 to 6 before you build
+A prerequisite you discover mid-implementation ("the engine needs each rule to
+remember the last block it saw first") is an ask in its own right and goes through sections 1 to 6 before you build
 it. The pull to over-build is strongest here, because nobody asked for the sub-change and
 so nobody is holding its scope: a one-column change quietly acquires a services module, a
 command-line flag, and a test module of its own. Pin its done-when, plan the column, and
@@ -102,15 +102,14 @@ Three that look like hygiene and are not:
 
 List the extras a reasonable engineer would actually have added, roughly six at most.
 The user has to read and decide on each one, so an item you would never have built
-("seed a snoozed row in the demo data") is noise, not diligence. Present the list for
+("seed a disabled rule in the demo data") is noise, not diligence. Present the list for
 the user to pick from. Until the user says so, an extra is in neither the plan, nor the
 issue, nor the estimate.
 
 ## 5. Human-review flags
 
 CLAUDE.md names what always needs a human before merge (migrations, auth and throttles,
-the approval gate, sanitisation and the verifier, flag default flips, provider spend,
-LoginToken, `.claude/`, CI). Name every flag the minimal change trips. If a different
+LoginToken, flag default flips, provider spend, `.claude/`, CI). Name every flag the minimal change trips. If a different
 minimal change avoids a flag, say so: that is often the cheaper plan, and the user should
 get to choose.
 
@@ -167,5 +166,5 @@ change is too big: split it by done-when into separate issues and say which goes
 - <extra> — <why tempting> — <dropped | later issue #N>
 
 ## Gates
-CLAUDE.md commands; plus <any this change makes relevant, e.g. frontend rebuild>
+CLAUDE.md commands; plus <any this change makes relevant, e.g. a raw_data reload>
 ```
