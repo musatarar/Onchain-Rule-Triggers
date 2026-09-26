@@ -90,6 +90,9 @@ class DecodeTransactionsTests(TestCase):
             (transfer.chain, transfer.block_number, transfer.block_hash),
             (ChainId.ETHEREUM, 0x112A880, BLOCK_HASH),
         )
+        self.assertEqual(
+            transfer.block_timestamp, Transaction.objects.get(hash=tx_hash).block_timestamp
+        )
         self.assertEqual(transfer.from_address, SENDER)
         self.assertEqual(transfer.to_address, RECIPIENT)
         self.assertEqual(transfer.raw_value, Decimal(1_500_000))

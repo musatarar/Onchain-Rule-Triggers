@@ -2,6 +2,7 @@
 
 from django.db import transaction as db_transaction
 
+from project.app.evm.block.models import Block
 from project.app.evm.block.services import _quantity, _time, _upsert
 from project.app.evm.chains import ChainId
 from project.app.evm.receipt.models import (
@@ -28,7 +29,9 @@ def store_receipts(receipts, chain):
     transaction hash, a log by its receipt and receipt index and a topic by its
     log and index, so storing one again updates it with its update schema's fields and
     deletes the logs and topics it no longer carries. A contract creation links
-    the contract it deployed, created if it is not stored yet.
+    the contract it deployed, created if it is not stored yet. A receipt's
+    block time is the node's ``blockTimestamp``, on the receipt or one of its
+    logs, or else the stored block's.
     """
     chain = ChainId(chain)  # an id outside the catalogued chains is a ValueError
     deployed = {
@@ -36,7 +39,12 @@ def store_receipts(receipts, chain):
     }
     with db_transaction.atomic():
         contracts = _contracts_at(deployed)
-        parsed = [_parsed(raw, chain, contracts) for raw in receipts]
+        block_times = dict(
+            Block.objects.filter(hash__in={raw["blockHash"] for raw in receipts}).values_list(
+                "hash", "timestamp"
+            )
+        )
+        parsed = [_parsed(raw, chain, contracts, block_times) for raw in receipts]
         hashes = [receipt.transaction_hash for receipt, _ in parsed]
         _upsert(
             Receipt, ReceiptUpdateSchema, [receipt for receipt, _ in parsed], ["transaction_hash"]
@@ -95,11 +103,12 @@ def receipts_for_block(block_hash):
     )
 
 
-def _parsed(raw, chain, contracts):
+def _parsed(raw, chain, contracts, block_times):
     """One raw receipt as create schemas: ``(receipt, [(log, topics), ...])``.
 
     ``contracts`` holds the contract at each ``(chain, lowercase address)`` a
-    receipt in the batch deployed.
+    receipt in the batch deployed, and ``block_times`` the timestamp of each
+    stored block by hash.
     """
     deployed = raw.get("contractAddress")
     receipt = ReceiptCreateSchema(
@@ -112,6 +121,7 @@ def _parsed(raw, chain, contracts):
         transaction_index=_quantity(raw["transactionIndex"]),
         block_hash=raw["blockHash"],
         block_number=_quantity(raw["blockNumber"]),
+        block_timestamp=_block_timestamp(raw, block_times),
         gas_used=_quantity(raw["gasUsed"]),
         effective_gas_price=_quantity(raw["effectiveGasPrice"]),
         from_address=raw["from"],
@@ -140,6 +150,14 @@ def _parsed(raw, chain, contracts):
         for index, entry in enumerate(raw["logs"])
     ]
     return receipt, logs
+
+
+def _block_timestamp(raw, block_times):
+    """When ``raw``'s block was made: as the node gives it, else as the stored block has it."""
+    for entry in (raw, *raw["logs"]):
+        if entry.get("blockTimestamp") is not None:
+            return _time(entry["blockTimestamp"])
+    return block_times.get(raw["blockHash"])
 
 
 def _optional_time(value):

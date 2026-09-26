@@ -1,4 +1,5 @@
-"""Each token transfer names its transaction's chain and block, indexed together; nullable, since transfers decoded before it have none.
+"""Each token transfer names its transaction's chain and block, indexed together, and every on-chain row
+that lacked it gets its block's timestamp; all nullable, since rows stored before them have none.
 
 It follows both migrations the graph had split into after 0010, the receipts and the address fields.
 """
@@ -62,6 +63,21 @@ class Migration(migrations.Migration):
             model_name="tokentransfer",
             name="block_hash",
             field=models.CharField(blank=True, max_length=66, null=True),
+        ),
+        migrations.AddField(
+            model_name="tokentransfer",
+            name="block_timestamp",
+            field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="withdrawal",
+            name="block_timestamp",
+            field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="receipt",
+            name="block_timestamp",
+            field=models.DateTimeField(blank=True, null=True),
         ),
         migrations.AddIndex(
             model_name="tokentransfer",

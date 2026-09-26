@@ -31,6 +31,7 @@ class ReceiptUpdateSchema(BaseModel):
     transaction_index: int
     block_hash: str
     block_number: int
+    block_timestamp: datetime.datetime | None
     gas_used: int
     effective_gas_price: int
     from_address: str
@@ -53,7 +54,8 @@ class Receipt(models.Model):
     ``status`` is 1 for success and 0 for a revert. A contract creation has no
     ``to_address`` and links the contract it deployed as ``contract``; any
     other transaction has no ``contract``. Only a blob transaction has the
-    blob gas fields.
+    blob gas fields. A receipt has no ``block_timestamp`` when neither the node
+    nor a stored block gave its block's time.
     """
 
     transaction_hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -65,6 +67,7 @@ class Receipt(models.Model):
     transaction_index = models.BigIntegerField()
     block_hash = models.CharField(max_length=HASH_LENGTH, db_index=True)
     block_number = models.BigIntegerField()
+    block_timestamp = models.DateTimeField(null=True, blank=True)
     gas_used = models.BigIntegerField()
     effective_gas_price = _uint256()
     from_address = models.CharField(max_length=ADDRESS_LENGTH)
