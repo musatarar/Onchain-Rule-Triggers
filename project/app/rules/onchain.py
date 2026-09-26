@@ -43,7 +43,6 @@ the number of rules.
 
 import datetime
 import functools
-from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
@@ -196,9 +195,9 @@ def _leaf(node, rows):
     threshold = node.value
     if field_type == utils.NUMBER:
         threshold = (
-            [_exact(item) for item in threshold]
+            [utils.exact_number(item) for item in threshold]
             if isinstance(threshold, list)
-            else _exact(threshold)
+            else utils.exact_number(threshold)
         )
     return _compare(value, node.operator, threshold, field_type)
 
@@ -213,19 +212,6 @@ def _value(source, field, field_type, row):
     if field_type == utils.DATE and isinstance(value, datetime.datetime):
         return value.astimezone(datetime.UTC).date()
     return value
-
-
-def _exact(number):
-    """A number threshold as a ``Decimal``, so a uint256 is never rounded through a float.
-
-    An int converts exactly. A float threshold is read from its shortest repr
-    (``1e+18`` rather than its binary expansion).
-    """
-    if isinstance(number, bool) or not isinstance(number, (int, float)):
-        return number
-    if isinstance(number, float):
-        return Decimal(repr(number))
-    return Decimal(number)
 
 
 def _blank(value):

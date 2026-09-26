@@ -13,6 +13,7 @@ checked against the same fields.
 """
 
 import datetime
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
@@ -252,6 +253,20 @@ def lowercase_thresholds(payload):
         **payload,
         "conditions": [lowercase_thresholds(child) for child in payload["conditions"]],
     }
+
+
+def exact_number(number):
+    """A number threshold as a ``Decimal``, so a uint256 is never rounded through a float.
+
+    An int converts exactly. A float threshold is read from its shortest repr
+    (``1e+18`` rather than its binary expansion). Anything else, ``None``
+    among it, is returned as it was.
+    """
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        return number
+    if isinstance(number, float):
+        return Decimal(repr(number))
+    return Decimal(number)
 
 
 def validate_conditions(payload):
