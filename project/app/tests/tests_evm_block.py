@@ -577,13 +577,67 @@ class IngestNewBlocksTests(NodeTestCase):
         self.assertEqual(list(Block.objects.values_list("number", flat=True)), [HEAD - 1])
         self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD - 1)
 
-    def test_the_command_prints_how_many_blocks_it_stored(self):
+
+SLEEP = "project.app.management.commands.ingest_blocks.time.sleep"
+
+
+class IngestBlocksCommandTests(NodeTestCase):
+    def run_command(self, *args, sleeps=1):
+        """Run the command, stopping it as Ctrl-C would at sleep number ``sleeps``; answer its output."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch(SLEEP, side_effect=[None] * (sleeps - 1) + [KeyboardInterrupt]) as sleep:
+            call_command("ingest_blocks", *args, stdout=out, stderr=err)
+        self.sleep = sleep
+        return out.getvalue(), err.getvalue()
+
+    def test_once_runs_one_tick_and_prints_how_many_blocks_it_stored(self):
         IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 2)
-        out = io.StringIO()
 
-        call_command("ingest_blocks", stdout=out)
+        out, _ = self.run_command("--once")
 
-        self.assertEqual(out.getvalue(), "stored 2 block(s)\n")
+        self.assertEqual(out, "stored 2 block(s)\n")
+        self.sleep.assert_not_called()
+
+    def test_it_polls_every_interval_until_stopped(self):
+        out, _ = self.run_command("--interval", "2", sleeps=2)
+
+        # The node's head never moves, so the second tick finds no new block.
+        self.assertEqual(
+            out,
+            "ingesting a tick every 2s; Ctrl-C to stop\n"
+            "stored 1 block(s)\nstored 0 block(s)\nstopped\n",
+        )
+        self.assertEqual(self.sleep.call_args_list, [mock.call(2.0), mock.call(2.0)])
+
+    def test_it_waits_five_seconds_by_default(self):
+        self.run_command()
+
+        self.sleep.assert_called_once_with(5)
+
+    def test_a_failed_tick_is_reported_and_the_next_resumes(self):
+        IngestCursor.objects.create(chain=ChainId.ETHEREUM, last_indexed_block=HEAD - 2)
+        self.node.failing_receipts = {HEAD}
+
+        def sleep(_seconds):
+            # The node recovers during the first wait; the second is Ctrl-C.
+            if not self.node.failing_receipts:
+                raise KeyboardInterrupt
+            self.node.failing_receipts = set()
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch(SLEEP, side_effect=sleep):
+            call_command("ingest_blocks", stdout=out, stderr=err)
+
+        self.assertIn("tick failed, retrying next interval: RPCError", err.getvalue())
+        self.assertIn("stored 1 block(s)\nstopped\n", out.getvalue())
+        self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD)
+
+    @override_settings(EVM_RPC_URL="")
+    def test_no_node_configured_stops_the_polling(self):
+        with mock.patch(SLEEP) as sleep, self.assertRaises(ImproperlyConfigured):
+            call_command("ingest_blocks", stdout=io.StringIO())
+
+        sleep.assert_not_called()
 
 
 class RPCCacheTests(NodeTestCase):
