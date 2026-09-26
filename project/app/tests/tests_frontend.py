@@ -7,13 +7,13 @@ from django.conf import settings
 from django.test import Client, TestCase
 
 SHELLS = {
-    "/signin": "Sign in · Onchain Rule Triggers",
-    "/register": "Create an account · Onchain Rule Triggers",
-    "/auth/consume": "Signing you in · Onchain Rule Triggers",
-    "/journal/": "Match journal · Onchain Rule Triggers",
-    "/circuits/": "Circuits · Onchain Rule Triggers",
-    "/circuits/new/": "New circuit · Onchain Rule Triggers",
-    "/circuits/8/": "Edit circuit · Onchain Rule Triggers",
+    "/signin": "Sign in · Phosphor",
+    "/register": "Create an account · Phosphor",
+    "/auth/consume": "Signing you in · Phosphor",
+    "/journal/": "Match journal · Phosphor",
+    "/circuits/": "Circuits · Phosphor",
+    "/circuits/new/": "New circuit · Phosphor",
+    "/circuits/8/": "Edit circuit · Phosphor",
 }
 
 

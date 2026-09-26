@@ -8,6 +8,7 @@ import { groupDigits } from './derive/format.ts';
 import { JournalSheet } from './journal/JournalSheet.tsx';
 import { PRODUCT } from './product.ts';
 import { ConsoleProvider, useConsole } from './state.tsx';
+import { Mark } from './ui/Mark.tsx';
 import './console.css';
 
 function sheetOf(pathname: string): string {
@@ -139,7 +140,8 @@ function Shell() {
           <div className="scr-in">
             <header className="sh">
               <div className="logo">
-                ONCHAIN RULE TRIGGERS <span className="wn">WORKING NAME</span>
+                <Mark />
+                PHOSPHOR
               </div>
               <Readouts />
               <Operator />

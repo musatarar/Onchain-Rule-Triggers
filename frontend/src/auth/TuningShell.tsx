@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { pageTitle } from '../console/product.ts';
+import { Mark } from '../console/ui/Mark.tsx';
 import { NoSignal } from './NoSignal.tsx';
 import type { Signal } from './NoSignal.tsx';
 import '../console/console.css';
@@ -53,7 +54,8 @@ export function TuningShell({ title, tab, signal, status, children }: Props) {
           <div className="scr-in">
             <header className="sh">
               <div className="logo">
-                ONCHAIN RULE TRIGGERS <span className="wn">WORKING NAME</span>
+                <Mark />
+                PHOSPHOR
               </div>
             </header>
             <nav className="stabs" aria-label="Ways to sign in">
