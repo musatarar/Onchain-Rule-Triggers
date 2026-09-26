@@ -35,10 +35,14 @@ is compared by its UTC date, since a date threshold names a day.
 The block's rows are read once, whatever the number of transactions:
 :func:`matches_in_block` runs one query for the transactions (or withdrawals),
 one for their token transfers when the tree reads them, and none for a tree
-that came prefetched.
+that came prefetched. Evaluating many rules against one block, pass them one
+:class:`BlockRows`: each kind of row is read the first time a rule needs it
+and shared by every rule after, so the queries a block costs do not grow with
+the number of rules.
 """
 
 import datetime
+import functools
 from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
@@ -60,35 +64,61 @@ class NotDecodedError(Exception):
     not finished with every one of its transactions."""
 
 
-def matches_in_block(rule, block):
+class BlockRows:
+    """The rows of one stored block a rule reads, each kind read the first time it is asked for.
+
+    One instance shared by every rule evaluated against ``block`` reads its
+    transactions, withdrawals and token transfers at most once each. A rule
+    must not change the rows it is handed.
+    """
+
+    def __init__(self, block):
+        self.block = block
+
+    @functools.cached_property
+    def transactions(self):
+        return list(_in_block(Transaction, self.block).order_by("transaction_index"))
+
+    @functools.cached_property
+    def withdrawals(self):
+        return list(_in_block(Withdrawal, self.block).order_by("index"))
+
+    @functools.cached_property
+    def transfers(self):
+        """The block's token transfers by transaction hash; :class:`NotDecodedError`
+        while decoding has not finished with every one of its transactions."""
+        _require_decoded(self.block, self.transactions)
+        return _transfers_by_hash(self.block)
+
+
+def matches_in_block(rule, block, rows=None):
     """The rows of ``block`` that satisfy ``rule``, in the order the block holds them.
 
     Answers the matching :class:`~project.app.evm.block.models.Transaction` rows
     for a rule reading transactions or token transfers, the matching
     :class:`~project.app.evm.block.models.Withdrawal` rows for a withdrawal
-    rule, and ``[block]`` or ``[]`` for a block-only rule. Raises
+    rule, and ``[block]`` or ``[]`` for a block-only rule. ``rows`` is the
+    :class:`BlockRows` of ``block`` to read from, shared across the rules
+    evaluated against it; a fresh one when not given. Raises
     :class:`ConditionError` for a rule that has no tree or names something
     this evaluator cannot read, and :class:`NotDecodedError` for a rule
     reading token transfers before decoding has finished with the block.
     """
+    rows = rows or BlockRows(block)
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
     root, children = utils.root_and_children(nodes)
     if root is None:
         raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
 
-    def holds(**rows):
-        return _holds(root, children, {utils.SOURCE_BLOCK: block, **rows})
+    def holds(**bound):
+        return _holds(root, children, {utils.SOURCE_BLOCK: block, **bound})
 
     if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
-        transactions = list(_in_block(Transaction, block).order_by("transaction_index"))
-        transfers = {}
-        if utils.SOURCE_TOKEN_TRANSFER in sources:
-            _require_decoded(block, transactions)
-            transfers = _transfers_by_hash(block)
+        transfers = rows.transfers if utils.SOURCE_TOKEN_TRANSFER in sources else {}
         return [
             transaction
-            for transaction in transactions
+            for transaction in rows.transactions
             if any(
                 holds(transaction=transaction, token_transfer=transfer)
                 # No transfer is bound only when there is none to bind, so
@@ -97,8 +127,7 @@ def matches_in_block(rule, block):
             )
         ]
     if utils.SOURCE_WITHDRAWAL in sources:
-        withdrawals = _in_block(Withdrawal, block).order_by("index")
-        return [withdrawal for withdrawal in withdrawals if holds(withdrawal=withdrawal)]
+        return [withdrawal for withdrawal in rows.withdrawals if holds(withdrawal=withdrawal)]
     return [block] if holds() else []
 
 

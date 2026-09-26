@@ -152,7 +152,9 @@ def evaluate_blocks():
     """Evaluate every enabled rule against each block not evaluated yet; answer an :class:`Evaluation`.
 
     Every owner's enabled rules are read once, with their trees, and the blocks
-    are taken by chain and number. Each block is evaluated in one transaction
+    are taken by chain and number. A block's rows are read once and shared by
+    every rule (:class:`~project.app.rules.onchain.BlockRows`), so a block costs
+    the same queries however many rules there are. Each block is evaluated in one transaction
     that records its matches and marks it evaluated, so a run that fails partway
     keeps the blocks it finished, and a re-run evaluates only the rest. The mark
     is a conditional UPDATE, so a block two runs reach at once is evaluated by
@@ -193,9 +195,11 @@ def _evaluate(block, rules, refused):
         if not claimed:
             return None
         matches = []
+        # Read once and shared, so the block costs the same queries however many rules there are.
+        block_rows = onchain.BlockRows(block)
         for rule in rules:
             try:
-                rows = onchain.matches_in_block(rule, block)
+                rows = onchain.matches_in_block(rule, block, block_rows)
             except onchain.ConditionError as exc:
                 refused.setdefault(rule, exc)
                 continue

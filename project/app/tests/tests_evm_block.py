@@ -579,7 +579,7 @@ class IngestNewBlocksTests(NodeTestCase):
         self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD - 1)
 
 
-SLEEP = "project.app.management.commands.ingest_blocks.time.sleep"
+SLEEP = "project.app.management.commands._polling.time.sleep"
 
 
 class IngestBlocksCommandTests(NodeTestCase):
