@@ -1,7 +1,6 @@
-# Locked In — Agentic Outreach Planner single-container demo image.
+# Onchain rule triggers: single-container demo image.
 # Matches the project's runtime: Python 3.12, Django dev server, Postgres
-# (via docker-compose.yml), committed React bundle (no Node needed).
-# `docker compose up` gives a working demo.
+# (via docker-compose.yml). `docker compose up` gives a working demo.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -18,5 +17,5 @@ COPY . .
 
 EXPOSE 8000
 
-# migrate -> load demo data -> serve on 0.0.0.0 so the port maps out of the container.
+# migrate -> serve on 0.0.0.0 so the port maps out of the container.
 ENTRYPOINT ["sh", "docker/entrypoint.sh"]

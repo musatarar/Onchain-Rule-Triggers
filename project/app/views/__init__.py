@@ -1,4 +1,4 @@
-"""Domain-split API views; the SPA page shells stay in ``views.frontend``."""
+"""Domain-split API views."""
 
 from .auth import AuthConsumeView, AuthLogoutView, AuthMeView, AuthRequestLinkView
 
