@@ -5,7 +5,7 @@ from .openai_compatible import DEFAULT_TIMEOUT_SECONDS, OpenAICompatibleClient
 DEFAULT_MODEL = "openai/gpt-oss-20b"
 
 # Groq bills a reasoning model's hidden reasoning against `max_tokens`, and at
-# the default effort gpt-oss spends the whole copy budget on it and returns
+# the default effort gpt-oss spends the whole token budget on it and returns
 # empty content. Low effort leaves room for the answer.
 DEFAULT_REASONING_EFFORT = "low"
 

@@ -340,7 +340,7 @@ class OpenAICompatibleClient(LLMClient):
             )
         # A signalled tool call with none surviving parsing: `content` is the
         # model's reasoning, not an answer. Checked here, a fact about the
-        # response, so every caller gets it -- not just `run_agent_lead`.
+        # response, so every caller gets it.
         if finish_reason == FINISH_TOOL_CALLS and not tool_calls:
             raise LLMEmptyCompletionError(
                 f"{self.provider_label} signalled a tool call but sent none we could read.",

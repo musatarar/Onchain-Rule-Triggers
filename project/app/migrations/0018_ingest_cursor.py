@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0015_token_transfer_block"),
+        ("app", "0017_remove_leads"),
     ]
 
     operations = [

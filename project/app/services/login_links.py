@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 #: Bytes of entropy handed to ``secrets.token_urlsafe``. 32 bytes = 256 bits.
 TOKEN_BYTES = 32
 
-#: Path of the React route that redeems a token (see ConsumePage).
+#: Path, at ``LOGIN_LINK_BASE_URL``, of the client page that redeems a token.
 CONSUME_PATH = "/auth/consume"
 
 DELIVERY_CONSOLE = "console"
@@ -48,9 +48,9 @@ _EMAIL_BODY = (
 class ConsumeOutcome(str, Enum):
     """Result of attempting to redeem a raw token.
 
-    ``EXPIRED`` vs ``INVALID`` is deliberate: the sign-in page needs an
-    "ask for a new link" state, and it leaks nothing the token holder
-    doesn't already know.
+    ``EXPIRED`` vs ``INVALID`` is deliberate: a client needs an "ask for a
+    new link" state, and it leaks nothing the token holder doesn't already
+    know.
     """
 
     OK = "ok"

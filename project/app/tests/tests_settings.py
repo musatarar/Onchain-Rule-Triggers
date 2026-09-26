@@ -4,6 +4,7 @@ import os
 from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.middleware.csrf import CSRF_SECRET_LENGTH
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from project import settings as project_settings
@@ -41,8 +42,8 @@ class CsrfTrustedOriginTests(TestCase):
     def _post_logout(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.user)
-        client.get("/leads/")  # mints the csrftoken cookie
-        token = client.cookies["csrftoken"].value
+        token = "a" * CSRF_SECRET_LENGTH
+        client.cookies["csrftoken"] = token
         return client.post(
             "/api/auth/logout/",
             HTTP_ORIGIN=CROSS_SCHEME_ORIGIN,

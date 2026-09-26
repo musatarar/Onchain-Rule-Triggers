@@ -13,23 +13,19 @@ from django.test import TestCase
 
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
-from project.app.tests.tests_shape_utils import shape_for
 
 
 def _user(username="planner@lockedin.example"):
-    """With a shape: a rule's conditions are validated against its owner's."""
-    user = get_user_model().objects.create_user(username=username)
-    shape_for(user)
-    return user
+    return get_user_model().objects.create_user(username=username)
 
 
-def _deterministic_conditions(field="deals_closed", operator=">", threshold=20):
-    """The brief's worked example: ``deals_closed > 20 -> reward_power_user``."""
+def _example_conditions(field="value", operator=">", threshold=10**18, source="transaction"):
+    """A worked example: a transaction moving more than one ether."""
     return {
         "version": Rule.CONDITIONS_SCHEMA_VERSION,
         "operator": "all_of",
         "conditions": [
-            {"field": field, "operator": operator, "threshold": threshold, "source": "lead"}
+            {"field": field, "operator": operator, "threshold": threshold, "source": source}
         ],
     }
 
@@ -41,17 +37,17 @@ class RuleTests(TestCase):
 
     def _rule(self, **kwargs):
         kwargs.setdefault("owner", self.user)
-        kwargs.setdefault("name", "Reward power users")
-        conditions = kwargs.pop("conditions", _deterministic_conditions())
+        kwargs.setdefault("name", "Large transfers")
+        conditions = kwargs.pop("conditions", _example_conditions())
         rule = Rule.objects.create(**kwargs)
         utils.build_tree(rule, conditions)
         return rule
 
-    def test_the_example_rule_from_the_brief_round_trips(self):
-        deterministic = self._rule()
-        deterministic.full_clean()
-        deterministic.refresh_from_db()
-        self.assertEqual(deterministic.conditions_payload(), _deterministic_conditions())
+    def test_the_example_rule_round_trips(self):
+        rule = self._rule()
+        rule.full_clean()
+        rule.refresh_from_db()
+        self.assertEqual(rule.conditions_payload(), _example_conditions())
 
     def test_a_rule_needs_conditions(self):
         for fields in ({"name": "no payload", "conditions": {}}, {"name": "no conditions"}):
@@ -62,48 +58,26 @@ class RuleTests(TestCase):
                     ctx.exception.message_dict["conditions"], [services.NEEDS_CONDITIONS]
                 )
 
-    def test_an_owner_with_no_shape_has_no_vocabulary_to_write_conditions_against(self):
-        shapeless = get_user_model().objects.create_user(username="fresh@lockedin.example")
-        with self.assertRaises(ValidationError) as ctx:
-            services.create_rule(
-                shapeless,
-                {
-                    "name": "named a column nobody declared",
-                    "conditions": _deterministic_conditions(),
-                },
-            )
-        self.assertIn("conditions", ctx.exception.message_dict)
-
-    def test_a_rule_naming_a_column_the_shape_does_not_declare_is_refused(self):
+    def test_a_rule_naming_a_field_its_source_does_not_carry_is_refused(self):
         with self.assertRaises(ValidationError) as ctx:
             services.create_rule(
                 self.user,
-                {
-                    "name": "reads a column that was renamed away",
-                    "conditions": _deterministic_conditions(field="favourite_colour", threshold=1),
-                },
+                {"name": "reads gas", "conditions": _example_conditions(field="gas")},
             )
         self.assertIn("conditions", ctx.exception.message_dict)
 
-    def test_a_rule_reading_only_the_notes_is_refused(self):
-        notes_only = {
-            "name": "CRM text alone",
-            "conditions": {
-                "version": Rule.CONDITIONS_SCHEMA_VERSION,
-                "operator": "all_of",
-                "conditions": [
-                    {
-                        "field": "hubspot_notes",
-                        "operator": "contains",
-                        "threshold": "waiting on budget",
-                        "source": "notes",
-                    }
-                ],
-            },
-        }
-        with self.assertRaises(ValidationError) as ctx:
-            services.create_rule(self.user, notes_only)
-        self.assertIn("conditions", ctx.exception.message_dict)
+    def test_a_rule_reading_a_lead_source_is_refused(self):
+        for source in ("lead", "derived", "notes", "events"):
+            with self.subTest(source=source):
+                with self.assertRaises(ValidationError) as ctx:
+                    services.create_rule(
+                        self.user,
+                        {
+                            "name": "reads a lead",
+                            "conditions": _example_conditions(field="deals_closed", source=source),
+                        },
+                    )
+                self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_deleting_a_user_sweeps_their_rules_with_them(self):
         user = _user("leaver@lockedin.example")
@@ -237,7 +211,7 @@ class ConditionTests(TestCase):
 
     def test_the_database_refuses_an_unknown_type_or_source(self):
         root = self._group()
-        for bad in ({"type": "XOR"}, {"source": "mempool"}):
+        for bad in ({"type": "XOR"}, {"source": "mempool"}, {"source": "lead"}):
             with self.subTest(bad=bad):
                 fields = {
                     "rule": self.rule,
