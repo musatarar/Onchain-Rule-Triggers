@@ -222,6 +222,10 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth_request_ip": LOGIN_RATE_LIMIT_IP,
         "auth_consume_ip": "60/hour",
+        # Username/password accounts (views/auth.py).
+        "auth_register_ip": "10/hour",
+        "auth_login_ip": "60/hour",
+        "auth_login_username": "10/hour",
         # The rules-catalog CRUD surface.
         "rules_catalog": "120/min",
     },

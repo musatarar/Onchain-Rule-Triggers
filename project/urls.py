@@ -10,6 +10,7 @@ from project.app.views.frontend import (
     circuit_new,
     circuits,
     journal,
+    register,
     signin,
 )
 
@@ -20,6 +21,7 @@ from project.app.views.frontend import (
 urlpatterns = [
     path("", RedirectView.as_view(url="/journal/", permanent=False)),
     path("signin", signin),
+    path("register", register),
     path("auth/consume", auth_consume),
     path("journal/", journal),
     path("circuits/", circuits),

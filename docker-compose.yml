@@ -15,9 +15,9 @@ x-app-env: &app-env
   CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-  # Magic-link sign-in. The API is authenticated, so set
-  # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
-  # -- there is no signup flow, the allowlist is the whole gate. Delivery
+  # Magic-link sign-in. Register a username/password account at /register,
+  # or set LOGIN_ALLOWED_EMAILS in .env to your own address to sign in by
+  # link -- for links the allowlist is the whole gate. Delivery
   # defaults to `console`: the link is printed to this container's log,
   # which is the demo path. No SMTP is involved.
   LOGIN_ALLOWED_EMAILS: ${LOGIN_ALLOWED_EMAILS:-}
