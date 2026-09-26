@@ -5,9 +5,10 @@ import { ComposerSheet } from './composer/ComposerSheet.tsx';
 import { groupDigits } from './derive/format.ts';
 import { JournalSheet } from './journal/JournalSheet.tsx';
 import { ConsoleProvider, useConsole } from './state.tsx';
+import { Mark } from './ui/Mark.tsx';
 import './console.css';
 
-const PRODUCT = 'Onchain Rule Triggers';
+const PRODUCT = 'Phosphor';
 
 function sheetOf(pathname: string): string {
   if (pathname.startsWith('/journal')) return 'Match journal';
@@ -108,7 +109,8 @@ function Shell() {
           <div className="scr-in">
             <header className="sh">
               <div className="logo">
-                ONCHAIN RULE TRIGGERS <span className="wn">WORKING NAME</span>
+                <Mark />
+                PHOSPHOR
               </div>
               <Readouts />
             </header>

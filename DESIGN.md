@@ -1,5 +1,5 @@
 ---
-name: Onchain Rule Triggers (working name)
+name: Phosphor
 description: Ladder-logic rule tracing drawn on a green-phosphor CRT set into a rugged monitor bezel.
 colors:
   phosphor: "#5dff8f"
@@ -168,7 +168,7 @@ components:
     padding: "9px 14px"
 ---
 
-# Design System: Onchain Rule Triggers (working name)
+# Design System: Phosphor
 
 ## Overview
 
@@ -227,7 +227,7 @@ A single green-phosphor ramp lit on a black tube, framed by a matte olive housin
 **Character:** VT323 is a bitmap CRT face, used large and sparse so its pixels read as the terminal's own lettering. Share Tech Mono is a clean technical monospace that holds hashes, amounts and labels at small sizes. Both faces ship only weight 400; hierarchy comes from face, size, case and phosphor intensity, never weight.
 
 ### Hierarchy
-- **Display** (VT323 400, 30px, 1, 0.04em): the wordmark "ONCHAIN RULE TRIGGERS" with its outlined WORKING NAME badge (Share Tech Mono 13px, `phosphor-3` on a `phosphor-4` outline).
+- **Display** (VT323 400, 30px, 1, 0.04em): the wordmark "PHOSPHOR", led by the brand mark (see Brand mark).
 - **Numeral** (VT323 400, 34px): the transfer amount in the trace, the backtest count, the match count on a circuit row.
 - **Headline** (VT323 400, 26px, 1.05, 0.03em): the circuit name above a trace and on circuit rows; the inspector title at 26px/1.1, 0.02em.
 - **Title** (VT323 400, 24px, 1, 0.05em, uppercase): pane headings (MATCH JOURNAL, TRACE, CIRCUITS, BACKTEST).
@@ -293,6 +293,13 @@ Outline terminal keys; inversion marks the one primary.
 - **Primary:** `phosphor` block, tube-black text, no glow; hover `phosphor-hot`.
 - **Disabled:** 45% opacity, not-allowed cursor.
 - **Focus:** 2px solid `phosphor` outline, 2px offset (global).
+
+### Brand mark
+The product is **Phosphor**. Its mark is an energised coil, the same symbol that ends every circuit diagram: two facing arcs around a lit disc, on a short lead and tail wire. On a 48 grid: wires `M2 24H9` and `M39 24H46`, arcs `M18 11A14 14 0 0 0 18 37` and `M30 11A14 14 0 0 1 30 37`, disc at 24,24 radius 5. Strokes 3.5 with butt caps; the disc is filled; everything else is unfilled.
+- **Lockup:** mark (28px, 22px at 860px and below) then the wordmark "PHOSPHOR" in VT323, 10px gap, both `phosphor`, the mark with a 3px phosphor drop-shadow glow. Header left.
+- **Favicon:** the mark in `phosphor` on a `screen` square.
+- **Inverse:** the mark in `screen` on a `phosphor` block, no glow (The Inversion Rule).
+- The mark is always one colour from the ramp or tube black. It is never animated, and it never stands in for a circuit's own coil in a trace.
 
 ### Circuit identity (tag + glyph)
 Every circuit is known by a **tag** (up to 12 characters of A–Z, 0–9 and hyphens, unique per owner: `BNB-OUT`, `STABLE-2K`, `PEPE-1B`) and a **glyph**, one of 12 stroke-drawn symbols on a 16px grid: triangle, diamond, target, square, star, bars, chevron, bolt, hexagon, circle, xmark and ring (1.5 stroke, round joins, no fill), like the channel markers on a scope. The glyph makes a row scannable at a glance and the tag makes it readable. They always appear together as the **ident**: glyph 14px + tag in Share Tech Mono, 6px gap, `phosphor`. The large ident (16px glyph, 15px text, 1px `phosphor-4` outline) heads the trace and each circuit row. On the circuits sheet a 30px glyph with a soft glow replaces row numbers. Glyphs are never the only carrier of meaning; the tag is always next to them.

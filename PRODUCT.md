@@ -31,12 +31,12 @@ Rules are evaluated against blocks the system ingests and decodes itself, and ev
 - Token amounts are stored raw (undivided). A token's `decimals` can be unknown; the UI must never guess 18.
 - Transaction decode status: Ingested, Processing, Decoded, Unable to decode.
 - Rules have name, enabled flag, and a condition tree. Rules are not first-match: every rule is evaluated and every rule that matched is recorded.
-- Undecided: whether a match triggers anything beyond the feed (notifications, webhooks); `rule_progress`; the product name.
+- Undecided: whether a match triggers anything beyond the feed (notifications, webhooks); `rule_progress`.
 - API today: `/api/rules/` CRUD. A matches API does not exist yet.
 
 ## Brand Commitments
 
-New product, separate from Locked In. The Locked In name, orange accent and tokens do not carry over. The product name is undecided; use a placeholder that is clearly a placeholder.
+The product is **Phosphor**, a new product separate from Locked In. The Locked In name, orange accent and tokens do not carry over. The mark is an energised coil (see DESIGN.md, Brand mark).
 
 ## Evidence on Hand
 
