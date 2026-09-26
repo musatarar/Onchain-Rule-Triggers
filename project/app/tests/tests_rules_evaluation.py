@@ -8,8 +8,11 @@ rules ``scripts/create_demo_rules.py`` loads, evaluated against the sample block
 """
 
 import contextlib
+import datetime
 import io
+import random
 from collections import Counter
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -28,6 +31,7 @@ from project.app.tests.tests_evm_block import DYNAMIC_FEE_HASH, LEGACY_HASH, blo
 from project.app.tests.tests_rules_onchain import (
     ALICE,
     DYNAMIC_FROM,
+    DYNAMIC_TO,
     MINER,
     WITHDRAWAL_ADDRESS,
     OnchainTestCase,
@@ -124,7 +128,7 @@ class EvaluateBlocksTests(EvaluationTestCase):
         # Another run marks the block after this one read it as not evaluated.
         Block.objects.filter(hash=stored.hash).update(evaluated_at=timezone.now())
 
-        self.assertIsNone(rules_services._evaluate(stored, [rule], {}))
+        self.assertIsNone(rules_services._evaluate(stored, onchain.RuleIndex([rule])))
         self.assertFalse(MatchedRule.objects.exists())
 
     def test_a_block_costs_the_same_queries_however_many_rules_read_it(self):
@@ -142,6 +146,144 @@ class EvaluateBlocksTests(EvaluationTestCase):
         self._store()
 
         self.assertEqual(queries_with(1), queries_with(10))
+
+
+# Rule shapes the sample block's rows answer in different ways, for the incremental index tests.
+SHAPES = [
+    _all_of(tx("from_address", "==", DYNAMIC_FROM)),
+    _all_of(tx("from_address", "==", ALICE)),
+    _all_of(tx("to_address", "in", [ALICE, DYNAMIC_TO])),
+    _all_of(tx("value", ">=", 0)),
+    _all_of(tx("value", "<", 1)),
+    _all_of(tx("value", ">", 5)),
+    _all_of(tx("from_address", "!=", ALICE)),
+    _all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
+    _all_of(_cond("amount", ">", 0, source="withdrawal")),
+    built_by_the_sample_miner(),
+    _all_of(_cond("miner", "==", ALICE, source="block")),
+]
+
+
+ONE_MS = datetime.timedelta(milliseconds=1)
+
+
+class EnabledRulesTests(EvaluationTestCase):
+    def setUp(self):
+        super().setUp()
+        self.stored = self._store()
+        self.named = [self._named(f"rule {index}", shape) for index, shape in enumerate(SHAPES)]
+        self.rules = rules_services.EnabledRules()
+        self.first = self.rules.index()
+
+    def assert_current(self, index):
+        """``index`` answers what an index of the enabled rules built afresh answers."""
+        fresh = onchain.RuleIndex(
+            Rule.objects.filter(enabled=True).prefetch_related("all_conditions")
+        )
+        self.assertEqual({rule.pk for rule in index.rules}, {rule.pk for rule in fresh.rules})
+        self.assertEqual({rule.pk for rule in index.refused}, {rule.pk for rule in fresh.refused})
+        answer = {
+            rule.pk: [row.pk for row in rows]
+            for rule, rows in onchain.matches_for_rules(index, self.stored).items()
+        }
+        fresh_answer = {
+            rule.pk: [row.pk for row in rows]
+            for rule, rows in onchain.matches_for_rules(fresh, self.stored).items()
+        }
+        self.assertEqual(answer, fresh_answer)
+
+    def test_the_index_is_kept_while_the_rules_are_unchanged(self):
+        # The aggregate saying nothing changed on Postgres, the listing elsewhere.
+        with self.assertNumQueries(1):
+            self.assertIs(self.rules.index(), self.first)
+
+    def test_a_write_updates_the_index_in_place_reading_only_the_rule_written(self):
+        rule = self.named[0]
+        rules_services.update_rule(rule, {"conditions": SHAPES[1]})
+
+        # The aggregate (on Postgres), the listing, the rule written and its tree.
+        with self.assertNumQueries(3 + (connection.vendor == "postgresql")):
+            index = self.rules.index()
+
+        self.assertIs(index, self.first)
+        self.assert_current(index)
+
+    def test_the_index_follows_every_kind_of_write(self):
+        writes = [
+            lambda: self._named("another", SHAPES[3]),
+            lambda: rules_services.update_rule(self.named[0], {"conditions": SHAPES[5]}),
+            lambda: rules_services.update_rule(self.named[1], {"enabled": False}),
+            lambda: rules_services.update_rule(self.named[1], {"enabled": True}),
+            lambda: Rule.objects.filter(pk=self.named[2].pk).update(enabled=False),
+            lambda: rules_services.delete_rule(Rule.objects.get(name="another")),
+            lambda: rules_services.update_rule(self.named[7], {"conditions": SHAPES[0]}),
+        ]
+        for write in writes:
+            write()
+            with mock.patch.object(onchain, "RuleIndex", side_effect=AssertionError("rebuilt")):
+                index = self.rules.index()
+            self.assertIs(index, self.first)
+            self.assert_current(index)
+
+    def test_a_write_committed_after_a_later_one_is_still_indexed(self):
+        a, b = self.named[0], self.named[1]
+        stamped = timezone.now() + datetime.timedelta(seconds=1)
+        # A's write is stamped first but commits last: B's write, stamped after
+        # it, commits and a run reads the rules before A's commits.
+        with mock.patch("django.utils.timezone.now", return_value=stamped):
+            with mock.patch("django.utils.timezone.now", return_value=stamped + ONE_MS):
+                rules_services.update_rule(b, {"conditions": SHAPES[2]})
+            self.rules.index()
+            rules_services.update_rule(a, {"conditions": SHAPES[1]})
+
+        index = self.rules.index()
+
+        self.assertIs(index, self.first)
+        self.assert_current(index)
+
+    def test_a_refused_rule_is_taken_out_and_put_back_as_it_changes(self):
+        broken = Rule.objects.create(owner=self.owner, name="no tree")
+        index = self.rules.index()
+        self.assertIn(broken, index.refused)
+
+        rules_services.update_rule(broken, {"conditions": SHAPES[0]})
+        index = self.rules.index()
+        self.assertNotIn(broken, index.refused)
+        self.assert_current(index)
+
+        rules_services.delete_rule(broken)
+        self.assert_current(self.rules.index())
+
+    def test_random_writes_leave_it_answering_what_a_fresh_index_does(self):
+        chance = random.Random(20260926)
+        for step in range(60):
+            with self.subTest(step=step):
+                rules = list(Rule.objects.all())
+                action = chance.choice(["create", "edit", "toggle", "disable_quietly", "delete"])
+                if action == "create" or not rules:
+                    self._named(f"made {step}", chance.choice(SHAPES))
+                elif action == "edit":
+                    rules_services.update_rule(
+                        chance.choice(rules), {"conditions": chance.choice(SHAPES)}
+                    )
+                elif action == "toggle":
+                    rule = chance.choice(rules)
+                    rules_services.update_rule(rule, {"enabled": not rule.enabled})
+                elif action == "disable_quietly":  # a queryset update, which leaves updated_at
+                    Rule.objects.filter(pk=chance.choice(rules).pk).update(enabled=False)
+                else:
+                    rules_services.delete_rule(chance.choice(rules))
+                self.assert_current(self.rules.index())
+
+    def test_evaluation_reads_the_rules_from_the_one_kept(self):
+        with mock.patch.object(onchain, "RuleIndex", side_effect=AssertionError("rebuilt")):
+            run = rules_services.evaluate_blocks(self.rules)
+
+        self.assertEqual(run.blocks, 1)
+        self.assertEqual(
+            run.matches,
+            sum(len(rows) for rows in onchain.matches_for_rules(self.first, self.stored).values()),
+        )
 
 
 class DecodingTests(EvaluationTestCase):

@@ -7,6 +7,7 @@ block not evaluated yet, recording what they match. See :mod:`project.app.pipeli
 
 from project.app import pipeline
 from project.app.management.commands._polling import PollingCommand
+from project.app.rules.services import EnabledRules
 
 
 class Command(PollingCommand):
@@ -16,8 +17,13 @@ class Command(PollingCommand):
     )
     start_message = "running the pipeline every {interval:g}s; Ctrl-C to stop"
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Held across ticks, so the rules are indexed again only when they change.
+        self.rules = EnabledRules()
+
     def tick(self):
-        result = pipeline.run_tick()
+        result = pipeline.run_tick(self.rules)
         evaluation = result.evaluation
         if result.ingest_error is not None:
             self.stderr.write(f"ingestion failed, resuming next tick: {result.ingest_error!r}")
