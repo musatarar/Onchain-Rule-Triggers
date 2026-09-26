@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
                         verbose_name="ID",
                     ),
                 ),
-                ("index", models.BigIntegerField()),
+                ("receipt_index", models.BigIntegerField()),
                 ("address", models.CharField(db_index=True, max_length=42)),
                 ("data", models.TextField()),
                 ("block_hash", models.CharField(max_length=66)),
@@ -35,7 +35,7 @@ class Migration(migrations.Migration):
                 ("removed", models.BooleanField(default=False)),
             ],
             options={
-                "ordering": ["receipt", "index"],
+                "ordering": ["receipt", "receipt_index"],
             },
         ),
         migrations.CreateModel(
@@ -168,7 +168,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="log",
             constraint=models.UniqueConstraint(
-                fields=("receipt", "index"), name="log_receipt_index_unique"
+                fields=("receipt", "receipt_index"), name="log_receipt_index_unique"
             ),
         ),
     ]

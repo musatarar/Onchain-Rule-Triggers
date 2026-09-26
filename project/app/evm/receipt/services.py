@@ -25,8 +25,8 @@ def store_receipts(receipts, chain):
     ``eth_getTransactionReceipt`` or ``eth_getBlockReceipts`` returns it; a
     response never names its chain, so the caller does, as a
     :class:`~project.app.evm.chains.ChainId` value. A receipt is keyed by its
-    transaction hash, a log by its receipt and index and a topic by its log and
-    index, so storing one again updates it with its update schema's fields and
+    transaction hash, a log by its receipt and receipt index and a topic by its
+    log and index, so storing one again updates it with its update schema's fields and
     deletes the logs and topics it no longer carries. A contract creation links
     the contract it deployed, created if it is not stored yet.
     """
@@ -45,15 +45,15 @@ def store_receipts(receipts, chain):
             Log,
             LogUpdateSchema,
             [log for _, logs in parsed for log, _ in logs],
-            ["receipt", "index"],
+            ["receipt", "receipt_index"],
         )
         # An upsert does not answer the ids it wrote, so read them back by key;
         # a stored log at a key the receipt no longer has is one it dropped.
         log_ids = {}
         dropped_logs = []
-        kept_logs = {(log.receipt_id, log.index) for _, logs in parsed for log, _ in logs}
+        kept_logs = {(log.receipt_id, log.receipt_index) for _, logs in parsed for log, _ in logs}
         for receipt_id, index, log_id in Log.objects.filter(receipt_id__in=hashes).values_list(
-            "receipt_id", "index", "id"
+            "receipt_id", "receipt_index", "id"
         ):
             if (receipt_id, index) in kept_logs:
                 log_ids[receipt_id, index] = log_id
@@ -61,7 +61,9 @@ def store_receipts(receipts, chain):
                 dropped_logs.append(log_id)
         Log.objects.filter(id__in=dropped_logs).delete()  # their topics go with them
         topics = [
-            TopicCreateSchema(log_id=log_ids[log.receipt_id, log.index], index=index, data=data)
+            TopicCreateSchema(
+                log_id=log_ids[log.receipt_id, log.receipt_index], index=index, data=data
+            )
             for _, logs in parsed
             for log, log_topics in logs
             for index, data in enumerate(log_topics)
@@ -122,7 +124,7 @@ def _parsed(raw, chain, contracts):
         (
             LogCreateSchema(
                 receipt_id=receipt.transaction_hash,
-                index=index,
+                receipt_index=index,
                 address=entry["address"],
                 data=entry["data"],
                 block_hash=entry["blockHash"],

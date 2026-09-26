@@ -102,12 +102,12 @@ class StoreReceiptsTests(TestCase):
         self.assertIsNone(stored.blob_gas_used)
         self.assertIsNone(stored.blob_gas_price)
 
-    def test_stores_each_log_at_its_index_with_its_topics_in_order(self):
+    def test_stores_each_log_at_its_receipt_index_with_its_topics_in_order(self):
         services.store_receipts([swap_receipt()], ChainId.ETHEREUM)
 
         first, second = Log.objects.filter(receipt_id=SWAP_HASH)
-        self.assertEqual((first.index, first.log_index), (0, 0))
-        self.assertEqual((second.index, second.log_index), (1, 1))
+        self.assertEqual((first.receipt_index, first.log_index), (0, 0))
+        self.assertEqual((second.receipt_index, second.log_index), (1, 1))
         self.assertEqual(first.address, "0x66761fa41377003622aee3c7675fc7b5c1c2fac5")
         self.assertEqual(first.block_number, 26_009_321)
         self.assertEqual(first.transaction_index, 1)
@@ -180,15 +180,16 @@ class StoreReceiptsTests(TestCase):
 
         self.assertEqual(Receipt.objects.get().status, 0)
         self.assertEqual(list(Log.objects.values_list("id", flat=True)), log_ids)
-        self.assertTrue(Log.objects.get(index=0).removed)
+        self.assertTrue(Log.objects.get(receipt_index=0).removed)
         self.assertEqual(
-            list(Topic.objects.filter(log__index=0).values_list("data", flat=True)), [TO_TOPIC]
+            list(Topic.objects.filter(log__receipt_index=0).values_list("data", flat=True)),
+            [TO_TOPIC],
         )
         self.assertEqual(Topic.objects.count(), 4)
 
     def test_storing_a_receipt_again_deletes_the_logs_it_no_longer_carries(self):
         services.store_receipts([receipt(), swap_receipt()], ChainId.ETHEREUM)
-        kept = Log.objects.get(receipt_id=SWAP_HASH, index=0).id
+        kept = Log.objects.get(receipt_id=SWAP_HASH, receipt_index=0).id
 
         services.store_receipts([swap_receipt(logs=[log()])], ChainId.ETHEREUM)
 
@@ -217,7 +218,7 @@ class ReceiptsForBlockTests(TestCase):
                 (
                     stored.transaction_hash,
                     [
-                        (entry.index, [topic.data for topic in entry.topics.all()])
+                        (entry.receipt_index, [topic.data for topic in entry.topics.all()])
                         for entry in stored.logs.all()
                     ],
                 )
@@ -253,7 +254,7 @@ class ReceiptSchemaTests(TestCase):
     def test_an_update_leaves_the_fields_that_name_a_row_alone(self):
         for update, key in (
             (receipt_models.ReceiptUpdateSchema, {"transaction_hash", "chain"}),
-            (receipt_models.LogUpdateSchema, {"receipt_id", "index"}),
+            (receipt_models.LogUpdateSchema, {"receipt_id", "receipt_index"}),
             (receipt_models.TopicUpdateSchema, {"log_id", "index"}),
         ):
             self.assertFalse(key & set(update.model_fields), update.__name__)

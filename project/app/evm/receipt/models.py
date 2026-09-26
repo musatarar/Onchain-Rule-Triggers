@@ -6,8 +6,8 @@ and hashes, addresses and byte strings as the ``0x`` text they arrived as.
 
 A receipt names its ``chain``, since a node's response never does. A log and a
 topic belong to it through their foreign keys; each also keeps its position in
-its parent's list as ``index``, so a receipt and an index name one log, and a
-log and an index name one topic.
+its parent's list, a log as ``receipt_index`` and a topic as ``index``, so a
+receipt and a receipt index name one log, and a log and an index name one topic.
 """
 
 import datetime
@@ -89,7 +89,7 @@ class Receipt(models.Model):
 
 
 class LogUpdateSchema(BaseModel):
-    """What changes on a stored log; its receipt and index name it, so neither does."""
+    """What changes on a stored log; its receipt and receipt index name it, so neither does."""
 
     address: str
     data: str
@@ -106,20 +106,20 @@ class LogCreateSchema(LogUpdateSchema):
     """A log that is not stored yet."""
 
     receipt_id: str
-    index: int
+    receipt_index: int
 
 
 class Log(models.Model):
     """One event a contract emitted during a transaction.
 
     ``log_index`` is the log's position in its block, as the node numbers it;
-    ``index`` is its position in its receipt's logs. ``removed`` is true for a
+    ``receipt_index`` is its position in its receipt's logs. ``removed`` is true for a
     log a reorg dropped. A node that predates ``blockTimestamp`` on logs leaves
     ``block_timestamp`` empty.
     """
 
     receipt = models.ForeignKey(Receipt, on_delete=models.CASCADE, related_name="logs")
-    index = models.BigIntegerField()
+    receipt_index = models.BigIntegerField()
     address = models.CharField(max_length=ADDRESS_LENGTH, db_index=True)
     data = models.TextField()
     block_hash = models.CharField(max_length=HASH_LENGTH)
@@ -131,13 +131,15 @@ class Log(models.Model):
     removed = models.BooleanField(default=False)
 
     class Meta:
-        ordering = ["receipt", "index"]
+        ordering = ["receipt", "receipt_index"]
         constraints = [
-            models.UniqueConstraint(fields=["receipt", "index"], name="log_receipt_index_unique"),
+            models.UniqueConstraint(
+                fields=["receipt", "receipt_index"], name="log_receipt_index_unique"
+            ),
         ]
 
     def __str__(self):
-        return f"log {self.transaction_hash}:{self.index}"
+        return f"log {self.transaction_hash}:{self.receipt_index}"
 
 
 class TopicUpdateSchema(BaseModel):
