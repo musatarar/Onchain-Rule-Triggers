@@ -74,9 +74,12 @@ services:
   # enabled rules match, for the console at http://127.0.0.1:8000 to show.
   # `docker compose up` leaves it out. With LOGIN_ALLOWED_EMAILS and
   # EVM_RPC_URL set in .env,
-  #   docker compose run --rm --build pipeline --demo-rules
-  # starts db and web, gives every allowed address the demo rules, and polls
-  # until Ctrl-C; web keeps serving until `docker compose down`. Name one owner
+  #   docker compose --profile pipeline build
+  #   docker compose run --rm pipeline --demo-rules
+  # builds web's image and this one, then starts db and web, gives every
+  # allowed address the demo rules, and polls until Ctrl-C; web keeps serving
+  # until `docker compose down`. The build is its own step because `run
+  # --build` is missing from older Compose releases. Name one owner
   # with `--demo-rules you@example.com`, leave the flag out to poll without the
   # demo rules, and add run_pipeline's options after it, e.g. `--interval 12`.
   pipeline:
