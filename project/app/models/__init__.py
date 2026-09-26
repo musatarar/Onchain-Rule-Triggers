@@ -7,7 +7,7 @@ from project.app.evm.receipt.models import Log, Receipt, Topic
 from project.app.evm.token_standards import TokenStandard
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.evm.tokens import Token
-from project.app.rules.models import Condition, Rule
+from project.app.rules.models import Condition, MatchedRule, Rule
 
 from .auth import LoginToken
 
@@ -20,6 +20,7 @@ __all__ = [
     "IngestCursor",
     "Log",
     "LoginToken",
+    "MatchedRule",
     "Receipt",
     "Rule",
     "Token",

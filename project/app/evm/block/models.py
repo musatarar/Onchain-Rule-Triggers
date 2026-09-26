@@ -64,7 +64,8 @@ class Block(models.Model):
     """One block. A reorg can put two blocks at one ``number``, so the hash is the key.
 
     A block from before London has no base fee, and one from before Shanghai no
-    withdrawals root, so both are nullable.
+    withdrawals root, so both are nullable. ``evaluated_at`` is when the enabled
+    rules were evaluated against the block, and null until they are.
     """
 
     hash = models.CharField(max_length=HASH_LENGTH, primary_key=True)
@@ -88,6 +89,8 @@ class Block(models.Model):
     withdrawals_root = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     size = models.BigIntegerField()
     uncles = models.JSONField(default=list, blank=True)  # uncle block hashes
+    # Set by rule evaluation: in neither schema, so storing the block again never resets it.
+    evaluated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["chain", "-number"]

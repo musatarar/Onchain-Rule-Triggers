@@ -3,7 +3,8 @@
 A rule is its conditions: a tree of :class:`Condition` rows comparing the
 fields of a stored block's rows (the block, its transactions, withdrawals and
 token transfers) against thresholds. :mod:`project.app.rules.onchain`
-evaluates a rule against a stored block.
+evaluates a rule against a stored block, and a :class:`MatchedRule` records
+each row a rule matched when a block was evaluated.
 """
 
 from django.conf import settings
@@ -11,6 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.rules import utils
 
 
@@ -199,3 +201,42 @@ class Condition(models.Model):
         if self.type in self.GROUP_TYPES:
             return f"Group Node ({self.type})"
         return f"Comparison Node ({self.field_name} {self.operator} {self.value})"
+
+
+class MatchedRule(models.Model):
+    """One row of a stored block that satisfied a rule when the block was evaluated.
+
+    The row is the one :func:`project.app.rules.onchain.matches_in_block`
+    answers: a ``transaction`` for a rule reading transactions or token
+    transfers, a ``withdrawal`` for a withdrawal rule, and neither for a rule
+    reading only the block, which the block itself satisfied. Recorded by
+    ``rules.services.evaluate_blocks``, which evaluates each block once.
+    """
+
+    rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="matches")
+    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name="rule_matches")
+    transaction = models.ForeignKey(
+        Transaction,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="rule_matches",
+    )
+    withdrawal = models.ForeignKey(
+        Withdrawal,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="rule_matches",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        if self.transaction_id is not None:
+            return f"rule {self.rule_id} matched transaction {self.transaction_id} in block {self.block_id}"
+        if self.withdrawal_id is not None:
+            return f"rule {self.rule_id} matched withdrawal {self.withdrawal_id} in block {self.block_id}"
+        return f"rule {self.rule_id} matched block {self.block_id}"
