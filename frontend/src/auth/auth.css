@@ -2,14 +2,29 @@
    every rule is scoped under .phosphor and uses the console's tokens only. */
 
 /* ----- the tube: static behind one panel ----- */
+/* The static stays put; .tune-in scrolls over it when the panel is taller than
+   the tube. Centring is by auto margins, not align-content: a centred box that
+   overflows spills past the top edge where no scroll can reach it. */
 .phosphor .tune {
   display: grid;
-  place-items: center;
-  align-content: center;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  padding: 0;
+}
+.phosphor .tune-in {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 18px;
-  overflow: hidden auto;
   padding: 28px 18px 32px;
 }
+.phosphor .tune-in > :first-child { margin-top: auto; }
+.phosphor .tune-in > :last-child { margin-bottom: auto; }
+.phosphor .tune-in > * { flex: none; }
 .phosphor .nosig {
   position: absolute;
   inset: 0;
@@ -188,7 +203,8 @@
 }
 
 @media (max-width: 860px) {
-  .phosphor .tune { min-height: calc(100dvh - 190px); padding: 22px 10px 26px; }
+  .phosphor .tune { min-height: calc(100dvh - 190px); }
+  .phosphor .tune-in { padding: 22px 10px 26px; }
   .phosphor .tune-cap { font-size: 26px; }
 }
 @media (max-width: 520px) {

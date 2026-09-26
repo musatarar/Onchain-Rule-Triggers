@@ -71,10 +71,12 @@ export function TuningShell({ title, tab, signal, status, children }: Props) {
             </nav>
             <main className={`main tune sig-${signal}`}>
               <NoSignal signal={signal} />
-              <p className="tune-cap" aria-hidden="true">
-                {caption}
-              </p>
-              {children}
+              <div className="tune-in">
+                <p className="tune-cap" aria-hidden="true">
+                  {caption}
+                </p>
+                {children}
+              </div>
             </main>
             <footer className="sl">
               <span>
