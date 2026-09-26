@@ -635,6 +635,46 @@ class ConsoleRuleTests(RulesApiTestCase):
         self.assertEqual(on.json()["condition"], off.json()["condition"])
         self.assertEqual(on.json()["conditions"], _all_of(tx("value", ">=", 0)))
 
+    def test_a_write_naming_a_condition_is_refused_not_dropped(self):
+        rule = self._rule()
+        # What the composer's save sends.
+        console_save = {
+            "name": "Big ETH moves",
+            "tag": "BIG-ETH",
+            "glyph": "bolt",
+            "sentence": "",
+            "enabled": True,
+            "condition": {
+                "id": None,
+                "type": "and",
+                "children": [
+                    {
+                        "id": None,
+                        "type": "comparison",
+                        "source": "transaction",
+                        "field": "value",
+                        "operator": "gt",
+                        "value": "100",
+                    }
+                ],
+            },
+        }
+
+        created = self.client.post(RULES_URL, console_save, content_type="application/json")
+        patched = self.client.patch(
+            f"{RULES_URL}{rule.pk}/", console_save, content_type="application/json"
+        )
+
+        refusal = {
+            "code": "validation_error",
+            "detail": "condition: Circuits can't save gates from the console yet (#44).",
+        }
+        self.assertEqual((created.status_code, created.json()), (400, refusal))
+        self.assertEqual((patched.status_code, patched.json()), (400, refusal))
+        self.assertEqual(list(Rule.objects.all()), [rule])
+        stored = rules_services.rule_for(self.user, rule.pk)
+        self.assertEqual((stored.name, stored.conditions_payload()), (rule.name, _conditions()))
+
 
 class EngineStatusTests(RulesApiTestCase):
     """GET /api/engine/status/: the blocks stored, and the signed-in user's rules and matches."""

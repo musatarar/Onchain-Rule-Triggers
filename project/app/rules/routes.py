@@ -17,6 +17,10 @@ from rest_framework.views import APIView
 from project.app.rules import services
 from project.app.rules.models import Rule
 
+# A write naming the console's tree is refused rather than dropped; the UI
+# calls a rule a circuit and a comparison a gate.
+CONDITION_NOT_WRITABLE = "Circuits can't save gates from the console yet (#44)."
+
 
 class CatalogPagination(PageNumberPagination):
     """``?page=`` / ``?page_size=``; the default page size is settings.PAGE_SIZE."""
@@ -41,8 +45,9 @@ class RuleSerializer(serializers.ModelSerializer):
 
     ``tag``, ``glyph``, ``sentence`` and ``revision`` are the model's, derived
     until #47 stores them, and ``condition`` is its tree in the console's
-    shape; all read-only. ``stats`` come from the view, which reads a whole
-    page's in one query (``context["stats"]``, by rule id).
+    shape; all read-only, and a write naming ``condition`` is refused.
+    ``stats`` come from the view, which reads a whole page's in one query
+    (``context["stats"]``, by rule id).
     """
 
     conditions = ConditionsField(required=False)
@@ -69,6 +74,14 @@ class RuleSerializer(serializers.ModelSerializer):
 
     def get_stats(self, rule):
         return self.context["stats"][rule.pk]
+
+    def validate(self, attrs):
+        # DRF drops a read-only field from a write without a word, so the
+        # console's save would report success and leave the tree as it was.
+        # `conditions` writes a tree until #44 stores the console's.
+        if "condition" in self.initial_data:
+            raise serializers.ValidationError({"condition": [CONDITION_NOT_WRITABLE]})
+        return attrs
 
 
 class _CatalogView(APIView):
