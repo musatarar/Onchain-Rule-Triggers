@@ -359,11 +359,12 @@ class BlockSchemaTests(TestCase):
             (Transaction, block_models.TransactionCreateSchema),
             (Withdrawal, block_models.WithdrawalCreateSchema),
         ):
-            # decode_status is set by decoding, never by what a node returned.
+            # decode_status and evaluated_at are set by decoding and rule
+            # evaluation, never by what a node returned.
             columns = {
                 field.name
                 for field in model._meta.concrete_fields
-                if field.name not in {"id", "decode_status"}
+                if field.name not in {"id", "decode_status", "evaluated_at"}
             }
             self.assertEqual(set(schema.model_fields), columns, model.__name__)
 
@@ -578,7 +579,7 @@ class IngestNewBlocksTests(NodeTestCase):
         self.assertEqual(IngestCursor.objects.get().last_indexed_block, HEAD - 1)
 
 
-SLEEP = "project.app.management.commands.ingest_blocks.time.sleep"
+SLEEP = "project.app.management.commands._polling.time.sleep"
 
 
 class IngestBlocksCommandTests(NodeTestCase):

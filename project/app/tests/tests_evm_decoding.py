@@ -15,7 +15,6 @@ from project.app.evm.function_signatures import FunctionSignatureCreateSchema, I
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import Token, TokenTransfer, Transaction
 from project.app.tests.tests_evm_block import BLOCK_HASH, block, legacy_transaction
-from scripts.decode_transactions import decode_transactions as decode_script
 from scripts.load_blocks import load_blocks
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
@@ -205,15 +204,14 @@ class DecodeTransactionsTests(TestCase):
         self.assertEqual(TokenTransfer.objects.count(), 2)
 
 
-class DecodeTransactionsScriptTests(TestCase):
+class DecodeTransactionsCommandTests(TestCase):
     def test_decodes_the_sample_blocks_transfer_and_transfer_from_calls(self):
         with contextlib.redirect_stdout(io.StringIO()):
             load_blocks()
         call_command("load_function_signatures", stdout=io.StringIO())
         out = io.StringIO()
 
-        with contextlib.redirect_stdout(out):
-            decode_script()
+        call_command("decode_transactions", stdout=out)
 
         self.assertEqual(
             out.getvalue(), "Decoded 68 transfer(s); unable to decode 545 transaction(s).\n"

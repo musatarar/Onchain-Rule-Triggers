@@ -493,3 +493,38 @@ class QueryCountTests(OnchainTestCase):
         Transaction.objects.all().delete()
         TokenTransfer.objects.all().delete()
         self.assertEqual(self._queries_for(12), 12)
+
+    def test_rules_sharing_block_rows_read_each_kind_of_row_once(self):
+        stored = self._block_of(3)
+        rules = [
+            self._rule(
+                _all_of(tx("from_address", "==", DYNAMIC_FROM), transfer("token", "==", USDT))
+            ),
+            self._rule(_all_of(tx("value", ">=", 0))),
+            self._rule(_all_of(transfer("raw_value", ">=", 0))),
+            self._rule(_all_of(_cond("amount", ">=", 0, source="withdrawal"))),
+        ]
+        rows = onchain.BlockRows(stored)
+
+        # The transactions, their transfers and the withdrawals: once each, for all four rules.
+        with self.assertNumQueries(3):
+            matched = [len(onchain.matches_in_block(rule, stored, rows)) for rule in rules]
+
+        self.assertEqual(matched, [3, 3, 3, 1])
+
+    def test_shared_rows_read_before_decoding_finished_refuse_transfer_rules_alone(self):
+        stored = self._block_of(1)
+        Transaction.objects.update(decode_status=DecodeStatus.INGESTED)
+        rows = onchain.BlockRows(stored)
+        reads_transfers = self._rule(_all_of(transfer("raw_value", ">=", 0)))
+        reads_transactions = self._rule(_all_of(tx("value", ">=", 0)))
+
+        with self.assertNumQueries(1):  # the transactions, to see decoding has not finished
+            with self.assertRaises(onchain.NotDecodedError):
+                onchain.matches_in_block(reads_transfers, stored, rows)
+        with self.assertNumQueries(0):
+            with self.assertRaises(onchain.NotDecodedError):
+                onchain.matches_in_block(reads_transfers, stored, rows)
+            matched = onchain.matches_in_block(reads_transactions, stored, rows)
+
+        self.assertEqual(matched, [Transaction.objects.get()])
