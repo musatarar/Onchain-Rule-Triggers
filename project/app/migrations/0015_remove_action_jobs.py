@@ -9,7 +9,7 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0014_merge_receipts_and_address_fields"),
+        ("app", "0014_merge_0011_evm_receipts_0013_address_fields"),
     ]
 
     operations = [
