@@ -171,7 +171,7 @@ The trace pane. One call drives the power-on animation, the lit path and every g
 ```ts
 type MatchDetail = JournalRow & {
   condition: ConditionNode;                // snapshot of the tree AS EVALUATED, not the live rule
-  trace: Record<number, GateTrace>;        // keyed by node id in `condition`, every node present
+  trace: Record<number, GateTrace> | null; // keyed by node id in `condition`, every node present; null when none was recorded
   transaction: JournalRow["transaction"] & {
     from_address: string; to_address: string | null; value: Uint;
     input_selector: string | null; method: string | null;               // signature text when catalogued
@@ -201,6 +201,7 @@ The FE derives everything else from the snapshot and the `held` values: the powe
 ```json
 { "held": true, "observed": { "kind": "amount", "raw": "397092712", "decimals": 6, "value": "397.092712" } }
 ```
+Until the evaluator records a trace per match, the server answers `"trace": null`, with the rule's tree as it reads now in `condition`. The pane then shows the match's transaction and transfer without the circuit, and Replay is off.
 
 ### `GET /api/tokens/?q=<text>&chain=<id>`
 The token picker in the gate editor. Paginated `TokenRef[]`, matched on symbol, name or address prefix.
