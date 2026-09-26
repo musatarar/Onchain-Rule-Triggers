@@ -1,4 +1,5 @@
-"""Rules-catalog API: CRUD over the signed-in user's rules, and the engine status.
+"""Rules-catalog API: CRUD over the signed-in user's rules, in the console's
+``Rule`` shape, and the engine status.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
@@ -36,19 +37,38 @@ class ConditionsField(serializers.JSONField):
 
 
 class RuleSerializer(serializers.ModelSerializer):
+    """A rule in the console's ``Rule`` shape, with its v1 ``conditions`` alongside.
+
+    ``tag``, ``glyph``, ``sentence`` and ``revision`` are the model's, derived
+    until #47 stores them, and ``condition`` is its tree in the console's
+    shape; all read-only. ``stats`` come from the view, which reads a whole
+    page's in one query (``context["stats"]``, by rule id).
+    """
+
     conditions = ConditionsField(required=False)
+    condition = serializers.ReadOnlyField(source="console_condition")
+    stats = serializers.SerializerMethodField()
 
     class Meta:
         model = Rule
         fields = [
             "id",
             "name",
-            "conditions",
+            "tag",
+            "glyph",
+            "sentence",
             "enabled",
+            "revision",
+            "condition",
+            "conditions",
             "created_at",
             "updated_at",
+            "stats",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_stats(self, rule):
+        return self.context["stats"][rule.pk]
 
 
 class _CatalogView(APIView):
@@ -82,10 +102,17 @@ class _CatalogView(APIView):
         but nothing caps how many rules a user writes."""
         paginator = CatalogPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
-        return paginator.get_paginated_response(self.serializer_class(page, many=True).data)
+        return paginator.get_paginated_response(self._data(page, many=True))
 
     def _render(self, instance, http_status=status.HTTP_200_OK):
-        return Response(self.serializer_class(instance).data, status=http_status)
+        return Response(self._data(instance), status=http_status)
+
+    def _data(self, instance, many=False):
+        """``instance``, or the page of rules it is when ``many``, serialized
+        with the match stats of every rule in it, read in one query."""
+        rules = instance if many else [instance]
+        stats = services.match_stats(self.request.user, rules)
+        return self.serializer_class(instance, many=many, context={"stats": stats}).data
 
     def _found(self, instance, what):
         if instance is None:
