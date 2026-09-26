@@ -134,6 +134,65 @@ html:has(.phosphor) body {
   border-radius: inherit;
 }
 
+/* ----- power-on boot (Boot.tsx): once per page load -----
+   A dot at the centre stretches into a hot line; the picture opens up and down
+   from it. The shutters are the unlit tube; --boot-at lets a shell that mounts
+   mid-boot pick up where the last one left off. */
+.phosphor .boot { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .phosphor .boot {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    border-radius: inherit;
+    overflow: hidden;
+  }
+  .phosphor .boot::before,
+  .phosphor .boot::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 50.5%;
+    background: var(--scr-edge);
+    animation: 1.15s linear var(--boot-at, 0ms) 1 both boot-shutter;
+  }
+  .phosphor .boot::before { top: 0; transform-origin: 50% 0; }
+  .phosphor .boot::after { bottom: 0; transform-origin: 50% 100%; }
+  .phosphor .boot i {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 2px;
+    margin-top: -1px;
+    z-index: 1;
+    background: var(--ph-hot);
+    box-shadow: 0 0 10px 2px rgba(93, 255, 143, 0.85), 0 0 36px 6px rgba(93, 255, 143, 0.35);
+    animation: 1.15s linear var(--boot-at, 0ms) 1 both boot-line;
+  }
+  .phosphor .scr-in.booting { animation: 1.15s linear var(--boot-at, 0ms) 1 both boot-flash; }
+  @keyframes boot-line {
+    0% { transform: scale(0.004, 1); opacity: 0; }
+    6% { transform: scale(0.004, 1); opacity: 1; animation-timing-function: cubic-bezier(0.7, 0, 0.2, 1); }
+    30% { transform: scale(1, 1); opacity: 1; }
+    40% { transform: scale(1, 1); opacity: 1; animation-timing-function: cubic-bezier(0.3, 0.6, 0.2, 1); }
+    72% { transform: scale(1, 36); opacity: 0; }
+    100% { transform: scale(1, 36); opacity: 0; }
+  }
+  @keyframes boot-shutter {
+    0%, 38% { transform: scaleY(1); animation-timing-function: cubic-bezier(0.3, 0.6, 0.2, 1); }
+    74%, 100% { transform: scaleY(0); }
+  }
+  @keyframes boot-flash {
+    0%, 38% { filter: brightness(1); }
+    56% { filter: brightness(1.9) contrast(1.1); }
+    100% { filter: brightness(1); }
+  }
+}
+
 .phosphor .sh { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 12px 18px 4px; flex-wrap: wrap; }
 .phosphor .logo { font: 400 30px/1 var(--font-big); letter-spacing: 0.04em; color: var(--ph); display: flex; align-items: center; gap: 10px; }
 .phosphor .logo .mark { flex: none; fill: none; stroke: currentColor; stroke-width: 3.5; filter: drop-shadow(0 0 3px rgba(93, 255, 143, 0.55)); }
