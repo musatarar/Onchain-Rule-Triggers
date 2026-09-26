@@ -13,7 +13,9 @@ from collections import Counter
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from project.app.evm.block.models import DecodeStatus
@@ -124,6 +126,22 @@ class EvaluateBlocksTests(EvaluationTestCase):
 
         self.assertIsNone(rules_services._evaluate(stored, [rule], {}))
         self.assertFalse(MatchedRule.objects.exists())
+
+    def test_a_block_costs_the_same_queries_however_many_rules_read_it(self):
+        def queries_with(rules):
+            Block.objects.update(evaluated_at=None)
+            MatchedRule.objects.all().delete()
+            for index in range(Rule.objects.count(), rules):
+                self._named(
+                    f"rule {index}", _all_of(tx("value", ">=", 0), transfer("raw_value", "absent"))
+                )
+            with CaptureQueriesContext(connection) as queries:
+                rules_services.evaluate_blocks()
+            return len(queries)
+
+        self._store()
+
+        self.assertEqual(queries_with(1), queries_with(10))
 
 
 class DecodingTests(EvaluationTestCase):
