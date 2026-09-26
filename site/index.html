@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Onchain Rule Triggers</title>
+    <meta name="description" content="Write rules about on-chain activity and see every transaction that matched, traced back to the exact comparison that fired." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet" />
+    <style>
+      /* Tokens from DESIGN.md. One hue only; no light theme. */
+      :root {
+        --phosphor: #5dff8f;
+        --phosphor-hot: #9dffbd;
+        --phosphor-2: #3fd873;
+        --phosphor-3: #2aa452;
+        --phosphor-4: #1c6e37;
+        --phosphor-5: #103f20;
+        --phosphor-6: #0a2814;
+        --screen: #03120a;
+        --screen-glow: #062a15;
+        --screen-edge: #010804;
+        --housing: #25281f;
+        --bezel-top: #3b3f31;
+        --bezel-bottom: #22251c;
+        --display: VT323, 'Share Tech Mono', ui-monospace, monospace;
+        --body: 'Share Tech Mono', ui-monospace, Menlo, Consolas, monospace;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      body {
+        background: var(--housing);
+        color: var(--phosphor);
+        font: 400 15px/1.45 var(--body);
+        letter-spacing: 0.01em;
+        padding: 24px 16px;
+        min-height: 100vh;
+      }
+      .bezel {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 18px;
+        border-radius: 22px;
+        background: linear-gradient(var(--bezel-top), var(--bezel-bottom));
+      }
+      .tube {
+        position: relative;
+        overflow: hidden;
+        border-radius: 14px;
+        padding: 28px 24px 32px;
+        background: radial-gradient(ellipse at center, var(--screen-glow) 0%, var(--screen) 60%, var(--screen-edge) 100%);
+        text-shadow: 0 0 3px rgba(93, 255, 143, 0.45);
+      }
+      /* Scanlines and vignette, once, over the whole screen. */
+      .tube::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px),
+          radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.45) 100%);
+      }
+      h1 { font-family: var(--display); font-weight: 400; margin: 0; font-size: 30px; line-height: 1; letter-spacing: 0.04em; }
+      .tag { color: var(--phosphor-3); font-size: 12px; letter-spacing: 0.06em; margin-top: 6px; }
+      p { max-width: 68ch; margin: 10px 0; }
+      hr { border: 0; border-top: 1.5px dotted var(--phosphor-4); margin: 24px 0; }
+      a { color: var(--phosphor-hot); }
+      a:hover { background: var(--phosphor-6); }
+      .btn {
+        display: inline-block;
+        padding: 7px 12px;
+        background: var(--phosphor);
+        color: var(--screen);
+        text-decoration: none;
+        text-shadow: none;
+      }
+      .btn:hover { background: var(--phosphor-hot); }
+    </style>
+  </head>
+  <body>
+    <main class="bezel">
+      <div class="tube">
+        <h1>ONCHAIN RULE TRIGGERS</h1>
+        <div class="tag">WORKING NAME &middot; THE PRODUCT NAME IS UNDECIDED</div>
+
+        <p>
+          Write rules about on-chain activity. The engine ingests blocks, decodes each transaction into the
+          token transfer its calldata makes, and evaluates every enabled rule against that stored data. Every
+          match leads back to its transaction hash, block, token and the conditions that held.
+        </p>
+
+        <hr />
+        <a class="btn" href="https://github.com/musatarar/Onchain-Rule-Triggers">SOURCE ON GITHUB</a>
+      </div>
+    </main>
+  </body>
+</html>

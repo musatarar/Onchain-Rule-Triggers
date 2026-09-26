@@ -1,8 +1,11 @@
-"""Magic-link sign-in endpoints: request-link, consume, logout, me.
+"""Sign-in endpoints: magic link (request-link, consume), username and
+password (register, login), and the shared logout and me.
 
-Two security invariants: request-link is not an account-enumeration oracle
+Two magic-link invariants: request-link is not an account-enumeration oracle
 (identical response and wall-clock cost either way), and ``dev_link`` is
-populated only when DEBUG *and* console delivery *and* allowlisted.
+populated only when DEBUG *and* console delivery *and* allowlisted. Password
+login answers ``invalid_credentials`` whether the username or the password
+was wrong; register necessarily reveals that a username is taken.
 """
 
 from __future__ import annotations
@@ -22,15 +25,29 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from project.app.exceptions import ContractError
-from project.app.serializers.auth import ConsumeTokenSerializer, RequestLinkSerializer
-from project.app.services import login_links
+from project.app.serializers.auth import (
+    ConsumeTokenSerializer,
+    PasswordLoginSerializer,
+    RegisterSerializer,
+    RequestLinkSerializer,
+)
+from project.app.services import accounts, login_links
+from project.app.services.accounts import RegisterOutcome
 from project.app.services.login_links import ConsumeOutcome
-from project.app.throttling import LoginEmailRateThrottle
+from project.app.throttling import (
+    AnonymousIpRateThrottle,
+    LoginEmailRateThrottle,
+    PasswordLoginUsernameRateThrottle,
+)
 
 INVALID_EMAIL_DETAIL = "Enter a valid email address."
 INVALID_TOKEN_DETAIL = "This sign-in link is not valid."
 EXPIRED_TOKEN_DETAIL = "This sign-in link has expired. Request a new one."
 NOT_AUTHENTICATED_DETAIL = "Authentication credentials were not provided."
+INVALID_USERNAME_DETAIL = "Choose a username."
+WEAK_PASSWORD_DETAIL = "Choose a password."
+USERNAME_TAKEN_DETAIL = "That username is taken."
+INVALID_CREDENTIALS_DETAIL = "Incorrect username or password."
 
 
 def _client_ip(request: Request) -> str | None:
@@ -139,7 +156,9 @@ class AuthConsumeView(APIView):
         """Fetch or create the Django user for an allowlisted address.
 
         Created on first sign-in so the allowlist stays the single source of
-        truth; the password is unusable because there is no password login path.
+        truth. The password is unusable: this account signs in by link only.
+        Registered usernames cannot contain ``@`` (services.accounts), so no
+        password account can already hold this email-shaped username.
         """
         user_model = get_user_model()
         user = user_model.objects.filter(username=email).first()
@@ -149,6 +168,88 @@ class AuthConsumeView(APIView):
         user.set_unusable_password()
         user.save()
         return user
+
+
+def _signed_in_body(request: Request, user) -> dict[str, Any]:
+    """The body both password endpoints return once the session is established."""
+    return {
+        "authenticated": True,
+        "username": user.get_username(),
+        "email": user.email or None,
+        "session_expires_at": _iso_z(request.session.get_expiry_date()),
+    }
+
+
+class AuthRegisterView(APIView):
+    """``POST /api/auth/register/`` -- create a username/password account and sign in.
+
+    Open to anyone, unlike the magic link. ``email`` is optional and stored
+    unverified; it grants nothing until email is supported officially.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [AnonymousIpRateThrottle]
+    throttle_scope = "auth_register_ip"
+    throttle_detail = "Too many accounts created."
+
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        serializer = RegisterSerializer(data=request.data)
+        if not serializer.is_valid():
+            errors = serializer.errors
+            if "username" in errors:
+                raise ContractError("invalid_username", INVALID_USERNAME_DETAIL)
+            if "password" in errors:
+                raise ContractError("weak_password", WEAK_PASSWORD_DETAIL)
+            raise ContractError("invalid_email", INVALID_EMAIL_DETAIL)
+
+        data = serializer.validated_data
+        username = accounts.normalize_username(data["username"])
+        email = login_links.normalize_email(data.get("email") or "")
+        password = data["password"]
+
+        problem = accounts.username_error(username)
+        if problem:
+            raise ContractError("invalid_username", problem)
+        weaknesses = accounts.password_errors(password, username=username, email=email)
+        if weaknesses:
+            raise ContractError("weak_password", " ".join(weaknesses))
+
+        result = accounts.register_user(username, password, email=email)
+        if result.outcome is RegisterOutcome.USERNAME_TAKEN or result.user is None:
+            raise ContractError(
+                "username_taken", USERNAME_TAKEN_DETAIL, status_code=status.HTTP_409_CONFLICT
+            )
+
+        # login() rotates the CSRF token, as on consume.
+        django_login(request, result.user)
+        return Response(_signed_in_body(request, result.user), status=status.HTTP_201_CREATED)
+
+
+class AuthLoginView(APIView):
+    """``POST /api/auth/login/`` -- sign in with a username and password.
+
+    One ``invalid_credentials`` answer for an unknown username and a wrong
+    password alike. Capped per IP and per username before the body runs.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [AnonymousIpRateThrottle, PasswordLoginUsernameRateThrottle]
+    throttle_scope = "auth_login_ip"
+    throttle_detail = "Too many sign-in attempts."
+
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        serializer = PasswordLoginSerializer(data=request.data)
+        if not serializer.is_valid():
+            raise ContractError("invalid_credentials", INVALID_CREDENTIALS_DETAIL)
+
+        user = accounts.authenticate_password(
+            serializer.validated_data["username"], serializer.validated_data["password"]
+        )
+        if user is None:
+            raise ContractError("invalid_credentials", INVALID_CREDENTIALS_DETAIL)
+
+        django_login(request, user)
+        return Response(_signed_in_body(request, user), status=status.HTTP_200_OK)
 
 
 class AuthLogoutView(APIView):

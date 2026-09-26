@@ -1,0 +1,246 @@
+/* The signed-out surfaces (DESIGN.md → Sign-in). The console's world, off-air:
+   every rule is scoped under .phosphor and uses the console's tokens only. */
+
+/* ----- the tube: static behind one panel ----- */
+/* The static stays put; .tune-in scrolls over it when the panel is taller than
+   the tube. Centring is by auto margins, not align-content: a centred box that
+   overflows spills past the top edge where no scroll can reach it. */
+.phosphor .tune {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  padding: 0;
+}
+.phosphor .tune-in {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 28px 18px 32px;
+}
+.phosphor .tune-in > :first-child { margin-top: auto; }
+.phosphor .tune-in > :last-child { margin-bottom: auto; }
+.phosphor .tune-in > * { flex: none; }
+.phosphor .nosig {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  opacity: 0.22;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity 0.25s ease-out;
+}
+.phosphor .sig-tuning .nosig { opacity: 0.3; }
+.phosphor .sig-fault .nosig { opacity: 0.42; }
+.phosphor .sig-locked .nosig { opacity: 0; }
+
+.phosphor .tune-cap {
+  position: relative;
+  z-index: 1;
+  font: 400 34px/1 var(--font-big);
+  letter-spacing: 0.3em;
+  padding-left: 0.3em;
+  color: var(--ph-2);
+  text-align: center;
+  /* a strip of dark glass so the caption reads over the static */
+  background: rgba(3, 18, 10, 0.85);
+  padding: 4px 0.5em 2px 0.8em;
+}
+/* On lock the panel carries the words; the caption steps aside (space kept, no jump). */
+.phosphor .sig-locking .tune-cap,
+.phosphor .sig-locked .tune-cap { visibility: hidden; }
+
+/* ----- the panel ----- */
+.phosphor .tp {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 400px);
+  background: var(--scr);
+  border: 1px solid var(--ph-3);
+  box-shadow: 0 0 0 6px rgba(3, 18, 10, 0.85);
+  padding: 18px 20px 20px;
+  display: grid;
+  gap: 14px;
+}
+.phosphor .tp-h {
+  font: 400 30px/1 var(--font-big);
+  letter-spacing: 0.06em;
+  color: var(--ph);
+}
+.phosphor .tp-lede { font-size: 13.5px; line-height: 1.5; color: var(--ph-2); max-width: 46ch; }
+.phosphor .tp-lede b { font-weight: 400; color: var(--ph); overflow-wrap: anywhere; }
+.phosphor .tp form { display: grid; gap: 14px; }
+.phosphor .tp .acts { display: grid; gap: 8px; }
+.phosphor .tp .acts .btn { width: 100%; justify-content: center; padding-block: 9px; }
+.phosphor .tp .alt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+  color: var(--ph-3);
+}
+.phosphor .tp .alt a,
+.phosphor .tp .alt button { color: var(--ph-2); text-decoration: underline; text-decoration-color: var(--ph-4); text-underline-offset: 3px; }
+.phosphor .tp .alt a:hover,
+.phosphor .tp .alt button:hover { color: var(--ph); text-decoration-color: currentColor; }
+
+/* A banner in terminal voice. Dashed, never a block: the abnormal signature. */
+.phosphor .tp-alert {
+  display: grid;
+  gap: 3px;
+  border: 1px dashed var(--ph);
+  padding: 9px 11px;
+  font-size: 13.5px;
+  color: var(--ph-2);
+}
+.phosphor .tp-alert b { font: 400 22px/1 var(--font-big); letter-spacing: 0.06em; color: var(--ph); }
+.phosphor .tp-note {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--ph-2);
+  border-left: 1px solid var(--ph-4);
+  padding-left: 10px;
+}
+.phosphor .tp-note b { font-weight: 400; color: var(--ph); white-space: nowrap; }
+
+/* ----- terminal fields ----- */
+.phosphor .tf { display: grid; gap: 5px; }
+.phosphor .tf-l { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ph-3); }
+.phosphor .tf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--field);
+  border: 1px solid var(--ph-4);
+  padding: 0 0 0 10px;
+}
+.phosphor .tf-row:focus-within { border-color: var(--ph); box-shadow: 0 0 8px rgba(93, 255, 143, 0.25); }
+.phosphor .tf.bad .tf-row { border-style: dashed; border-color: var(--ph); }
+.phosphor .tf-p { font: 400 22px/1 var(--font-big); color: var(--ph-3); }
+.phosphor .tf-row:focus-within .tf-p { color: var(--ph); }
+.phosphor .tf input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 10px 10px 10px 0;
+  font-size: 16px;
+  color: var(--ph);
+  caret-color: var(--ph);
+  letter-spacing: 0.04em;
+}
+.phosphor .tf input::placeholder { color: var(--ph-3); opacity: 1; }
+.phosphor .tf input:-webkit-autofill,
+.phosphor .tf input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ph);
+  -webkit-box-shadow: 0 0 0 40px var(--field) inset;
+  caret-color: var(--ph);
+}
+.phosphor .tf-key {
+  align-self: stretch;
+  padding: 0 11px;
+  border-left: 1px solid var(--ph-4);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--ph-2);
+}
+.phosphor .tf-key:hover { color: var(--ph); background: var(--ph-6); }
+.phosphor .tf-key[aria-pressed='true'] { color: var(--ph); }
+.phosphor .tf-hint { font-size: 12.5px; line-height: 1.45; color: var(--ph-3); }
+.phosphor .tf-err { font-size: 12.5px; line-height: 1.45; color: var(--ph); border-bottom: 1px dashed var(--ph-3); justify-self: start; padding-bottom: 1px; }
+.phosphor .tf-note { font-size: 12px; letter-spacing: 0.08em; color: var(--ph); }
+
+/* ----- the dev-mode link: visibly not product chrome ----- */
+.phosphor .devlink { display: grid; gap: 6px; border: 1px dashed var(--ph-3); padding: 10px 12px; }
+.phosphor .devlink a { font-size: 12.5px; color: var(--ph); overflow-wrap: anywhere; }
+.phosphor .devlink p { font-size: 12px; color: var(--ph-3); }
+
+/* ----- signal lock: success ----- */
+.phosphor .tp:has(.tp-lock) .tp-h { text-align: center; }
+.phosphor .tp-lock { display: grid; gap: 8px; justify-items: center; text-align: center; }
+.phosphor .tp-lock .who { font-size: 14px; color: var(--ph-2); }
+.phosphor .tp-lock .who b { font-weight: 400; color: var(--ph); }
+
+/* ----- session check (RequireAuth) ----- */
+.phosphor .tune-status { position: relative; z-index: 1; font-size: 14px; color: var(--ph-2); letter-spacing: 0.08em; }
+
+/* tab labels shorten on phones */
+.phosphor .stabs .tab .t-short { display: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .phosphor .sig-fault .tp { animation: tp-jolt 0.32s steps(4) 1; }
+  @keyframes tp-jolt {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-4px); }
+    50% { transform: translateX(3px); }
+    75% { transform: translateX(-2px); }
+    100% { transform: translateX(0); }
+  }
+  /* The picture rolls once and settles as the signal locks. */
+  .phosphor .sig-locking .tp { animation: tp-roll 0.55s steps(7) 1 both; }
+  @keyframes tp-roll {
+    0% { transform: translateY(0); filter: brightness(1); }
+    30% { transform: translateY(-18px); filter: brightness(1.6); }
+    60% { transform: translateY(8px); }
+    100% { transform: translateY(0); filter: brightness(1); }
+  }
+  .phosphor .sig-locking .tp-lock .tp-h { animation: tp-flare 0.9s ease-out 1 both; }
+  @keyframes tp-flare {
+    0% { text-shadow: 0 0 0 rgba(93, 255, 143, 0); }
+    35% { text-shadow: 0 0 14px rgba(93, 255, 143, 1); }
+    100% { text-shadow: 0 0 6px rgba(93, 255, 143, 0.35); }
+  }
+}
+
+@media (max-width: 860px) {
+  .phosphor .tune { min-height: calc(100dvh - 190px); }
+  .phosphor .tune-in { padding: 22px 10px 26px; }
+  .phosphor .tune-cap { font-size: 26px; }
+}
+@media (max-width: 520px) {
+  .phosphor .stabs .tab .t-long { display: none; }
+  .phosphor .stabs .tab .t-short { display: inline; }
+  .phosphor .tp { padding: 16px 14px 18px; box-shadow: none; }
+}
+
+/* ----- switched-off entry points (auth/Unavailable.tsx) ----- */
+/* Dimmed to phosphor-4 and inert; hover or focus shows the tooltip instead. */
+.phosphor .off { position: relative; color: var(--ph-4); cursor: not-allowed; }
+.phosphor .stabs .tab.off:hover { color: var(--ph-4); }
+.phosphor .alt-off { text-decoration: line-through; text-decoration-color: var(--ph-5); }
+.phosphor .soon {
+  position: absolute;
+  z-index: 5;
+  white-space: nowrap;
+  font: 400 12px/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  color: var(--ph);
+  background: var(--scr);
+  border: 1px solid var(--ph-3);
+  padding: 5px 7px 4px;
+  pointer-events: none;
+  visibility: hidden;
+  text-decoration: none;
+}
+.phosphor .off:hover .soon,
+.phosphor .off:focus-visible .soon { visibility: visible; }
+.phosphor .soon-right { left: calc(100% + 6px); bottom: 5px; }
+.phosphor .soon-above { left: 0; bottom: calc(100% + 6px); }
+@media (max-width: 520px) {
+  /* Too little room to hang the tooltip off LINK: pin it to the strip's right
+     edge instead (the strip, not the tab, is its containing block here). */
+  .phosphor .soon { font-size: 11px; letter-spacing: 0.02em; padding: 4px 5px 3px; }
+  .phosphor .stabs { position: relative; }
+  .phosphor .stabs .tab.off { position: static; }
+  .phosphor .stabs .soon-right { left: auto; right: 8px; }
+}

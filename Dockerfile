@@ -1,4 +1,4 @@
-# Onchain rule triggers: single-container demo image.
+# Phosphor: single-container demo image.
 # Matches the project's runtime: Python 3.12, Django dev server, Postgres
 # (via docker-compose.yml), committed React bundle (no Node needed).
 # `docker compose up` gives a working demo.
