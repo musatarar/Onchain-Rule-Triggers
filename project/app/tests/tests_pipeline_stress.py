@@ -157,7 +157,16 @@ class StressTestCase(NodeTestCase):
         )
 
     def timed_tick(self):
-        """One pipeline tick; answers its result and the seconds each stage took."""
+        """One pipeline tick; answers its result and the seconds each stage took.
+
+        A test runs in a transaction it rolls back, so Postgres would check the
+        foreign keys, which Django makes deferred, at a commit that never comes.
+        They are checked as each row is written instead, so the tick pays for
+        them as a committed one does.
+        """
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
         seconds = {}
 
         def timed(stage, function):
