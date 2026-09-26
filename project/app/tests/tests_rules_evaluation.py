@@ -8,6 +8,7 @@ rules ``scripts/create_demo_rules.py`` loads, evaluated against the sample block
 """
 
 import contextlib
+import datetime
 import io
 import random
 from collections import Counter
@@ -163,6 +164,9 @@ SHAPES = [
 ]
 
 
+ONE_MS = datetime.timedelta(milliseconds=1)
+
+
 class EnabledRulesTests(EvaluationTestCase):
     def setUp(self):
         super().setUp()
@@ -189,15 +193,16 @@ class EnabledRulesTests(EvaluationTestCase):
         self.assertEqual(answer, fresh_answer)
 
     def test_the_index_is_kept_while_the_rules_are_unchanged(self):
-        with self.assertNumQueries(1):  # the aggregate saying nothing changed
+        # The aggregate saying nothing changed on Postgres, the listing elsewhere.
+        with self.assertNumQueries(1):
             self.assertIs(self.rules.index(), self.first)
 
     def test_a_write_updates_the_index_in_place_reading_only_the_rule_written(self):
         rule = self.named[0]
         rules_services.update_rule(rule, {"conditions": SHAPES[1]})
 
-        # The aggregate, the listing, the rule written and its tree.
-        with self.assertNumQueries(4):
+        # The aggregate (on Postgres), the listing, the rule written and its tree.
+        with self.assertNumQueries(3 + (connection.vendor == "postgresql")):
             index = self.rules.index()
 
         self.assertIs(index, self.first)
@@ -219,6 +224,22 @@ class EnabledRulesTests(EvaluationTestCase):
                 index = self.rules.index()
             self.assertIs(index, self.first)
             self.assert_current(index)
+
+    def test_a_write_committed_after_a_later_one_is_still_indexed(self):
+        a, b = self.named[0], self.named[1]
+        stamped = timezone.now() + datetime.timedelta(seconds=1)
+        # A's write is stamped first but commits last: B's write, stamped after
+        # it, commits and a run reads the rules before A's commits.
+        with mock.patch("django.utils.timezone.now", return_value=stamped):
+            with mock.patch("django.utils.timezone.now", return_value=stamped + ONE_MS):
+                rules_services.update_rule(b, {"conditions": SHAPES[2]})
+            self.rules.index()
+            rules_services.update_rule(a, {"conditions": SHAPES[1]})
+
+        index = self.rules.index()
+
+        self.assertIs(index, self.first)
+        self.assert_current(index)
 
     def test_a_refused_rule_is_taken_out_and_put_back_as_it_changes(self):
         broken = Rule.objects.create(owner=self.owner, name="no tree")

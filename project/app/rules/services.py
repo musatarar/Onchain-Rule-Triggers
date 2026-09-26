@@ -12,12 +12,13 @@ Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
 """
 
+import collections
 import dataclasses
 import io
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count, Max, Sum
+from django.db.models import Count, DecimalField, Func, Sum
 from django.utils import timezone
 
 from project.app.evm.block.models import Block, Transaction, Withdrawal
@@ -155,30 +156,32 @@ class EnabledRules:
 
     Reading every rule with its tree and indexing it grows with the number of
     rules, and a long-running pipeline evaluates a block or so a tick, so one
-    held across ticks spares that on every tick. Each call first reads, in one
-    aggregate over the enabled rules, whether they changed: how many, which
-    (the sum of their ids) and when one was last written (every write through
-    this module saves the rule, bumping ``updated_at``, and replaces its tree in
-    the same transaction). When they did, it lists each enabled rule's id and
-    ``updated_at``, takes out of the index the rules no longer enabled, and
+    held across ticks spares that on every tick. Each call lists each enabled
+    rule's id and ``updated_at`` (every write through this module saves the
+    rule, bumping ``updated_at``, and replaces its tree in the same
+    transaction), takes out of the index the rules no longer enabled, and
     reads and indexes again only the rules that are new or written since they
     were indexed. When more than half changed it indexes them all afresh.
+
+    On Postgres one aggregate first says whether the listing is needed
+    (:func:`_fingerprint`); elsewhere the rules are listed on every call. Trees
+    are read as plain rows (:func:`_trees`) and only their compiled form is
+    kept, so the index holds the rules but not their conditions.
     """
 
     def __init__(self):
         self._index = None
-        self._version = None
+        self._fingerprint = None
         self._indexed = {}  # rule id -> the updated_at it was indexed at
 
     def index(self):
         """The enabled rules' :class:`~project.app.rules.onchain.RuleIndex`, current as of this call."""
         enabled = Rule.objects.filter(enabled=True)
-        version = enabled.aggregate(count=Count("id"), ids=Sum("id"), latest=Max("updated_at"))
-        if self._index is not None and version == self._version:
-            return self._index
+        fingerprint = _fingerprint(enabled)
         if self._index is None:
             self._rebuild(enabled)
-        else:
+        elif fingerprint is None or fingerprint != self._fingerprint:
+            # Listed after the fingerprint, so a write between the two moves the next one.
             current = dict(enabled.values_list("id", "updated_at"))
             changed = [pk for pk, at in current.items() if self._indexed.get(pk) != at]
             if len(changed) > len(current) // 2:
@@ -187,26 +190,62 @@ class EnabledRules:
                 for pk in self._indexed.keys() - current.keys():
                     self._index.discard(pk)
                     del self._indexed[pk]
-                self._put(enabled.filter(pk__in=changed), changed)
-        self._version = version
+                if changed:
+                    self._put(enabled.filter(pk__in=changed), changed)
+        self._fingerprint = fingerprint
         return self._index
 
     def _rebuild(self, enabled):
-        rules = list(enabled.prefetch_related("all_conditions"))
-        self._index = onchain.RuleIndex(rules)
+        # Each rule is read before its tree, so a write between the two leaves the
+        # rule's older updated_at recorded, and the next call reads it again.
+        rules = list(enabled)
+        self._index = onchain.RuleIndex(rules, _trees(Condition.objects.filter(rule__in=enabled)))
         self._indexed = {rule.pk: rule.updated_at for rule in rules}
 
     def _put(self, rules, expected):
         """Index each of ``rules`` again; one of ``expected`` gone from them was disabled since."""
-        read = set()
-        for rule in rules.prefetch_related("all_conditions"):
-            self._index.put(rule)
-            # The updated_at read with its tree: a write after the listing shows up next call.
-            self._indexed[rule.pk] = rule.updated_at
-            read.add(rule.pk)
-        for pk in set(expected) - read:
+        rules = list(rules)
+        trees = _trees(Condition.objects.filter(rule__in=[rule.pk for rule in rules]))
+        for rule in rules:
+            self._index.put(rule, trees.get(rule.pk, ()))
+            self._indexed[rule.pk] = rule.updated_at  # read before its tree, as in _rebuild
+        for pk in set(expected) - {rule.pk for rule in rules}:
             self._index.discard(pk)
             self._indexed.pop(pk, None)
+
+
+def _fingerprint(enabled):
+    """What moves whenever one of the ``enabled`` rules is written, or a rule joins or leaves them.
+
+    How many there are, which (the sum of their ids), and the sum of their
+    ``updated_at``, exact to the microsecond. A write moves that sum whenever
+    it commits, where the latest ``updated_at`` would miss a write stamped
+    before another that committed first. ``None`` off Postgres, which has no
+    exact sum of timestamps here: the rules are listed every call there.
+    """
+    if connection.vendor != "postgresql":
+        return None
+    return enabled.aggregate(count=Count("id"), ids=Sum("id"), stamps=Sum(_Epoch("updated_at")))
+
+
+class _Epoch(Func):
+    """A Postgres timestamp as exact seconds since the epoch."""
+
+    template = "EXTRACT(EPOCH FROM %(expressions)s)::numeric"
+    output_field = DecimalField()
+
+
+# A condition as the index compiles it: the fields it reads, without a model per row.
+_Node = collections.namedtuple("_Node", "pk parent_id type source field_name operator value")
+
+
+def _trees(conditions):
+    """The trees ``conditions`` make up, each a list of :data:`_Node` by its rule's id."""
+    trees = {}
+    fields = ("rule_id", "id", "parent_id", "type", "source", "field_name", "operator", "value")
+    for rule_id, *node in conditions.values_list(*fields):
+        trees.setdefault(rule_id, []).append(_Node(*node))
+    return trees
 
 
 def evaluate_blocks(rules=None):
