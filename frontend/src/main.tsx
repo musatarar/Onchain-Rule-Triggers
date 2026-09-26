@@ -6,7 +6,6 @@ import { CircuitsSheet, ComposerRoute, ConsoleApp, JournalSheet } from './consol
 import { ConsumePage } from './pages/ConsumePage';
 import { RegisterPage } from './pages/RegisterPage';
 import { SignInPage } from './pages/SignInPage';
-import './legacy.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('#root element not found');

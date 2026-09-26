@@ -376,6 +376,22 @@ A panel under the trace that explains the coil or one gate.
 - **Coil view (default when a match opens):** tag ENERGISED; title "Power reached the coil through N gates"; then the power chain, a list with a 2px solid `phosphor` left border (8px inset). Each row is a button (38px number column / condition / value), 14px/1.3, padding 7px 10px: number `phosphor-3`, condition `phosphor`, value in an inverse block (padding 0 5px). Hover `phosphor-6`. The chain ends with "COIL BNB-OUT · MATCH" in VT323 22px. Under the label "Branches that stayed dark" come the gates that power reached but that blocked it: a 2px dotted `phosphor-4` border, text `phosphor-3`, values in a dotted `phosphor-4` outline with no fill. Clicking any row inspects that gate.
 - **Gate view:** tag CARRIED POWER (inverse), NO DATA, or BLOCKED (outline); the title is the full condition; then a key/value list (96px term column, terms 13px `phosphor-3`): Reads (the source field), This tx (numbered derivation steps, 13.5px; step numbers follow The Ink Floor Rule), Test, Power (whether power arrived, passed, stopped, or never came), Wiring (position in series or parallel and how many siblings held). An abnormal note follows when relevant: `phosphor` text with a dashed underline, next to a warning icon.
 
+### Sign-in (the tuning shell)
+Signing in is tuning the monitor in. Every signed-out route (/signin, /register, /signin?via=link, /auth/consume, and RequireAuth's session check) renders inside the same bezel and tube as the console, with the console's header wordmark and no readouts.
+- **Tabs:** SIGN IN · NEW OPERATOR · EMAIL LINK, styled exactly like the console tabs (VT323 22px). At 520px and below they shorten to SIGN IN · NEW · LINK. The session check shows no tabs.
+- **The static:** a 192×108 canvas of phosphor noise stretched over the whole glass (pixelated, `screen` blend, 12fps, with a slow rolling hold bar). Opacity is the signal: 0.22 at rest (NO SIGNAL), 0.3 while TUNING, 0.42 for 400ms on a fault, then 0 once LOCKED. Paused while the tab is hidden; a single still frame under reduced motion.
+- **Caption:** NO SIGNAL / TUNING in VT323 34px (26px ≤860px), 0.3em tracking, `phosphor-2`, on a strip of 85% tube-black so it reads over the static. It steps aside (space kept) while locking so the panel alone says SIGNAL LOCKED.
+- **Panel:** the only clear patch of glass. 400px max, `screen` fill, 1px `phosphor-3` border and a 6px flat tube-black ring (a matte surround, not a lift shadow; dropped at ≤520px). Heading VT323 30px `phosphor` (TUNE IN, NEW OPERATOR, EMAIL LINK, LINK SENT, LINK EXPIRED, SIGNAL LOCKED); lede 13.5px `phosphor-2`; alt links underlined in `phosphor-4`.
+- **Terminal fields:** 12px uppercase label in `phosphor-3`, then a `field` well with a VT323 `>` prompt (lights to `phosphor` on focus), 16px input, focus ring 1px `phosphor` plus a soft 8px glow. Password fields carry a SHOW/HIDE key cell (aria-pressed) and a CAPS LOCK IS ON note. Hints are 12.5px `phosphor-3`; an error replaces the hint in `phosphor` with the dashed underline, and the field border goes dashed.
+- **Banner:** a dashed `phosphor` box (never a block) with a VT323 22px heading and the server's sentence under it: LOGIN INCORRECT, TOO MANY ATTEMPTS, SESSION CHECK FAILED, else NO SIGNAL. A wrong password clears the password field and jolts the panel (4 steps, 0.32s).
+- **Signed-out note:** a left-ruled `phosphor-4` line, label `phosphor` (nowrap) + sentence `phosphor-2`.
+- **Dev link:** the magic link returned in DEBUG sits in a dashed `phosphor-3` box tagged DEV MODE so it can't be mistaken for product chrome.
+- **Lock (success):** the static fades out, the panel rolls once (7 steps, 0.55s) and the SIGNAL LOCKED heading flares (0.9s), centred, with OPERATOR name under it and "Opening the console…". After 900ms (0 under reduced motion) the app replaces the route with the saved destination or the journal.
+- **Status line:** SIGNAL NONE / TUNING / LOCKING / LOCKED plus a plain status (AWAITING OPERATOR, ENROLLING A NEW OPERATOR, LINK REJECTED…).
+
+### Operator control
+In the console header after the readouts, right-aligned: OPERATOR (13px `phosphor-2`, hidden ≤520px) + the username in `phosphor` (ellipsis) + a small outline SIGN OUT button (SIGNING OUT… while pending). Sign-out returns to /signin with the signed-out note.
+
 ## Do's and Don'ts
 
 ### Do:
@@ -387,7 +403,7 @@ A panel under the trace that explains the coil or one gate.
 - **Do** drive the power-on animation from x-position at 820 px/s and render the final state directly under `prefers-reduced-motion: reduce`.
 - **Do** fold wide circuits only at top-level AND boundaries, with matching lettered continuation markers.
 - **Do** apply scanlines, vignette and phosphor glow once, at the tube, over the whole screen.
-- **Do** use VT323 only for the wordmark, tabs, pane titles, circuit names, inspector titles and big numerals; use Share Tech Mono at 400 for everything else.
+- **Do** use VT323 only for the wordmark, tabs, pane titles, circuit names, inspector titles, big numerals, and the sign-in caption, panel headings, banner headings and field prompts; use Share Tech Mono at 400 for everything else.
 
 ### Don't:
 - **Don't** add a second hue for warnings or errors; this world has none.

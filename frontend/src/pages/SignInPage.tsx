@@ -1,17 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { loginWithPassword, requestLoginLink } from '../api/endpoints';
 import type { AuthRequestLinkResult } from '../api/types';
-import { AuthShell } from '../components/AuthShell';
-import { Badge, Button, Input } from '../components/ui';
+import { bannerHeading, LOCK_MS, looksLikeEmail, messageOf, minutesFrom, prefersReducedMotion } from '../auth/copy.ts';
+import { Field, PasswordField } from '../auth/Field.tsx';
+import type { Signal } from '../auth/NoSignal.tsx';
+import { TuneAlert, TunePanel, TuningShell } from '../auth/TuningShell.tsx';
 import { takeDestination } from '../hooks/authDestination';
-import { useFieldAttributes } from './fieldAttributes';
 
 /**
- * `password` is the default. `enter` → `sent` is the email-link flow, kept as
- * the secondary option until email is supported officially. `expired` is
- * entered only from ConsumePage after the backend rejects a token.
+ * `password` is the default way in. `enter` → `sent` is the email-link flow,
+ * reached from the EMAIL LINK tab (`?via=link`). `expired` is entered only
+ * from ConsumePage after the backend rejects a token.
  */
 type State = 'password' | 'enter' | 'sent' | 'expired';
 
@@ -21,183 +22,188 @@ export interface SignInPageProps {
   expiredCode?: string;
 }
 
-function minutesFrom(seconds: number): string {
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-}
+type Banner = { heading: string; detail: string } | null;
 
-/**
- * Deliberately permissive — the server is the authority (`invalid_email`);
- * this only catches empty and obviously malformed input.
- */
-function looksLikeEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
-}
-
-/** 00 — Username and password: the default way in. */
-function PasswordState({ onUseLink }: { onUseLink: () => void }) {
+/** After success: roll the picture, then hand over to where the visitor was going. */
+export function useSignalLock() {
   const navigate = useNavigate();
-  const formRef = useRef<HTMLFormElement>(null);
+  const [signal, setSignal] = useState<Signal>('none');
+  const lock = useCallback(() => {
+    setSignal('locking');
+    const wait = prefersReducedMotion() ? 0 : LOCK_MS;
+    window.setTimeout(() => {
+      setSignal('locked');
+      navigate(takeDestination(), { replace: true });
+    }, wait);
+  }, [navigate]);
+  const fault = useCallback(() => {
+    setSignal('fault');
+    window.setTimeout(() => setSignal((s) => (s === 'fault' ? 'none' : s)), 420);
+  }, []);
+  return { signal, setSignal, lock, fault };
+}
+
+/** Shown in place of the form while the signal locks. */
+export function LockedPanel({ operator }: { operator: string }) {
+  return (
+    <TunePanel heading="SIGNAL LOCKED" labelledBy="lock-h">
+      <div className="tp-lock" role="status">
+        <p className="who">
+          OPERATOR <b>{operator}</b>
+        </p>
+        <p className="tp-lede">Opening the console…</p>
+      </div>
+    </TunePanel>
+  );
+}
+
+/** Username and password: the default way in. */
+function PasswordForm({ onLocked, onFault, busy }: { onLocked: (name: string) => void; onFault: () => void; busy: boolean }) {
+  const location = useLocation();
+  const signedOut = (location.state as { signedOut?: boolean } | null)?.signedOut === true;
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [pending, setPending] = useState(false);
-  const [formError, setFormError] = useState('');
-
-  useFieldAttributes(formRef, {
-    'signin-username': { autocomplete: 'username', name: 'username', autocapitalize: 'none' },
-    'signin-password': { autocomplete: 'current-password', name: 'password' },
-  });
+  const [missing, setMissing] = useState<{ username?: string; password?: string }>({});
+  const [banner, setBanner] = useState<Banner>(null);
 
   const submit = async () => {
-    if (pending) return;
-    if (!username.trim() || !password) {
-      setFormError('Enter your username and password.');
-      return;
-    }
-    setFormError('');
+    if (pending || busy) return;
+    const empty = {
+      ...(username.trim() ? {} : { username: 'Enter your username.' }),
+      ...(password ? {} : { password: 'Enter your password.' }),
+    };
+    setMissing(empty);
+    if (Object.keys(empty).length) return;
+    setBanner(null);
     setPending(true);
     try {
-      await loginWithPassword({ username: username.trim(), password });
-      navigate(takeDestination(), { replace: true });
+      const me = await loginWithPassword({ username: username.trim(), password });
+      onLocked(me.username);
     } catch (error) {
-      // The server's own sentence: one message for a wrong username or password.
-      setFormError(
-        error instanceof Error
-          ? error.message
-          : 'Something went wrong. Check your connection and try again.',
-      );
+      // One answer for a wrong username and a wrong password alike: the server's.
+      const code = error instanceof ApiError ? error.code : '';
+      setBanner({ heading: bannerHeading(code), detail: messageOf(error) });
+      setPassword('');
       setPending(false);
+      onFault();
     }
   };
 
   return (
-    <>
-      <h1 className="auth-title">Sign in</h1>
-      <p className="auth-lede">
-        New here? <Link to="/register">Create an account</Link>.
-      </p>
-
+    <TunePanel heading="TUNE IN" lede="Sign in with your operator username and password.">
+      {signedOut && !banner && (
+        <p className="tp-note" role="status">
+          <b>SIGNED OUT</b> Your session on this device has ended.
+        </p>
+      )}
       <form
-        className="auth-form"
         noValidate
-        ref={formRef}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <Input
-          label="Username"
+        <Field
           id="signin-username"
+          label="Username"
+          name="username"
+          autoComplete="username"
+          autoCapitalize="none"
           value={username}
-          onChange={(event) => setUsername(event.target.value)}
+          onChange={(event) => {
+            setUsername(event.target.value);
+            if (missing.username) setMissing((m) => ({ ...m, username: undefined }));
+          }}
+          error={missing.username}
           autoFocus
         />
-        <Input
-          label="Password"
+        <PasswordField
           id="signin-password"
-          type="password"
+          label="Password"
+          name="password"
+          autoComplete="current-password"
           value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={(event) => {
+            setPassword(event.target.value);
+            if (missing.password) setMissing((m) => ({ ...m, password: undefined }));
+          }}
+          error={missing.password}
         />
-
-        {formError && (
-          <p className="auth-alert" role="alert">
-            {formError}
-          </p>
-        )}
-
-        <div className="auth-actions">
-          <Button variant="primary" type="submit" loading={pending}>
-            {pending ? 'Signing in…' : 'Sign in'}
-          </Button>
-          <Button variant="ghost" onClick={onUseLink}>
-            Email me a link instead
-          </Button>
+        {banner && <TuneAlert heading={banner.heading}>{banner.detail}</TuneAlert>}
+        <div className="acts">
+          <button type="submit" className="btn primary" disabled={pending || busy} aria-busy={pending}>
+            {pending ? 'TUNING…' : 'SIGN IN'}
+          </button>
         </div>
       </form>
-    </>
+      <p className="alt">
+        <Link to="/signin?via=link">Email me a link instead</Link>
+        <Link to="/register">Create an operator account</Link>
+      </p>
+    </TunePanel>
   );
 }
 
-/** 01 — Enter. One field, one button, and the way back to the password form. */
-function EnterState({
+/** Email link, step one: one field, one button. */
+function LinkForm({
   email,
   onEmailChange,
   onSubmit,
-  onUsePassword,
   pending,
   fieldError,
-  formError,
+  banner,
 }: {
   email: string;
   onEmailChange: (value: string) => void;
   onSubmit: () => void;
-  onUsePassword: () => void;
   pending: boolean;
   fieldError: string;
-  formError: string;
+  banner: Banner;
 }) {
-  const formRef = useRef<HTMLFormElement>(null);
-
-  useFieldAttributes(formRef, {
-    'signin-email': { autocomplete: 'email', name: 'email', inputmode: 'email' },
-  });
-
   return (
-    <>
-      <h1 className="auth-title">Sign in</h1>
-      <p className="auth-lede">We&rsquo;ll email you a link. No password to remember.</p>
-
-      {/* noValidate: the browser's validation bubble cannot be themed; the
-          same check renders through the Input's error slot instead. */}
+    <TunePanel heading="EMAIL LINK" lede="We'll email you a sign-in link. It works once, and there's no password to type.">
       <form
-        className="auth-form"
         noValidate
-        ref={formRef}
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit();
         }}
       >
-        <Input
-          label="Email"
+        <Field
           id="signin-email"
+          label="Email"
           type="email"
+          name="email"
+          autoComplete="email"
+          inputMode="email"
+          placeholder="you@desk.com"
           value={email}
           onChange={(event) => onEmailChange(event.target.value)}
-          placeholder="you@agency.com"
           error={fieldError || undefined}
           autoFocus
         />
-
-        {formError && (
-          <p className="auth-alert" role="alert">
-            {formError}
-          </p>
-        )}
-
-        <div className="auth-actions">
-          {/* loading implies disabled, so no double submit. */}
-          <Button variant="primary" type="submit" loading={pending}>
-            {pending ? 'Sending…' : 'Email me a link'}
-          </Button>
-          <Button variant="ghost" onClick={onUsePassword}>
-            Use a username and password
-          </Button>
+        {banner && <TuneAlert heading={banner.heading}>{banner.detail}</TuneAlert>}
+        <div className="acts">
+          <button type="submit" className="btn primary" disabled={pending} aria-busy={pending}>
+            {pending ? 'SENDING…' : 'EMAIL ME A LINK'}
+          </button>
         </div>
       </form>
-    </>
+      <p className="alt">
+        <Link to="/signin">Use a username and password</Link>
+      </p>
+    </TunePanel>
   );
 }
 
-/** 02 — Sent. Where the link went, how long it lasts, and how to try again. */
-function SentState({
+/** Email link, step two: where it went, how long it lasts, and how to try again. */
+function SentPanel({
   email,
   result,
   cooldown,
   resending,
-  resendError,
+  banner,
   onResend,
   onUseAnother,
 }: {
@@ -205,97 +211,90 @@ function SentState({
   result: AuthRequestLinkResult;
   cooldown: number;
   resending: boolean;
-  resendError: string;
+  banner: Banner;
   onResend: () => void;
   onUseAnother: () => void;
 }) {
   return (
-    <>
-      <h1 className="auth-title">Check your email</h1>
-      <p className="auth-lede">
-        A sign-in link is on its way to <span className="auth-address">{email}</span>. It expires in{' '}
-        {minutesFrom(result.expires_in)} and works once.
-      </p>
-
+    <TunePanel
+      heading="LINK SENT"
+      lede={
+        <>
+          A sign-in link is on its way to <b>{email}</b>. It expires in {minutesFrom(result.expires_in)} and works once. Open it
+          on this device.
+        </>
+      }
+    >
       {/* Rendered only when the API returns one; never constructed here. */}
       {result.dev_link && (
-        <div className="auth-devlink">
-          <div className="auth-devlink__head">
-            <Badge tone="accent">dev mode</Badge>
-            <span>No mail server needed — open the link directly.</span>
-          </div>
-          <a className="auth-devlink__url" href={result.dev_link}>
-            {result.dev_link}
-          </a>
-          <p className="auth-note">
-            Shown because the server is running with DEBUG and console link delivery. It is never
-            returned in production.
-          </p>
+        <div className="devlink">
+          <span className="tag abn">DEV MODE</span>
+          <a href={result.dev_link}>{result.dev_link}</a>
+          <p>Shown because the server runs with DEBUG and console delivery. It is never returned in production.</p>
         </div>
       )}
-
-      <hr className="auth-divider" />
-
-      {resendError && (
-        <p className="auth-alert" role="alert">
-          {resendError}
-        </p>
-      )}
-
-      <div className="auth-actions">
-        <Button variant="secondary" onClick={onResend} disabled={cooldown > 0} loading={resending}>
-          {cooldown > 0 ? (
-            <>
-              Resend in <span className="auth-countdown">{cooldown}s</span>
-            </>
-          ) : (
-            'Send another link'
-          )}
-        </Button>
-        <Button variant="ghost" onClick={onUseAnother}>
-          Use a different address
-        </Button>
+      {banner && <TuneAlert heading={banner.heading}>{banner.detail}</TuneAlert>}
+      <div className="acts">
+        <button type="button" className="btn" onClick={onResend} disabled={cooldown > 0 || resending} aria-busy={resending}>
+          {cooldown > 0 ? `SEND ANOTHER IN ${cooldown}s` : resending ? 'SENDING…' : 'SEND ANOTHER LINK'}
+        </button>
       </div>
-    </>
+      <p className="alt">
+        <button type="button" onClick={onUseAnother}>
+          Use a different address
+        </button>
+        <Link to="/signin">Sign in with a password</Link>
+      </p>
+    </TunePanel>
   );
 }
 
-/** 03 — Expired. Explains the two rules, then puts you back at state 01. */
-function ExpiredState({ code, onRestart }: { code: string; onRestart: () => void }) {
-  // The backend only distinguishes expired vs invalid; a used link is invalid.
-  const lede =
-    code === 'expired_token'
-      ? 'Sign-in links last 15 minutes, and this one is past that.'
-      : 'Sign-in links last 15 minutes and work once. This one has already been used, or it was never valid.';
-
+/** A dead link: why, then back to step one. */
+function ExpiredPanel({ code, onRestart }: { code: string; onRestart: () => void }) {
+  const expired = code === 'expired_token';
   return (
-    <>
-      <h1 className="auth-title">That link won&rsquo;t work</h1>
-      <p className="auth-lede">{lede}</p>
-      <div className="auth-actions">
-        <Button variant="primary" onClick={onRestart}>
-          Request a new link
-        </Button>
+    <TunePanel
+      heading={expired ? 'LINK EXPIRED' : 'LINK NOT VALID'}
+      lede={
+        expired
+          ? 'Sign-in links last a short while, and this one is past that.'
+          : 'Sign-in links work once. This one has already been used, or it was never valid.'
+      }
+    >
+      <div className="acts">
+        <button type="button" className="btn primary" onClick={onRestart}>
+          REQUEST A NEW LINK
+        </button>
       </div>
-    </>
+      <p className="alt">
+        <Link to="/signin">Sign in with a password</Link>
+      </p>
+    </TunePanel>
   );
 }
 
 export function SignInPage({ initialState = 'password', expiredCode = '' }: SignInPageProps) {
-  const [state, setState] = useState<State>(initialState);
+  const [params] = useSearchParams();
+  const viaLink = params.get('via') === 'link';
+  const [state, setState] = useState<State>(initialState === 'expired' ? 'expired' : viaLink ? 'enter' : 'password');
   const [email, setEmail] = useState('');
   const [result, setResult] = useState<AuthRequestLinkResult | null>(null);
   const [pending, setPending] = useState(false);
   const [fieldError, setFieldError] = useState('');
-  const [formError, setFormError] = useState('');
+  const [banner, setBanner] = useState<Banner>(null);
   const [cooldown, setCooldown] = useState(0);
+  const [operator, setOperator] = useState('');
+  const { signal, setSignal, lock, fault } = useSignalLock();
+
+  // The tab strip changes the query string; follow it (but never out of expired).
+  useEffect(() => {
+    setState((s) => (s === 'expired' ? s : viaLink ? (s === 'sent' ? s : 'enter') : 'password'));
+  }, [viaLink]);
 
   // Cleared on unmount and restart, so a resend cannot leave two intervals racing.
   useEffect(() => {
     if (cooldown <= 0) return;
-    const timer = window.setInterval(() => {
-      setCooldown((remaining) => (remaining <= 1 ? 0 : remaining - 1));
-    }, 1000);
+    const timer = window.setInterval(() => setCooldown((left) => (left <= 1 ? 0 : left - 1)), 1000);
     return () => window.clearInterval(timer);
   }, [cooldown > 0]);
 
@@ -303,34 +302,29 @@ export function SignInPage({ initialState = 'password', expiredCode = '' }: Sign
     async (address: string) => {
       if (!looksLikeEmail(address)) {
         setFieldError('Enter a valid email address.');
-        setFormError('');
+        setBanner(null);
         return;
       }
       setFieldError('');
-      setFormError('');
+      setBanner(null);
       setPending(true);
+      setSignal('tuning');
       try {
         const response = await requestLoginLink({ email: address.trim() });
         setResult(response);
         setCooldown(response.resend_after);
         setState('sent');
+        setSignal('none');
       } catch (error) {
-        // The server's own sentence is shown; the code only decides where it lands.
         const code = error instanceof ApiError ? error.code : '';
-        const detail =
-          error instanceof Error
-            ? error.message
-            : 'Something went wrong. Check your connection and try again.';
-        if (code === 'invalid_email') {
-          setFieldError(detail);
-        } else {
-          setFormError(detail);
-        }
+        if (code === 'invalid_email') setFieldError(messageOf(error));
+        else setBanner({ heading: bannerHeading(code), detail: messageOf(error) });
+        fault();
       } finally {
         setPending(false);
       }
     },
-    [],
+    [fault, setSignal],
   );
 
   const restart = useCallback(() => {
@@ -338,62 +332,74 @@ export function SignInPage({ initialState = 'password', expiredCode = '' }: Sign
     setResult(null);
     setCooldown(0);
     setFieldError('');
-    setFormError('');
+    setBanner(null);
   }, []);
+
+  if (signal === 'locking' || signal === 'locked') {
+    return (
+      <TuningShell title="Sign in" tab="signin" signal={signal} status={`OPERATOR ${operator.toUpperCase()}`}>
+        <LockedPanel operator={operator} />
+      </TuningShell>
+    );
+  }
 
   if (state === 'expired') {
     return (
-      <AuthShell title="Link expired">
-        <ExpiredState code={expiredCode} onRestart={restart} />
-      </AuthShell>
+      <TuningShell title="Link expired" tab="link" signal={signal} status="LINK REJECTED">
+        <ExpiredPanel code={expiredCode} onRestart={restart} />
+      </TuningShell>
     );
   }
 
   if (state === 'sent' && result) {
     return (
-      <AuthShell title="Check your email">
-        <SentState
+      <TuningShell title="Check your email" tab="link" signal={signal} status="LINK SENT · WAITING FOR IT TO BE OPENED">
+        <SentPanel
           email={email.trim()}
           result={result}
           cooldown={cooldown}
           resending={pending}
-          // No field in this state, so both error buckets share the banner.
-          resendError={formError || fieldError}
+          banner={banner ?? (fieldError ? { heading: 'NO SIGNAL', detail: fieldError } : null)}
           onResend={() => {
             if (pending || cooldown > 0) return;
             void send(email);
           }}
           onUseAnother={restart}
         />
-      </AuthShell>
+      </TuningShell>
     );
   }
 
-  if (state === 'password') {
+  if (state === 'enter') {
     return (
-      <AuthShell title="Sign in">
-        <PasswordState onUseLink={restart} />
-      </AuthShell>
+      <TuningShell title="Sign in" tab="link" signal={signal} status="AWAITING OPERATOR">
+        <LinkForm
+          email={email}
+          onEmailChange={(value) => {
+            setEmail(value);
+            if (fieldError) setFieldError('');
+          }}
+          onSubmit={() => {
+            if (!pending) void send(email);
+          }}
+          pending={pending}
+          fieldError={fieldError}
+          banner={banner}
+        />
+      </TuningShell>
     );
   }
 
   return (
-    <AuthShell title="Sign in">
-      <EnterState
-        email={email}
-        onEmailChange={(value) => {
-          setEmail(value);
-          if (fieldError) setFieldError('');
+    <TuningShell title="Sign in" tab="signin" signal={signal} status="AWAITING OPERATOR">
+      <PasswordForm
+        busy={signal !== 'none' && signal !== 'fault'}
+        onFault={fault}
+        onLocked={(name) => {
+          setOperator(name);
+          lock();
         }}
-        onSubmit={() => {
-          if (pending) return;
-          void send(email);
-        }}
-        onUsePassword={() => setState('password')}
-        pending={pending}
-        fieldError={fieldError}
-        formError={formError}
       />
-    </AuthShell>
+    </TuningShell>
   );
 }

@@ -7,9 +7,9 @@ from django.conf import settings
 from django.test import Client, TestCase
 
 SHELLS = {
-    "/signin": "Sign in · Locked In",
-    "/register": "Create an account · Locked In",
-    "/auth/consume": "Signing you in · Locked In",
+    "/signin": "Sign in · Onchain Rule Triggers",
+    "/register": "Create an account · Onchain Rule Triggers",
+    "/auth/consume": "Signing you in · Onchain Rule Triggers",
     "/journal/": "Match journal · Onchain Rule Triggers",
     "/circuits/": "Circuits · Onchain Rule Triggers",
     "/circuits/new/": "New circuit · Onchain Rule Triggers",

@@ -1,13 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { logout } from '../api/endpoints';
+import { useSession } from '../auth/session.tsx';
 import { CircuitsSheet } from './circuits/CircuitsSheet.tsx';
 import { ComposerSheet } from './composer/ComposerSheet.tsx';
 import { groupDigits } from './derive/format.ts';
 import { JournalSheet } from './journal/JournalSheet.tsx';
+import { PRODUCT } from './product.ts';
 import { ConsoleProvider, useConsole } from './state.tsx';
 import './console.css';
-
-const PRODUCT = 'Onchain Rule Triggers';
 
 function sheetOf(pathname: string): string {
   if (pathname.startsWith('/journal')) return 'Match journal';
@@ -63,6 +64,36 @@ function Readouts() {
   );
 }
 
+/** Who is signed in, and the way out. Stays in the header at every width. */
+function Operator() {
+  const { operator } = useSession();
+  const navigate = useNavigate();
+  const [leaving, setLeaving] = useState(false);
+  const signOut = async () => {
+    if (leaving) return;
+    setLeaving(true);
+    try {
+      await logout();
+    } catch {
+      // The session may already be gone; sign-in is the right place either way.
+    }
+    navigate('/signin', { replace: true, state: { signedOut: true } });
+  };
+  return (
+    <div className="op">
+      {operator && (
+        <span>
+          <span className="lbl-op">OPERATOR </span>
+          <b title={operator}>{operator}</b>
+        </span>
+      )}
+      <button type="button" className="btn sm" onClick={() => void signOut()} disabled={leaving} aria-busy={leaving}>
+        {leaving ? 'SIGNING OUT…' : 'SIGN OUT'}
+      </button>
+    </div>
+  );
+}
+
 function Shell() {
   const { engine, rules, toast, selection, journalSearch, journalKeys } = useConsole();
   const { pathname } = useLocation();
@@ -111,6 +142,7 @@ function Shell() {
                 ONCHAIN RULE TRIGGERS <span className="wn">WORKING NAME</span>
               </div>
               <Readouts />
+              <Operator />
             </header>
             <nav className="stabs" aria-label="Sections">
               <NavLink to={`/journal/${journalSearch}`} className={() => (onJournal ? 'tab active' : 'tab')} aria-current={onJournal ? 'page' : undefined}>
