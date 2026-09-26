@@ -89,6 +89,7 @@ def _parsed(raw, chain):
             index=_quantity(entry["index"]),
             block_hash=block.hash,
             block_number=block.number,
+            block_timestamp=block.timestamp,
             validator_index=_quantity(entry["validatorIndex"]),
             address=entry["address"],
             amount=_quantity(entry["amount"]),
