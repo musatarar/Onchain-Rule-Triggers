@@ -1,11 +1,15 @@
-"""The rules-catalog API: CRUD over the signed-in user's rules, and the engine status.
+"""The rules-catalog API: CRUD over the signed-in user's rules, the engine status, and the journal.
 
 Pins owner scoping (foreign rows read as 404, owner bound server-side),
 model-backed validation surfacing as 400s, and paginated lists; then a rule
 in the console's shape: its exact JSON, how its tree and thresholds read, its
 derived tag and glyph, and which recorded matches its stats count; then the
-engine status's exact JSON, and which recorded matches it counts.
+engine status's exact JSON, and which recorded matches it counts; then the
+journal: a row's exact JSON, the order and the cursors, and which recorded
+matches it lists.
 """
+
+import unittest
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -13,20 +17,32 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
+from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
 from project.app.evm.block.models import DecodeStatus
 from project.app.evm.chains import ChainId
-from project.app.models import MatchedRule, Rule, Transaction
+from project.app.evm.tokens import TokenCreateSchema
+from project.app.models import MatchedRule, Rule, TokenTransfer, Transaction
 from project.app.rules import services as rules_services
 from project.app.rules import utils
 from project.app.rules.utils import _all_of, _any_of, _cond
-from project.app.tests.tests_evm_block import block, dynamic_fee_transaction
+from project.app.tests.tests_evm_block import (
+    DYNAMIC_FEE_HASH,
+    LEGACY_HASH,
+    block,
+    dynamic_fee_transaction,
+    legacy_transaction,
+)
 from project.app.tests.tests_rules_evaluation import NEXT_BLOCK_HASH, built_by_the_sample_miner
 from project.app.tests.tests_rules_onchain import (
     ALICE,
+    BOB,
     DYNAMIC_FROM,
+    DYNAMIC_TO,
     LEGACY_FROM,
     MINER,
+    REORGED_BLOCK_HASH,
+    USDC,
     USDT,
     WITHDRAWAL_ADDRESS,
     transfer,
@@ -35,6 +51,7 @@ from project.app.tests.tests_rules_onchain import (
 
 RULES_URL = "/api/rules/"
 ENGINE_STATUS_URL = "/api/engine/status/"
+MATCHES_URL = "/api/matches/"
 # A block on a second chain, carrying nothing.
 POLYGON_BLOCK_HASH = "0x" + "b1" * 32
 # A transaction from the sample block's first sender, in the block after it.
@@ -43,6 +60,10 @@ LATER_HASH = "0x" + "d1" * 32
 SAMPLE_BLOCK_AT = "2023-08-26T16:21:35Z"
 NEXT_BLOCK_AT = "2023-08-26T16:21:47Z"
 MAX_UINT256 = 2**256 - 1
+# 12.3456789 ETH in wei: few enough digits for SQLite to keep every one.
+ETH_SENT = 12_345_678_900_000_000_000
+# A contract the token catalog does not recognise.
+UNKNOWN_TOKEN = "0x" + "7e" * 20
 
 
 def _conditions():
@@ -69,6 +90,17 @@ def _later_block():
 def _utc(moment):
     """``moment`` as the API writes a time: ISO-8601 in UTC, ending in Z."""
     return moment.isoformat().replace("+00:00", "Z")
+
+
+def _placed(row):
+    """What orders a journal row: its block, its transaction's index there, and its rule's id."""
+    transaction = row["transaction"]
+    return (transaction["block_number"], transaction["transaction_index"], row["rule"]["id"])
+
+
+def _cursor_of(row):
+    """The cursor naming a journal row: what orders it, then its own id."""
+    return "{}.{}.{}.{}".format(*_placed(row), row["id"])
 
 
 class RulesApiTestCase(TestCase):
@@ -800,6 +832,482 @@ class EngineStatusTests(RulesApiTestCase):
 
     def test_the_status_is_read_only(self):
         response = self.client.post(ENGINE_STATUS_URL, {}, content_type="application/json")
+
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.json()["code"], "method_not_allowed")
+
+
+class MatchJournalTests(RulesApiTestCase):
+    """GET /api/matches/: the signed-in user's recorded matches, newest first, a keyset page at a time."""
+
+    def _journal(self, **params):
+        response = self.client.get(MATCHES_URL, params)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def _walk(self, page_size, **params):
+        """Every page of the journal at ``page_size``, each asked for with the last one's ``next``."""
+        pages = [self._journal(page_size=page_size, **params)]
+        while pages[-1]["next"] is not None:
+            pages.append(self._journal(page_size=page_size, cursor=pages[-1]["next"], **params))
+        return pages
+
+    def _by_sender(self):
+        """An enabled rule matching the sample block's first transaction and the later block's."""
+        return self._rule(
+            name="by sender", conditions=_all_of(tx("from_address", "==", DYNAMIC_FROM))
+        )
+
+    def _five_rows(self):
+        """Two rules over the sample block and the later one, which record five matches."""
+        self._store(block())
+        self._store(_later_block())
+        rules = self._every_transaction(), self._by_sender()
+        rules_services.evaluate_blocks()
+        return rules
+
+    def _token(self, address=USDT, name="Tether", *, decimals=None):
+        """``address`` in the token catalog, its decimals as if read from the contract."""
+        token = evm_services.save_token(
+            TokenCreateSchema(
+                chain=ChainId.ETHEREUM, address=address, name=name, coingecko_id=name.lower()
+            )
+        )
+        token.decimals = decimals
+        token.save(update_fields=["decimals"])
+        return token
+
+    def _transfer(self, transaction_hash, token, *, raw_value, log_index=None, verified=False):
+        """A transfer of ``token`` from Alice to Bob, stored for the transaction as decoding stores one."""
+        return TokenTransfer.objects.create(
+            transaction_hash=transaction_hash,
+            log_index=log_index,
+            token=token,
+            from_address=ALICE,
+            to_address=BOB,
+            raw_value=raw_value,
+            verified=verified,
+        )
+
+    def test_a_journal_row_is_the_contracts_json(self):
+        self._store(
+            block(transactions=[dynamic_fee_transaction(value=hex(ETH_SENT)), legacy_transaction()])
+        )
+        self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=397_092_712)
+        rule = self._every_transaction()
+        rules_services.evaluate_blocks()
+        recorded = {match.transaction_id: match for match in MatchedRule.objects.all()}
+        moved, sent = recorded[LEGACY_HASH], recorded[DYNAMIC_FEE_HASH]
+
+        response = self.client.get(MATCHES_URL)
+
+        self.assertEqual(response.status_code, 200)
+        rule_ref = {
+            "id": rule.pk,
+            "name": "every transaction",
+            "tag": rule.tag,
+            "glyph": rule.glyph,
+        }
+        unflagged = {"token_unrecognised": False, "decimals_unknown": False, "verified": False}
+        self.assertEqual(
+            response.json(),
+            {
+                "results": [
+                    # One block, so the transaction later in it comes first.
+                    {
+                        "id": moved.pk,
+                        "rule": rule_ref,
+                        "rule_revision": 1,
+                        "matched_at": _utc(moved.created_at),
+                        "transaction": {
+                            "chain": 1,
+                            "hash": LEGACY_HASH,
+                            "block_number": 18000000,
+                            "transaction_index": 35,
+                            "block_timestamp": SAMPLE_BLOCK_AT,
+                        },
+                        "headline": {
+                            "kind": "token_transfer",
+                            "from_address": ALICE,
+                            "to_address": BOB,
+                            "from_label": None,
+                            "to_label": None,
+                            "amount": {"raw": "397092712", "decimals": 6, "value": "397.092712"},
+                            "token": {
+                                "chain": 1,
+                                "address": USDT,
+                                # No symbol is stored yet (#45).
+                                "symbol": None,
+                                "name": "Tether",
+                                "decimals": 6,
+                            },
+                        },
+                        "flags": unflagged,
+                    },
+                    # No transfer, so the ETH it sent.
+                    {
+                        "id": sent.pk,
+                        "rule": rule_ref,
+                        "rule_revision": 1,
+                        "matched_at": _utc(sent.created_at),
+                        "transaction": {
+                            "chain": 1,
+                            "hash": DYNAMIC_FEE_HASH,
+                            "block_number": 18000000,
+                            "transaction_index": 0,
+                            "block_timestamp": SAMPLE_BLOCK_AT,
+                        },
+                        "headline": {
+                            "kind": "native",
+                            "from_address": DYNAMIC_FROM,
+                            "to_address": DYNAMIC_TO,
+                            "from_label": None,
+                            "to_label": None,
+                            "amount": {
+                                "raw": "12345678900000000000",
+                                "decimals": 18,
+                                "value": "12.3456789",
+                            },
+                            "token": None,
+                        },
+                        "flags": unflagged,
+                    },
+                ],
+                "next": None,
+                "head": f"18000000.35.{rule.pk}.{moved.pk}",
+            },
+        )
+
+    def test_a_token_without_decimals_or_a_catalog_entry_is_flagged_and_its_amount_stays_raw(self):
+        self._store(block())
+        self._transfer(LEGACY_HASH, self._token(), raw_value=397_092_712, verified=True)
+        # What decoding stores for a contract the catalog does not recognise.
+        key = (ChainId.ETHEREUM, UNKNOWN_TOKEN)
+        self._transfer(DYNAMIC_FEE_HASH, evm_services.tokens_at({key})[key], raw_value=10**30)
+        self._every_transaction()
+        rules_services.evaluate_blocks()
+
+        tether, unknown = self._journal()["results"]
+
+        self.assertEqual(
+            (tether["headline"]["amount"], tether["headline"]["token"], tether["flags"]),
+            (
+                {"raw": "397092712", "decimals": None, "value": None},
+                {"chain": 1, "address": USDT, "symbol": None, "name": "Tether", "decimals": None},
+                # A catalog token whose decimals nothing has read; `verified` is the transfer's.
+                {"token_unrecognised": False, "decimals_unknown": True, "verified": True},
+            ),
+        )
+        self.assertEqual(
+            (unknown["headline"]["amount"], unknown["headline"]["token"], unknown["flags"]),
+            (
+                {"raw": "1000000000000000000000000000000", "decimals": None, "value": None},
+                {
+                    "chain": 1,
+                    "address": UNKNOWN_TOKEN,
+                    "symbol": None,
+                    "name": None,
+                    "decimals": None,
+                },
+                {"token_unrecognised": True, "decimals_unknown": True, "verified": False},
+            ),
+        )
+
+    def test_a_transaction_leads_with_its_first_transfer_on_its_own_chain(self):
+        self._store(block())
+        polygon_usdt = evm_services.save_token(
+            TokenCreateSchema(
+                chain=ChainId.POLYGON, address=USDT, name="Tether", coingecko_id="tether"
+            )
+        )
+        # A replay's on another chain, which keeps the hash: not this transaction's.
+        self._transfer(LEGACY_HASH, polygon_usdt, raw_value=1, log_index=0)
+        self._transfer(LEGACY_HASH, self._token(USDC, "USD Coin"), raw_value=2, log_index=7)
+        self._transfer(LEGACY_HASH, self._token(), raw_value=3, log_index=2)
+        self._every_transaction()
+        rules_services.evaluate_blocks()
+
+        headline = self._journal()["results"][0]["headline"]
+
+        self.assertEqual(
+            (headline["token"]["chain"], headline["token"]["address"], headline["amount"]["raw"]),
+            (1, USDT, "3"),
+        )
+
+    def test_a_contract_creation_leads_with_the_eth_it_sent_to_no_one(self):
+        self._store(
+            block(transactions=[legacy_transaction(to=None, value=hex(10**18))], withdrawals=[])
+        )
+        self._every_transaction()
+        rules_services.evaluate_blocks()
+
+        (row,) = self._journal()["results"]
+
+        self.assertEqual(
+            row["headline"],
+            {
+                "kind": "native",
+                "from_address": LEGACY_FROM,
+                "to_address": None,
+                "from_label": None,
+                "to_label": None,
+                "amount": {"raw": "1000000000000000000", "decimals": 18, "value": "1"},
+                "token": None,
+            },
+        )
+
+    @unittest.skipUnless(
+        connection.vendor == "postgresql", "SQLite keeps 15 significant digits of a decimal"
+    )
+    def test_a_uint256_amount_keeps_every_digit(self):
+        self._store(
+            block(
+                transactions=[dynamic_fee_transaction(value=hex(MAX_UINT256)), legacy_transaction()]
+            )
+        )
+        self._transfer(LEGACY_HASH, self._token(decimals=18), raw_value=MAX_UINT256)
+        self._every_transaction()
+        rules_services.evaluate_blocks()
+
+        rows = self._journal()["results"]
+
+        # Every digit, where Decimal arithmetic would keep 28.
+        self.assertEqual(
+            [row["headline"]["amount"] for row in rows],
+            2
+            * [
+                {
+                    "raw": str(MAX_UINT256),
+                    "decimals": 18,
+                    "value": "115792089237316195423570985008687907853269984665640564039457"
+                    ".584007913129639935",
+                }
+            ],
+        )
+
+    def test_rows_are_newest_first_by_block_then_transaction_then_rule(self):
+        every, by_sender = self._five_rows()
+
+        rows = self._journal()["results"]
+
+        self.assertEqual(
+            [_placed(row) for row in rows],
+            [
+                (18000001, 0, every.pk),
+                (18000001, 0, by_sender.pk),
+                (18000000, 35, every.pk),
+                (18000000, 0, every.pk),
+                (18000000, 0, by_sender.pk),
+            ],
+        )
+
+    def test_a_match_recorded_again_after_a_reorg_is_listed_again_after_the_first(self):
+        self._store(block(transactions=[dynamic_fee_transaction()], withdrawals=[]))
+        every, by_sender = self._every_transaction(), self._by_sender()
+        rules_services.evaluate_blocks()
+        # Another block at the sample block's height carries its transaction
+        # again, so both rules match it again there.
+        self._store(
+            block(hash=REORGED_BLOCK_HASH, transactions=[dynamic_fee_transaction()], withdrawals=[])
+        )
+        rules_services.evaluate_blocks()
+
+        rows = self._journal()["results"]
+        walked = [row for page in self._walk(1) for row in page["results"]]
+
+        # Four matches of one transaction, recorded a block at a time, so the
+        # two rules interleave in the order recorded.
+        recorded = list(MatchedRule.objects.values_list("rule", "pk"))
+        self.assertEqual([rule for rule, _ in recorded], [every.pk, by_sender.pk] * 2)
+        # Listed by rule, and each rule's in the order recorded.
+        self.assertEqual([(row["rule"]["id"], row["id"]) for row in rows], sorted(recorded))
+        # Each has a cursor of its own, so a walk a row at a time meets each once.
+        self.assertEqual([row["id"] for row in walked], [row["id"] for row in rows])
+
+    def test_the_cursor_walks_the_journal_to_its_end_with_no_gap_or_repeat(self):
+        every, _ = self._five_rows()
+        whole = self._journal()["results"]
+
+        pages = self._walk(2)
+
+        self.assertEqual(
+            [[row["id"] for row in page["results"]] for page in pages],
+            [[row["id"] for row in whole[index : index + 2]] for index in (0, 2, 4)],
+        )
+        # Each page's next names its last row, and the last page has none.
+        self.assertEqual(
+            [page["next"] for page in pages], [_cursor_of(whole[1]), _cursor_of(whole[3]), None]
+        )
+        # The head names the newest row, whatever the page.
+        self.assertEqual(whole[0]["rule"]["id"], every.pk)
+        self.assertEqual(
+            [page["head"] for page in pages],
+            3 * [f"18000001.0.{every.pk}.{whole[0]['id']}"],
+        )
+
+    def test_after_lists_only_newer_rows_and_the_head_stays_until_one_is_recorded(self):
+        self._store(block())
+        rule = self._every_transaction()
+        rules_services.evaluate_blocks()
+        head = self._journal()["head"]
+
+        quiet = self._journal(after=head)
+        self._store(_later_block())
+        rules_services.evaluate_blocks()
+        landed = self._journal(after=head)
+
+        self.assertEqual(quiet, {"results": [], "next": None, "head": head})
+        later = MatchedRule.objects.get(transaction=LATER_HASH)
+        self.assertEqual([row["id"] for row in landed["results"]], [later.pk])
+        self.assertEqual(
+            (landed["next"], landed["head"]), (None, f"18000001.0.{rule.pk}.{later.pk}")
+        )
+
+    def test_after_with_a_cursor_keeps_the_rows_between_the_two(self):
+        self._five_rows()
+        whole = self._journal()["results"]
+        oldest = _cursor_of(whole[-1])
+
+        between = self._journal(cursor=_cursor_of(whole[0]), after=oldest)
+        newest_two = self._journal(after=oldest, page_size=2)
+        next_two = self._journal(after=oldest, page_size=2, cursor=newest_two["next"])
+
+        ids = [row["id"] for row in whole]
+        self.assertEqual([row["id"] for row in between["results"]], ids[1:4])
+        # A poll finding more than a page walks on with its after, and stops at it.
+        self.assertEqual([row["id"] for row in newest_two["results"]], ids[0:2])
+        self.assertEqual(newest_two["next"], _cursor_of(whole[1]))
+        self.assertEqual(
+            ([row["id"] for row in next_two["results"]], next_two["next"]), (ids[2:4], None)
+        )
+
+    def test_a_rule_narrows_the_journal_to_its_matches(self):
+        _, by_sender = self._five_rows()
+
+        narrowed = self._journal(rule=by_sender.pk)
+
+        self.assertEqual(
+            [_placed(row) for row in narrowed["results"]],
+            [(18000001, 0, by_sender.pk), (18000000, 0, by_sender.pk)],
+        )
+        self.assertEqual(narrowed["head"], _cursor_of(narrowed["results"][0]))
+        # As many rows as the rule's stats count.
+        stats = self.client.get(f"{RULES_URL}{by_sender.pk}/").json()["stats"]
+        self.assertEqual(stats["match_count"], len(narrowed["results"]))
+
+    def test_someone_elses_rule_or_an_id_naming_none_is_a_404(self):
+        theirs = self._every_transaction(owner=self.other)
+
+        for rule in (theirs.pk, theirs.pk + 1000, 0, -1, 2**63):
+            with self.subTest(rule=rule):
+                response = self.client.get(MATCHES_URL, {"rule": rule})
+
+                self.assertEqual(
+                    (response.status_code, response.json()),
+                    (404, {"code": "not_found", "detail": "No rule with this id."}),
+                )
+
+    def test_a_rule_cursor_or_page_size_it_cannot_read_is_a_400(self):
+        not_a_cursor = "Not a cursor from this journal."
+        page_sizes = "Use a page size from 1 to 100."
+        for params, detail in (
+            ({"rule": "R7"}, "rule: A valid integer is required."),
+            ({"rule": "1.5"}, "rule: A valid integer is required."),
+            ({"cursor": "older"}, f"cursor: {not_a_cursor}"),
+            # The demo data's form, which has no match id.
+            ({"cursor": "18000000.35.1"}, f"cursor: {not_a_cursor}"),
+            ({"cursor": "18000000.35.1.2.3"}, f"cursor: {not_a_cursor}"),
+            ({"cursor": "18000000.-35.1.2"}, f"cursor: {not_a_cursor}"),
+            # Past any id there is, which SQLite would refuse to compare.
+            ({"after": f"18000000.35.1.{2**63}"}, f"after: {not_a_cursor}"),
+            ({"page_size": 0}, f"page_size: {page_sizes}"),
+            ({"page_size": 101}, f"page_size: {page_sizes}"),
+            ({"page_size": "fifty"}, f"page_size: {page_sizes}"),
+        ):
+            with self.subTest(params=params):
+                response = self.client.get(MATCHES_URL, params)
+
+                self.assertEqual(
+                    (response.status_code, response.json()),
+                    (400, {"code": "validation_error", "detail": detail}),
+                )
+
+    def test_a_parameter_left_blank_reads_as_left_out(self):
+        self._five_rows()
+
+        blank = self._journal(rule="", cursor="", after="", page_size="")
+
+        self.assertEqual(blank, self._journal())
+        self.assertEqual(len(blank["results"]), 5)
+
+    def test_another_owners_matches_are_not_listed(self):
+        self._store(block())
+        self._every_transaction(owner=self.other)
+        rules_services.evaluate_blocks()
+
+        mine = self._journal()
+        self.client.force_login(self.other)
+        theirs = self._journal()
+
+        self.assertEqual(mine, {"results": [], "next": None, "head": ""})
+        self.assertEqual(len(theirs["results"]), 2)
+
+    def test_withdrawal_block_and_disabled_rules_matches_are_not_listed(self):
+        self._store(block())
+        by_sender = self._by_sender()
+        self._rule(
+            name="withdrawn",
+            conditions=_all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
+        )
+        self._rule(name="built", conditions=built_by_the_sample_miner())
+        switched_off = self._every_transaction()
+        rules_services.evaluate_blocks()
+        rules_services.update_rule(switched_off, {"enabled": False})
+
+        journal = self._journal()
+
+        # Every match stays recorded: one for each of the first three rules,
+        # and two for the rule matching every transaction.
+        self.assertEqual(MatchedRule.objects.count(), 5)
+        self.assertEqual([row["rule"]["id"] for row in journal["results"]], [by_sender.pk])
+        # The journal lists what the header counts.
+        self.assertEqual(self.client.get(ENGINE_STATUS_URL).json()["match_count"], 1)
+        self.assertEqual(
+            self._journal(rule=switched_off.pk), {"results": [], "next": None, "head": ""}
+        )
+
+    def test_a_page_is_three_queries_whatever_its_size(self):
+        self._store(block())
+        self._store(_later_block())
+        usdt = self._token(decimals=6)
+        for transaction_hash in (DYNAMIC_FEE_HASH, LEGACY_HASH, LATER_HASH):
+            self._transfer(transaction_hash, usdt, raw_value=1)
+        self._every_transaction()
+        self._by_sender()
+        rules_services.evaluate_blocks()
+
+        # The head, the page with its transactions and rules, and the page's
+        # transfers with their tokens.
+        for size in (1, 5):
+            with self.subTest(size=size), self.assertNumQueries(3):
+                rules_services.journal_page(self.user, size=size)
+        with CaptureQueriesContext(connection) as one_row:
+            self._journal(page_size=1)
+        with CaptureQueriesContext(connection) as every_row:
+            self._journal(page_size=100)
+
+        self.assertEqual(len(every_row), len(one_row))
+
+    def test_the_journal_requires_a_signed_in_session(self):
+        self.client.logout()
+
+        response = self.client.get(MATCHES_URL)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["code"], "not_authenticated")
+
+    def test_the_journal_is_read_only(self):
+        response = self.client.post(MATCHES_URL, {}, content_type="application/json")
 
         self.assertEqual(response.status_code, 405)
         self.assertEqual(response.json()["code"], "method_not_allowed")
