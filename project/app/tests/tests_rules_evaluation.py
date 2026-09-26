@@ -124,7 +124,7 @@ class EvaluateBlocksTests(EvaluationTestCase):
         # Another run marks the block after this one read it as not evaluated.
         Block.objects.filter(hash=stored.hash).update(evaluated_at=timezone.now())
 
-        self.assertIsNone(rules_services._evaluate(stored, [rule], {}))
+        self.assertIsNone(rules_services._evaluate(stored, onchain.RuleIndex([rule]), {}))
         self.assertFalse(MatchedRule.objects.exists())
 
     def test_a_block_costs_the_same_queries_however_many_rules_read_it(self):

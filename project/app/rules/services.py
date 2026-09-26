@@ -154,7 +154,9 @@ def evaluate_blocks():
     Every owner's enabled rules are read once, with their trees, and the blocks
     are taken by chain and number. A block's rows are read once and shared by
     every rule (:class:`~project.app.rules.onchain.BlockRows`), so a block costs
-    the same queries however many rules there are. Each block is evaluated in one transaction
+    the same queries however many rules there are, and each row is tried only
+    against the rules whose equality checks it could satisfy
+    (:class:`~project.app.rules.onchain.RuleIndex`). Each block is evaluated in one transaction
     that records its matches and marks it evaluated, so a run that fails partway
     keeps the blocks it finished, and a re-run evaluates only the rest. The mark
     is a conditional UPDATE, so a block two runs reach at once is evaluated by
@@ -167,7 +169,7 @@ def evaluate_blocks():
     with nothing recorded, for a run after decoding. A rule written or enabled
     after a block was evaluated is not evaluated against that block.
     """
-    rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
+    rules = onchain.RuleIndex(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
     run = Evaluation()
     blocks = Block.objects.filter(evaluated_at__isnull=True).order_by("chain", "number", "hash")
     for block in blocks:
@@ -183,7 +185,7 @@ def evaluate_blocks():
 
 
 def _evaluate(block, rules, refused):
-    """Record the rows of ``block`` each of ``rules`` matches, and mark it evaluated.
+    """Record the rows of ``block`` each rule of the index ``rules`` matches, and mark it evaluated.
 
     Answers how many matches were recorded, or ``None`` when another run marked
     the block first. A ``NotDecodedError`` rolls the mark back with the matches.
@@ -194,16 +196,10 @@ def _evaluate(block, rules, refused):
         )
         if not claimed:
             return None
-        matches = []
-        # Read once and shared, so the block costs the same queries however many rules there are.
-        block_rows = onchain.BlockRows(block)
-        for rule in rules:
-            try:
-                rows = onchain.matches_in_block(rule, block, block_rows)
-            except onchain.ConditionError as exc:
-                refused.setdefault(rule, exc)
-                continue
-            matches.extend(_match(rule, block, row) for row in rows)
+        found, refused_here = onchain.matches_for_rules(rules, block)
+        for rule, error in {**rules.refused, **refused_here}.items():
+            refused.setdefault(rule, error)
+        matches = [_match(rule, block, row) for rule, rows in found.items() for row in rows]
         MatchedRule.objects.bulk_create(matches)
     return len(matches)
 

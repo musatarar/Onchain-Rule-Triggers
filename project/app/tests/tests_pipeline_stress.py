@@ -50,6 +50,7 @@ from project.app.models import (
     Transaction,
     Withdrawal,
 )
+from project.app.rules import onchain
 from project.app.rules import services as rules_services
 from project.app.tests.tests_evm_block import FakeNode, NodeTestCase
 
@@ -247,6 +248,18 @@ class QueryScalingTests(StressTestCase):
         self.assertEqual(counts, [counts[0]] * 3)
         self.assertGreater(matches[0], 0)
         self.assertEqual(matches, [matches[0], 2 * matches[0], 3 * matches[0]])
+
+    def test_the_rule_index_matches_what_each_rule_matches_alone_on_the_sample_blocks(self):
+        self.add_users(1)
+        rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
+        index = onchain.RuleIndex(rules)
+
+        for block in Block.objects.order_by("number"):
+            found, refused = onchain.matches_for_rules(index, block)
+            self.assertEqual(refused, {})
+            for rule in rules:
+                with self.subTest(block=block.number, rule=rule.name):
+                    self.assertEqual(found[rule], onchain.matches_in_block(rule, block))
 
 
 @unittest.skipUnless(STRESS_USERS, "set STRESS_USERS=10,100,... to run the pipeline stress tests")

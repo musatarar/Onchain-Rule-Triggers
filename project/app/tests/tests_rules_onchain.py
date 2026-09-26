@@ -528,3 +528,176 @@ class QueryCountTests(OnchainTestCase):
             matched = onchain.matches_in_block(reads_transactions, stored, rows)
 
         self.assertEqual(matched, [Transaction.objects.get()])
+
+
+class RuleIndexTests(OnchainTestCase):
+    """``matches_for_rules`` answers what ``matches_in_block`` does, trying fewer trees."""
+
+    def _index(self, *trees):
+        rules = [self._rule(tree) for tree in trees]
+        return rules, onchain.RuleIndex(rules)
+
+    def _tree(self, tree):
+        rule = self._rule(tree)
+        return onchain.utils.root_and_children(list(rule.all_conditions.all()))
+
+    def _key(self, tree):
+        return onchain._key(*self._tree(tree))
+
+    def test_a_rule_is_filed_by_the_equality_it_cannot_hold_without(self):
+        usdt = _all_of(transfer("token", "==", USDT), transfer("raw_value", ">=", 5))
+        self.assertEqual(self._key(usdt), ("token_transfer", "token", frozenset({USDT})))
+        self.assertEqual(
+            self._key(_all_of(tx("to_address", "in", [ALICE, BOB]))),
+            ("transaction", "to_address", frozenset({ALICE, BOB})),
+        )
+        either = _all_of(_any_of(tx("to_address", "==", ALICE), tx("to_address", "==", BOB)))
+        self.assertEqual(self._key(either), ("transaction", "to_address", frozenset({ALICE, BOB})))
+        # The fewest values win, and a transaction's field over a transfer's on a tie.
+        both = _all_of(
+            transfer("token", "==", USDT),
+            tx("from_address", "==", ALICE),
+            tx("to_address", "in", [BOB, CAROL]),
+        )
+        self.assertEqual(self._key(both), ("transaction", "from_address", frozenset({ALICE})))
+
+    def test_a_rule_that_can_hold_without_any_one_value_is_filed_nowhere(self):
+        for tree in (
+            _all_of(tx("value", "==", 5)),  # a number, not text
+            _all_of(tx("to_address", "!=", ALICE)),
+            _all_of(tx("to_address", "contains", "a1a1")),
+            _all_of(_any_of(tx("to_address", "==", ALICE), tx("from_address", "==", BOB))),
+            _all_of(_any_of(tx("to_address", "==", ALICE), tx("value", ">", 5))),
+            _all_of(_cond("miner", "==", MINER, source="block")),
+        ):
+            with self.subTest(tree=tree):
+                self.assertIsNone(self._key(tree))
+
+    def test_it_answers_what_matches_in_block_does_for_every_rule(self):
+        stored = self._store()
+        usdt = self._token()
+        usdc = self._token(USDC, "USD Coin")
+        self._transfer(DYNAMIC_FEE_HASH, usdt, 0, sender=ALICE, recipient=BOB, raw_value=10)
+        self._transfer(DYNAMIC_FEE_HASH, usdc, 1, sender=CAROL, recipient=ALICE, raw_value=3)
+        self._transfer(LEGACY_HASH, usdc, 2, sender=BOB, recipient=CAROL, raw_value=7)
+        trees = [
+            _all_of(transfer("token", "==", USDT), transfer("raw_value", ">=", 5)),
+            _all_of(transfer("token", "==", USDC), transfer("to_address", "==", ALICE)),
+            _all_of(transfer("from_address", "in", [BOB, CAROL])),
+            _all_of(tx("from_address", "==", DYNAMIC_FROM)),
+            _all_of(tx("from_address", "==", LEGACY_FROM), transfer("token", "==", USDC)),
+            _all_of(_any_of(tx("to_address", "==", DYNAMIC_TO), tx("to_address", "==", ALICE))),
+            _all_of(tx("value", ">=", 0), transfer("token", "absent")),
+            _all_of(tx("from_address", "!=", ALICE)),
+            _all_of(tx("value", ">", 0)),
+            _all_of(tx("value", "<", 1)),
+            _all_of(transfer("raw_value", "<=", 7), tx("value", ">=", 0)),
+            _all_of(transfer("raw_value", ">", 7)),
+            _all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
+            _all_of(_cond("address", "==", ALICE, source="withdrawal")),
+            _all_of(_cond("amount", ">", 0, source="withdrawal")),
+            _all_of(_cond("amount", ">=", 10**30, source="withdrawal")),
+            _all_of(_cond("miner", "==", MINER, source="block")),
+            _all_of(_cond("miner", "==", ALICE, source="block")),
+        ]
+        rules, index = self._index(*trees)
+
+        found, refused = onchain.matches_for_rules(index, stored)
+
+        self.assertEqual(refused, {})
+        self.assertEqual(list(found), rules)
+        for rule in rules:
+            with self.subTest(rule=rule.conditions_payload()):
+                self.assertEqual(found[rule], onchain.matches_in_block(rule, stored))
+        # The filed rules above each match something, so the index is not just skipping them.
+        self.assertTrue(all(found[rule] for rule in rules[:6]))
+
+    def test_a_filed_rule_is_only_tried_against_a_row_carrying_its_value(self):
+        stored = self._store()
+        rules, index = self._index(
+            _all_of(tx("from_address", "==", DYNAMIC_FROM)),
+            _all_of(tx("from_address", "==", ALICE)),
+        )
+        tried = []
+        holds = index.holds
+
+        def counted(position, block, **bound):
+            tried.append((index.rules[position], bound["transaction"].hash))
+            return holds(position, block, **bound)
+
+        index.holds = counted
+        found, _ = onchain.matches_for_rules(index, stored)
+
+        self.assertEqual(tried, [(rules[0], DYNAMIC_FEE_HASH)])
+        self.assertEqual(
+            found, {rules[0]: [Transaction.objects.get(hash=DYNAMIC_FEE_HASH)], rules[1]: []}
+        )
+
+    def test_a_rule_with_no_equality_is_filed_by_its_threshold(self):
+        self.assertEqual(
+            onchain._range_key(*self._tree(_all_of(tx("value", ">=", 10**18)))),
+            ("transaction", "value", True, Decimal(10**18)),
+        )
+        self.assertEqual(
+            onchain._range_key(*self._tree(_all_of(transfer("raw_value", "<", 5)))),
+            ("token_transfer", "raw_value", False, Decimal(5)),
+        )
+        for tree in (
+            _all_of(tx("value", "==", 5)),
+            _all_of(_any_of(tx("value", ">", 5), tx("value", "<", 1))),
+            _all_of(_cond("number", ">", 5, source="block")),
+        ):
+            with self.subTest(tree=tree):
+                self.assertIsNone(onchain._range_key(*self._tree(tree)))
+
+    def test_a_threshold_rule_is_only_tried_against_a_row_past_it(self):
+        stored = self._store()
+        Transaction.objects.filter(hash=LEGACY_HASH).update(value=5)
+        Transaction.objects.filter(hash=DYNAMIC_FEE_HASH).update(value=9)
+        rules, index = self._index(
+            _all_of(tx("value", ">", 9)),
+            _all_of(tx("value", ">=", 9)),
+            _all_of(tx("value", "<", 9)),
+        )
+        tried = []
+        holds = index.holds
+
+        def counted(position, block, **bound):
+            tried.append((index.rules[position], bound["transaction"].hash))
+            return holds(position, block, **bound)
+
+        index.holds = counted
+        found, _ = onchain.matches_for_rules(index, stored)
+
+        # The lower bounds are tried only against the transaction at 9, the upper against both.
+        self.assertCountEqual(
+            tried,
+            [
+                (rules[0], DYNAMIC_FEE_HASH),
+                (rules[1], DYNAMIC_FEE_HASH),
+                (rules[2], LEGACY_HASH),
+                (rules[2], DYNAMIC_FEE_HASH),
+            ],
+        )
+        self.assertEqual(
+            {rule: [row.hash for row in rows] for rule, rows in found.items()},
+            {rules[0]: [], rules[1]: [DYNAMIC_FEE_HASH], rules[2]: [LEGACY_HASH]},
+        )
+
+    def test_a_rule_with_no_tree_is_refused_once_and_the_rest_still_run(self):
+        stored = self._store()
+        broken = Rule.objects.create(owner=self.owner, name="no tree")
+        working = self._rule(_all_of(_cond("miner", "==", MINER, source="block")))
+
+        index = onchain.RuleIndex([broken, working])
+        found, refused = onchain.matches_for_rules(index, stored)
+
+        self.assertIsInstance(index.refused[broken], ConditionError)
+        self.assertEqual((found, refused), ({working: [stored]}, {}))
+
+    def test_a_transfer_rule_before_decoding_finished_refuses_the_block(self):
+        stored = self._store(decoded=False)
+        _, index = self._index(_all_of(transfer("token", "==", USDT)))
+
+        with self.assertRaises(onchain.NotDecodedError):
+            onchain.matches_for_rules(index, stored)

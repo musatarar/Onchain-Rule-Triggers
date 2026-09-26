@@ -41,6 +41,7 @@ and shared by every rule after, so the queries a block costs do not grow with
 the number of rules.
 """
 
+import bisect
 import datetime
 import functools
 from decimal import Decimal
@@ -129,6 +130,250 @@ def matches_in_block(rule, block, rows=None):
     if utils.SOURCE_WITHDRAWAL in sources:
         return [withdrawal for withdrawal in rows.withdrawals if holds(withdrawal=withdrawal)]
     return [block] if holds() else []
+
+
+class RuleIndex:
+    """Many rules, ready to evaluate against block after block, filed by the values they need.
+
+    A rule whose tree can only hold when a text field equals one of a few
+    values (an ``==`` or ``in`` leaf ANDed into the tree, or an ``OR`` of them
+    on one field) is filed under each of those values, and tried only against
+    a row carrying one. A rule with no such field whose tree can only hold
+    when a number field is past a threshold (a ``>``, ``>=``, ``<`` or ``<=``
+    leaf ANDed into the tree) is filed by that threshold, and tried only
+    against a row on the right side of it. Any other rule is tried against
+    every row. A rule skipped this way is one its tree would have refused, so
+    :func:`matches_for_rules` answers what :func:`matches_in_block` would for
+    each rule, having walked far fewer trees.
+
+    A rule with no tree is refused here, once, into :attr:`refused`. Any other
+    refusal comes from walking the tree, so a rule never tried against a row
+    is never refused on that block.
+    """
+
+    def __init__(self, rules):
+        self.rules = []  # every rule not refused, in the order given; filed below by position
+        self.refused = {}  # rule -> the ConditionError refusing it
+        self.reads_transfers = False  # a transaction rule compares token transfers
+        self._trees = []
+        # Per source whose rows the rules are tried against, one at a time:
+        self._everywhere = {source: [] for source in _ROW_SOURCES}  # tried against every row
+        self._equal = {source: {} for source in _ROW_SOURCES}  # (source, field, value) -> rules
+        self._ranges = {source: {} for source in _ROW_SOURCES}  # (source, field, lower) -> _Range
+        for rule in rules:
+            nodes = list(rule.all_conditions.all())
+            root, children = utils.root_and_children(nodes)
+            if root is None:
+                self.refused[rule] = ConditionError(
+                    f"Rule {rule.pk} has no conditions to evaluate."
+                )
+                continue
+            position = len(self.rules)
+            self.rules.append(rule)
+            self._trees.append((root, children))
+            sources = utils.tree_sources(nodes)
+            if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
+                self._file(position, utils.SOURCE_TRANSACTION, root, children)
+                self.reads_transfers |= utils.SOURCE_TOKEN_TRANSFER in sources
+            elif utils.SOURCE_WITHDRAWAL in sources:
+                self._file(position, utils.SOURCE_WITHDRAWAL, root, children)
+            else:
+                self._everywhere[utils.SOURCE_BLOCK].append(position)
+        for ranges in self._ranges.values():
+            for filed in ranges.values():
+                filed.sort()
+        self._equal_fields = {
+            rows_source: sorted({(source, field) for source, field, _ in equal})
+            for rows_source, equal in self._equal.items()
+        }
+
+    def _file(self, position, rows_source, root, children):
+        key = _key(root, children)
+        if key is not None:
+            source, field, values = key
+            for value in values:
+                self._equal[rows_source].setdefault((source, field, value), []).append(position)
+            return
+        bound = _range_key(root, children)
+        if bound is not None:
+            source, field, lower, threshold = bound
+            self._ranges[rows_source].setdefault((source, field, lower), _Range()).add(
+                threshold, position
+            )
+            return
+        self._everywhere[rows_source].append(position)
+
+    def tries(self, rows_source):
+        """Whether any rule is tried against ``rows_source``'s rows."""
+        return bool(
+            self._everywhere[rows_source] or self._equal[rows_source] or self._ranges[rows_source]
+        )
+
+    def candidates(self, rows_source, bound):
+        """The positions of the rules worth trying against the rows ``bound`` by source.
+
+        A rule is filed by one field of one source, so it is answered at most once.
+        """
+        found = list(self._everywhere[rows_source])
+        equal = self._equal[rows_source]
+        for source, field in self._equal_fields[rows_source]:
+            row = bound.get(source)
+            if row is not None:  # an unbound source equals nothing
+                found.extend(equal.get((source, field, _value(source, field, utils.TEXT, row)), ()))
+        for (source, field, lower), filed in self._ranges[rows_source].items():
+            row = bound.get(source)
+            value = None if row is None else _value(source, field, utils.NUMBER, row)
+            if not _blank(value):  # a blank value is past no threshold
+                found.extend(filed.past(value, lower))
+        return found
+
+    def holds(self, position, block, **bound):
+        root, children = self._trees[position]
+        return _holds(root, children, {utils.SOURCE_BLOCK: block, **bound})
+
+
+class _Range:
+    """Rules filed by one number field's threshold, sorted by it once :meth:`sort` has run."""
+
+    def __init__(self):
+        self.thresholds = []
+        self.positions = []
+
+    def add(self, threshold, position):
+        self.thresholds.append(threshold)
+        self.positions.append(position)
+
+    def sort(self):
+        pairs = sorted(zip(self.thresholds, self.positions, strict=True))
+        self.thresholds = [threshold for threshold, _ in pairs]
+        self.positions = [position for _, position in pairs]
+
+    def past(self, value, lower):
+        """The rules ``value`` could satisfy: those with a threshold at or below it for a
+        lower bound (``>``, ``>=``), at or above it for an upper one (``<``, ``<=``)."""
+        if lower:
+            return self.positions[: bisect.bisect_right(self.thresholds, value)]
+        return self.positions[bisect.bisect_left(self.thresholds, value) :]
+
+
+def matches_for_rules(index, block, rows=None):
+    """The rows of ``block`` each rule of ``index`` matches, as :func:`matches_in_block` answers them.
+
+    Answers ``(matches, refused)``: each rule of ``index.rules`` not refused on
+    this block, in that order, with the rows it matched (``[]`` for none), and
+    each rule the evaluator refused on this block with its
+    :class:`ConditionError`. Raises :class:`NotDecodedError` when a rule
+    reads token transfers before decoding has finished with the block.
+    """
+    rows = rows or BlockRows(block)
+    matched = [[] for _ in index.rules]
+    refused = {}  # position -> ConditionError
+
+    def holds(position, **bound):
+        if position in refused:
+            return False
+        try:
+            return index.holds(position, block, **bound)
+        except ConditionError as exc:
+            refused[position] = exc
+            return False
+
+    transfers = rows.transfers if index.reads_transfers else {}
+    if index.tries(utils.SOURCE_TRANSACTION):
+        for transaction in rows.transactions:
+            held = set()
+            # No transfer is bound only when there is none to bind, as matches_in_block binds them.
+            for transfer in transfers.get(transaction.hash) or [None]:
+                bound = {"transaction": transaction, "token_transfer": transfer}
+                for position in index.candidates(utils.SOURCE_TRANSACTION, bound):
+                    if position not in held and holds(position, **bound):
+                        held.add(position)
+            for position in held:
+                matched[position].append(transaction)
+    if index.tries(utils.SOURCE_WITHDRAWAL):
+        for withdrawal in rows.withdrawals:
+            bound = {"withdrawal": withdrawal}
+            for position in index.candidates(utils.SOURCE_WITHDRAWAL, bound):
+                if holds(position, **bound):
+                    matched[position].append(withdrawal)
+    for position in index.candidates(utils.SOURCE_BLOCK, {}):
+        if holds(position):
+            matched[position].append(block)
+    return (
+        {
+            rule: matched[position]
+            for position, rule in enumerate(index.rules)
+            if position not in refused
+        },
+        {index.rules[position]: error for position, error in refused.items()},
+    )
+
+
+# The sources whose rows a rule is tried against, one at a time.
+_ROW_SOURCES = (utils.SOURCE_TRANSACTION, utils.SOURCE_WITHDRAWAL, utils.SOURCE_BLOCK)
+# The sources a rule can be filed by a field of.
+_KEY_SOURCES = (utils.SOURCE_TRANSACTION, utils.SOURCE_TOKEN_TRANSFER, utils.SOURCE_WITHDRAWAL)
+# Each operator a threshold bounds a number with, and whether it is a lower bound.
+_BOUNDS = {">": True, ">=": True, "<": False, "<=": False}
+
+
+def _key(node, children):
+    """``(source, field, values)``: a text field ``node`` holds only when it equals one of ``values``.
+
+    ``None`` when there is none. Of several, the one with the fewest values,
+    a transaction's field before a transfer's.
+    """
+    if node.type == utils.TREE_TYPE_COMPARISON:
+        if utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name) != utils.TEXT:
+            return None
+        if node.source not in _KEY_SOURCES:
+            return None
+        if node.operator == "==" and isinstance(node.value, str):
+            values = [node.value]
+        elif node.operator == "in" and isinstance(node.value, list):
+            values = node.value
+        else:
+            return None
+        if not all(isinstance(value, str) for value in values):
+            return None
+        return node.source, node.field_name, frozenset(values)
+    group = children.get(node.pk) or []
+    keys = [_key(child, children) for child in group]
+    if node.type == "AND":
+        keys = [key for key in keys if key is not None]
+        return min(
+            keys,
+            key=lambda key: (len(key[2]), key[0] != utils.SOURCE_TRANSACTION),
+            default=None,
+        )
+    if node.type == "OR" and keys and all(keys):
+        if len({(source, field) for source, field, _ in keys}) == 1:
+            source, field, _ = keys[0]
+            return source, field, frozenset().union(*(values for _, _, values in keys))
+    return None
+
+
+def _range_key(node, children):
+    """``(source, field, lower, threshold)``: a number field ``node`` holds only when past ``threshold``.
+
+    ``lower`` when that is a lower bound (``>``, ``>=``), otherwise an upper
+    one (``<``, ``<=``). ``None`` when there is none; of several ANDed
+    together, the first.
+    """
+    if node.type == utils.TREE_TYPE_COMPARISON:
+        if utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name) != utils.NUMBER:
+            return None
+        if node.source not in _KEY_SOURCES or node.operator not in _BOUNDS:
+            return None
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            return None
+        return node.source, node.field_name, _BOUNDS[node.operator], _exact(node.value)
+    if node.type == "AND":
+        for child in children.get(node.pk) or []:
+            bound = _range_key(child, children)
+            if bound is not None:
+                return bound
+    return None
 
 
 def _in_block(model, block):
