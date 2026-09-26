@@ -213,14 +213,21 @@ class MatchedRule(models.Model):
     ``rules.services.evaluate_blocks``, which evaluates each block once.
     """
 
-    rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="matches")
-    block = models.ForeignKey(Block, on_delete=models.CASCADE, related_name="rule_matches")
+    # Evaluation writes thousands of these a block, and every index is paid on
+    # each: only the one reads need is kept, (rule, block), which also finds a
+    # rule's matches when it is deleted. Nothing deletes a block, transaction
+    # or withdrawal, so their keys go unindexed; one that did would scan.
+    rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="matches", db_index=False)
+    block = models.ForeignKey(
+        Block, on_delete=models.CASCADE, related_name="rule_matches", db_index=False
+    )
     transaction = models.ForeignKey(
         Transaction,
         on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="rule_matches",
+        db_index=False,
     )
     withdrawal = models.ForeignKey(
         Withdrawal,
@@ -228,11 +235,15 @@ class MatchedRule(models.Model):
         null=True,
         blank=True,
         related_name="rule_matches",
+        db_index=False,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["id"]
+        indexes = [
+            models.Index(fields=["rule", "block"], name="matchedrule_rule_block_idx"),
+        ]
 
     def __str__(self):
         if self.transaction_id is not None:

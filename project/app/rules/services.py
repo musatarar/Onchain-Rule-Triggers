@@ -13,9 +13,10 @@ exceptions.
 """
 
 import dataclasses
+import io
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 
 from project.app.evm.block.models import Block, Transaction, Withdrawal
@@ -191,23 +192,55 @@ def _evaluate(block, rules, refused):
     the block first. A ``NotDecodedError`` rolls the mark back with the matches.
     """
     with transaction.atomic():
+        now = timezone.now()
         claimed = Block.objects.filter(hash=block.hash, evaluated_at__isnull=True).update(
-            evaluated_at=timezone.now()
+            evaluated_at=now
         )
         if not claimed:
             return None
         found, refused_here = onchain.matches_for_rules(rules, block)
         for rule, error in {**rules.refused, **refused_here}.items():
             refused.setdefault(rule, error)
-        matches = [_match(rule, block, row) for rule, rows in found.items() for row in rows]
-        MatchedRule.objects.bulk_create(matches)
+        matches = [_match(rule, block, row, now) for rule, rows in found.items() for row in rows]
+        _record(matches)
     return len(matches)
 
 
-def _match(rule, block, row):
-    """A row ``matches_in_block`` answered for ``rule`` in ``block``, as a match."""
-    if isinstance(row, Transaction):
-        return MatchedRule(rule=rule, block=block, transaction=row)
-    if isinstance(row, Withdrawal):
-        return MatchedRule(rule=rule, block=block, withdrawal=row)
-    return MatchedRule(rule=rule, block=block)  # a block-only rule: the block itself matched
+# A match as _record writes it: the MatchedRule columns, in this order.
+_MATCH_COLUMNS = ("rule_id", "block_id", "transaction_id", "withdrawal_id", "created_at")
+
+
+def _match(rule, block, row, now):
+    """A row ``matches_in_block`` answered for ``rule`` in ``block``, as :data:`_MATCH_COLUMNS`."""
+    transaction_hash = row.hash if isinstance(row, Transaction) else None
+    withdrawal_id = row.pk if isinstance(row, Withdrawal) else None
+    # Neither for a block-only rule: the block itself matched.
+    return rule.pk, block.hash, transaction_hash, withdrawal_id, now
+
+
+def _record(matches):
+    """Insert ``matches``, each as :data:`_MATCH_COLUMNS`, as ``MatchedRule`` rows.
+
+    On Postgres they are streamed with one ``COPY``, which skips building a
+    model and a parameter per value: most of what ``bulk_create`` spends on a
+    block's thousands of matches. Anywhere else they go through ``bulk_create``.
+    """
+    if not matches:
+        return
+    if connection.vendor != "postgresql":
+        MatchedRule.objects.bulk_create(
+            MatchedRule(**dict(zip(_MATCH_COLUMNS, match, strict=True))) for match in matches
+        )
+        return
+    # COPY's text format: a tab between values, \N for null. No value here holds
+    # a tab, newline or backslash: they are ids, 0x hashes and a timestamp.
+    rows = io.StringIO(
+        "".join(
+            "\t".join("\\N" if value is None else str(value) for value in match) + "\n"
+            for match in matches
+        )
+    )
+    quote = connection.ops.quote_name
+    columns = ", ".join(quote(column) for column in _MATCH_COLUMNS)
+    with connection.cursor() as cursor:
+        cursor.copy_expert(f"COPY {quote(MatchedRule._meta.db_table)} ({columns}) FROM STDIN", rows)
