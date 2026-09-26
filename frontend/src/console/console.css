@@ -45,6 +45,11 @@ html:has(.phosphor) body {
   --bezel-bottom: #22251c;
   --font-big: 'VT323', 'Share Tech Mono', ui-monospace, monospace;
   --font-ui: 'Share Tech Mono', ui-monospace, Menlo, Consolas, monospace;
+  /* Triangle pointer drawn in phosphor with a screen-black edge so it reads on
+     the lit trace as well as the glass. Hotspot is the tip (1 1). Clickables get
+     the hot tint. The hexes are --ph, --ph-hot and --scr: a data URI can't read vars. */
+  --cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M1 1 L1 18 L15 12 Z' fill='%235dff8f' stroke='%2303120a' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 1 1, default;
+  --cursor-pointer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M1 1 L1 18 L15 12 Z' fill='%239dffbd' stroke='%2303120a' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 1 1, pointer;
   color-scheme: dark;
   height: 100vh;
   height: 100dvh;
@@ -53,6 +58,7 @@ html:has(.phosphor) body {
   font: 400 15px/1.45 var(--font-ui);
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
+  cursor: var(--cursor);
 }
 
 /* Resets against the sign-in pages' element rules, which sit in the `legacy` layer. */
@@ -67,9 +73,11 @@ html:has(.phosphor) body {
   padding: 0;
   text-align: inherit;
   text-transform: inherit;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   transition: none;
 }
+.phosphor :where(a[href], select, summary, label[for], [role='button'], [role='tab'], [role='option']) { cursor: var(--cursor-pointer); }
+.phosphor :where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='button'], [type='submit']), textarea) { cursor: text; }
 .phosphor :where(button):disabled { cursor: not-allowed; }
 .phosphor :where(header, nav, footer, main, section, aside) { margin: 0; padding: 0; background: none; border: 0; box-shadow: none; }
 .phosphor :where(h1, h2, h3, p, ol, ul, dl, dd, fieldset, legend) { margin: 0; padding: 0; font: inherit; }
@@ -442,10 +450,10 @@ html:has(.phosphor) body {
   letter-spacing: 0;
   color: var(--ph);
 }
-.phosphor .combo-list li { padding: 6px 8px; cursor: pointer; }
+.phosphor .combo-list li { padding: 6px 8px; cursor: var(--cursor-pointer); }
 .phosphor .combo-list li[aria-selected='true'],
 .phosphor .combo-list li:hover { background: var(--ph-5); }
-.phosphor .combo-list .combo-note { color: var(--ph-3); cursor: default; display: flex; gap: 8px; align-items: center; }
+.phosphor .combo-list .combo-note { color: var(--ph-3); cursor: var(--cursor); display: flex; gap: 8px; align-items: center; }
 
 .phosphor .compose > aside.pane { min-height: 0; }
 .phosphor .aside-body { display: flex; flex-direction: column; }
@@ -518,7 +526,7 @@ html:has(.phosphor) body {
 .phosphor .rg .coilgl.on path,
 .phosphor .rg .coilgl.on circle,
 .phosphor .rg .coilgl.on rect { stroke: var(--scr); }
-.phosphor .rg .ctc { cursor: pointer; }
+.phosphor .rg .ctc { cursor: var(--cursor-pointer); }
 .phosphor .rg .ctc:focus { outline: none; }
 .phosphor .rg .hit { fill: transparent; }
 .phosphor .rg .ctc:hover .hit { fill: rgba(93, 255, 143, 0.06); }
