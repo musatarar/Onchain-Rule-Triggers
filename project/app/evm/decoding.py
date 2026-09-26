@@ -112,6 +112,10 @@ def _store(batch, transfers):
             rows.append(
                 TokenTransfer(
                     transaction_hash=tx.hash,
+                    chain=tx.chain,
+                    block_number=tx.block_number,
+                    block_hash=tx.block_hash,
+                    block_timestamp=tx.block_timestamp,
                     token=tokens[(tx.chain, tx.to_address.lower())],
                     from_address=from_address,
                     to_address=to_address,

@@ -192,6 +192,7 @@ class WithdrawalUpdateSchema(BaseModel):
 
     block_hash: str
     block_number: int
+    block_timestamp: datetime.datetime
     validator_index: int
     address: str
     amount: int
@@ -217,6 +218,8 @@ class Withdrawal(models.Model):
     # Null only on a row stored before the column existed; storing its block again fills it.
     block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     block_number = models.BigIntegerField()
+    # Null only on a row stored before the column existed, like ``block_hash``.
+    block_timestamp = models.DateTimeField(null=True, blank=True)
     validator_index = models.BigIntegerField()
     address = AddressField()
     amount = models.BigIntegerField()

@@ -10,10 +10,12 @@ from decimal import Decimal
 
 from django.test import TestCase
 
+from project.app.evm.block.services import store_blocks
 from project.app.evm.chains import ChainId
 from project.app.evm.receipt import models as receipt_models
 from project.app.evm.receipt import services
-from project.app.models import Contract, Log, Receipt, Topic
+from project.app.models import Block, Contract, Log, Receipt, Topic
+from project.app.tests.tests_evm_block import block
 from scripts.load_receipts import load_receipts
 
 BLOCK_HASH = "0x95bcdbcf4d80ca00ec9ee085d27b50c4a79d9b921977b74f2f2109d049c7d869"
@@ -129,6 +131,27 @@ class StoreReceiptsTests(TestCase):
 
         self.assertIsNone(Log.objects.get().block_timestamp)
         self.assertFalse(Topic.objects.exists())
+
+    def test_a_receipt_takes_its_block_timestamp_from_the_node(self):
+        services.store_receipts(
+            [receipt(blockTimestamp="0x6aae166f"), swap_receipt()], ChainId.ETHEREUM
+        )
+
+        at = datetime.datetime.fromtimestamp(0x6AAE166F, datetime.UTC)
+        # The swap's receipt carries none, but its logs do.
+        self.assertEqual(list(Receipt.objects.values_list("block_timestamp", flat=True)), [at, at])
+
+    def test_a_receipt_the_node_gives_no_time_takes_its_stored_blocks(self):
+        store_blocks([block(hash=BLOCK_HASH)], ChainId.ETHEREUM)
+
+        services.store_receipts([receipt()], ChainId.ETHEREUM)
+
+        self.assertEqual(Receipt.objects.get().block_timestamp, Block.objects.get().timestamp)
+
+    def test_a_receipt_with_no_time_from_the_node_or_a_stored_block_has_none(self):
+        services.store_receipts([receipt()], ChainId.ETHEREUM)
+
+        self.assertIsNone(Receipt.objects.get().block_timestamp)
 
     def test_a_contract_creation_links_the_contract_it_deployed_and_no_recipient(self):
         created = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
