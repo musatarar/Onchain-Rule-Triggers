@@ -45,6 +45,7 @@ import bisect
 import datetime
 import functools
 import operator
+from collections import Counter
 from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
@@ -147,66 +148,155 @@ class RuleIndex:
     :func:`matches_for_rules` answers what :func:`matches_in_block` would for
     each rule, having walked far fewer trees.
 
-    Each tree is compiled once, here, into a function of the rows bound by
-    source (:func:`_compile`), so trying a rule against a row is a call rather
-    than a walk of its nodes. A rule the evaluator would refuse on walking its
-    tree (no tree, an empty or unknown group, an unknown field or operator) is
-    refused here, once, into :attr:`refused`.
+    Each tree is compiled once, when the rule is indexed, into a function of
+    the rows bound by source (:func:`_compile`), so trying a rule against a
+    row is a call rather than a walk of its nodes. A rule the evaluator would
+    refuse on walking its tree (no tree, an empty or unknown group, an unknown
+    field or operator) is refused then, into :attr:`refused`.
+
+    The index changes a rule at a time: :meth:`put` indexes a rule in place of
+    the version of it already indexed, and :meth:`discard` takes one out, each
+    touching only that rule's filings. A rule keeps its position while it is
+    indexed, and a discarded rule's position goes to the next one put.
     """
 
-    def __init__(self, rules):
-        self.rules = []  # every rule not refused, in the order given; filed below by position
+    def __init__(self, rules=()):
         self.refused = {}  # rule -> the ConditionError refusing it
-        self.reads_transfers = False  # a transaction rule compares token transfers
-        self._predicates = []  # each rule's compiled tree, by position
+        self._rules = []  # the rule at each position; None at a free one
+        self._predicates = []  # each position's compiled tree
+        self._positions = {}  # rule id -> its position
+        self._refused_ids = {}  # rule id -> the refused rule
+        self._free = []  # positions a discarded rule left
+        self._filings = {}  # position -> how _file filed it, for _unfile
+        self._transfer_readers = set()  # positions of rules comparing token transfers
         # Per source whose rows the rules are tried against, one at a time:
-        self._everywhere = {source: [] for source in _ROW_SOURCES}  # tried against every row
+        self._everywhere = {source: {} for source in _ROW_SOURCES}  # tried against every row
         self._equal = {source: {} for source in _ROW_SOURCES}  # (source, field, value) -> rules
+        self._equal_fields = {source: Counter() for source in _ROW_SOURCES}  # (source, field)
         self._ranges = {source: {} for source in _ROW_SOURCES}  # (source, field, lower) -> _Range
+        # Filed in bulk, each range sorted once at the end rather than on every insert.
+        self._bulk = True
         for rule in rules:
-            nodes = list(rule.all_conditions.all())
-            root, children = utils.root_and_children(nodes)
-            try:
-                if root is None:
-                    raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
-                predicate = _compile(root, children)
-            except ConditionError as exc:
-                self.refused[rule] = exc
-                continue
-            position = len(self.rules)
-            self.rules.append(rule)
-            self._predicates.append(predicate)
-            sources = utils.tree_sources(nodes)
-            if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
-                self._file(position, utils.SOURCE_TRANSACTION, root, children)
-                self.reads_transfers |= utils.SOURCE_TOKEN_TRANSFER in sources
-            elif utils.SOURCE_WITHDRAWAL in sources:
-                self._file(position, utils.SOURCE_WITHDRAWAL, root, children)
-            else:
-                self._everywhere[utils.SOURCE_BLOCK].append(position)
+            self.put(rule)
         for ranges in self._ranges.values():
             for filed in ranges.values():
                 filed.sort()
-        self._equal_fields = {
-            rows_source: sorted({(source, field) for source, field, _ in equal})
-            for rows_source, equal in self._equal.items()
-        }
+        self._bulk = False
+
+    @property
+    def rules(self):
+        """Every rule indexed and not refused, in the order of their positions."""
+        return [rule for rule in self._rules if rule is not None]
+
+    @property
+    def reads_transfers(self):
+        """Whether a transaction rule compares token transfers."""
+        return bool(self._transfer_readers)
+
+    def rule_at(self, position):
+        return self._rules[position]
+
+    def put(self, rule):
+        """Index ``rule``, with its tree as it now reads, in place of any version of it indexed."""
+        position = self._positions.get(rule.pk)
+        if position is not None:
+            self._unfile(position)
+        self._drop_refusal(rule.pk)
+        nodes = list(rule.all_conditions.all())
+        root, children = utils.root_and_children(nodes)
+        try:
+            if root is None:
+                raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
+            predicate = _compile(root, children)
+        except ConditionError as exc:
+            if position is not None:
+                self._release(rule.pk, position)
+            self.refused[rule] = exc
+            self._refused_ids[rule.pk] = rule
+            return
+        if position is None:
+            position = self._free.pop() if self._free else len(self._rules)
+            if position == len(self._rules):
+                self._rules.append(None)
+                self._predicates.append(None)
+            self._positions[rule.pk] = position
+        self._rules[position] = rule
+        self._predicates[position] = predicate
+        sources = utils.tree_sources(nodes)
+        if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
+            self._file(position, utils.SOURCE_TRANSACTION, root, children)
+            if utils.SOURCE_TOKEN_TRANSFER in sources:
+                self._transfer_readers.add(position)
+        elif utils.SOURCE_WITHDRAWAL in sources:
+            self._file(position, utils.SOURCE_WITHDRAWAL, root, children)
+        else:
+            self._filings[position] = ("everywhere", utils.SOURCE_BLOCK)
+            self._everywhere[utils.SOURCE_BLOCK][position] = None
+
+    def discard(self, rule_id):
+        """Take the rule with id ``rule_id`` out of the index, refused or not; nothing if it is not in."""
+        self._drop_refusal(rule_id)
+        position = self._positions.get(rule_id)
+        if position is not None:
+            self._unfile(position)
+            self._release(rule_id, position)
+
+    def _drop_refusal(self, rule_id):
+        rule = self._refused_ids.pop(rule_id, None)
+        if rule is not None:
+            self.refused.pop(rule, None)
+        return rule
+
+    def _release(self, rule_id, position):
+        del self._positions[rule_id]
+        self._rules[position] = None
+        self._predicates[position] = None
+        self._free.append(position)
 
     def _file(self, position, rows_source, root, children):
         key = _key(root, children)
         if key is not None:
             source, field, values = key
+            equal = self._equal[rows_source]
             for value in values:
-                self._equal[rows_source].setdefault((source, field, value), []).append(position)
+                equal.setdefault((source, field, value), {})[position] = None
+                self._equal_fields[rows_source][source, field] += 1
+            self._filings[position] = ("equal", rows_source, source, field, values)
             return
         bound = _range_key(root, children)
         if bound is not None:
             source, field, lower, threshold = bound
-            self._ranges[rows_source].setdefault((source, field, lower), _Range()).add(
-                threshold, position
-            )
+            filed = self._ranges[rows_source].setdefault((source, field, lower), _Range())
+            filed.add(threshold, position, sort=not self._bulk)
+            self._filings[position] = ("range", rows_source, (source, field, lower), threshold)
             return
-        self._everywhere[rows_source].append(position)
+        self._filings[position] = ("everywhere", rows_source)
+        self._everywhere[rows_source][position] = None
+
+    def _unfile(self, position):
+        """Undo what :meth:`_file` did for ``position``."""
+        self._transfer_readers.discard(position)
+        filing = self._filings.pop(position)
+        kind, rows_source = filing[0], filing[1]
+        if kind == "everywhere":
+            del self._everywhere[rows_source][position]
+        elif kind == "equal":
+            _, _, source, field, values = filing
+            equal, fields = self._equal[rows_source], self._equal_fields[rows_source]
+            for value in values:
+                filed = equal[source, field, value]
+                del filed[position]
+                if not filed:
+                    del equal[source, field, value]
+                fields[source, field] -= 1
+                if not fields[source, field]:
+                    del fields[source, field]
+        else:
+            _, _, key, threshold = filing
+            ranges = self._ranges[rows_source]
+            ranges[key].remove(threshold, position)
+            if not ranges[key]:
+                del ranges[key]
 
     def tries(self, rows_source):
         """Whether any rule is tried against ``rows_source``'s rows."""
@@ -238,20 +328,31 @@ class RuleIndex:
 
 
 class _Range:
-    """Rules filed by one number field's threshold, sorted by it once :meth:`sort` has run."""
+    """Rules filed by one number field's threshold, kept sorted by it and then by position."""
 
     def __init__(self):
+        self.pairs = []  # (threshold, position)
         self.thresholds = []
         self.positions = []
 
-    def add(self, threshold, position):
-        self.thresholds.append(threshold)
-        self.positions.append(position)
+    def __len__(self):
+        return len(self.pairs)
+
+    def add(self, threshold, position, sort=True):
+        """File ``position`` at ``threshold``: in order, or at the end until :meth:`sort` when not ``sort``."""
+        index = bisect.bisect(self.pairs, (threshold, position)) if sort else len(self.pairs)
+        self.pairs.insert(index, (threshold, position))
+        self.thresholds.insert(index, threshold)
+        self.positions.insert(index, position)
+
+    def remove(self, threshold, position):
+        index = bisect.bisect_left(self.pairs, (threshold, position))
+        del self.pairs[index], self.thresholds[index], self.positions[index]
 
     def sort(self):
-        pairs = sorted(zip(self.thresholds, self.positions, strict=True))
-        self.thresholds = [threshold for threshold, _ in pairs]
-        self.positions = [position for _, position in pairs]
+        self.pairs.sort()
+        self.thresholds = [threshold for threshold, _ in self.pairs]
+        self.positions = [position for _, position in self.pairs]
 
     def past(self, value, lower):
         """The rules ``value`` could satisfy: those with a threshold at or below it for a
@@ -269,7 +370,7 @@ def matches_for_rules(index, block, rows=None):
     reads token transfers before decoding has finished with the block.
     """
     rows = rows or BlockRows(block)
-    matched = [[] for _ in index.rules]
+    matched = [[] for _ in index._rules]
     holds = index.holds
     transfers = rows.transfers if index.reads_transfers else {}
     if index.tries(utils.SOURCE_TRANSACTION):
@@ -297,7 +398,9 @@ def matches_for_rules(index, block, rows=None):
     for position in index.candidates(utils.SOURCE_BLOCK, bound):
         if holds(position, bound):
             matched[position].append(block)
-    return dict(zip(index.rules, matched, strict=True))
+    return {
+        rule: found for rule, found in zip(index._rules, matched, strict=True) if rule is not None
+    }
 
 
 # The sources whose rows a rule is tried against, one at a time.

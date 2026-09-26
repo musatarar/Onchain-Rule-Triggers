@@ -16,11 +16,12 @@ takes minutes at scale::
 
 For each user count it runs five one-block ticks, as live polling does,
 keeping the rules across them as ``run_pipeline`` does: the first reads and
-indexes them, the rest find them unchanged. It checks every user's rules
-matched what one user's do, prints the seconds of a warm tick by stage and of
-the cold one, then fits a line through the warm ticks and prints how many
-users fit in Ethereum's 12 second block time (``STRESS_BLOCK_SECONDS`` to
-change it). Run it against Postgres (``DATABASE_URL``) for numbers that mean
+indexes them all, the fourth follows ``STRESS_EDITS`` rules written again
+(10 by default) and indexes just those, and the rest find them unchanged. It
+checks every user's rules matched what one user's do, prints the seconds of a
+warm tick by stage, of the edit tick and of the cold one, then fits a line
+through the warm ticks and prints how many users fit in Ethereum's 12 second
+block time (``STRESS_BLOCK_SECONDS`` to change it). Run it against Postgres (``DATABASE_URL``) for numbers that mean
 something in production.
 """
 
@@ -59,6 +60,8 @@ from project.app.tests.tests_evm_block import FakeNode, NodeTestCase
 RULES_PER_USER = 10
 STRESS_USERS = os.environ.get("STRESS_USERS", "")
 BLOCK_SECONDS = float(os.environ.get("STRESS_BLOCK_SECONDS", "12"))
+# Rules written before one of the timed ticks, as users editing theirs between blocks.
+EDITS = int(os.environ.get("STRESS_EDITS", "10"))
 
 
 def _raw(name):
@@ -286,9 +289,11 @@ class PipelineStressTests(StressTestCase):
     """One-block ticks, as live polling runs: the node's head moves a block before each tick.
 
     The rules are kept across ticks, as ``run_pipeline`` keeps them, so the
-    first tick at each user count reads and indexes them (cold) and the rest
-    find them unchanged (warm). The fit and the capacity it gives are the warm
-    ticks'; a rule written between ticks makes the next one cold again.
+    first tick at each user count reads and indexes them all (cold). Before
+    the fourth, :data:`EDITS` rules are written again through the catalog, as
+    users editing theirs, so that tick indexes just those again (edit); the
+    rest find the rules unchanged (warm). The fit and the capacity it gives
+    are the warm ticks'.
     """
 
     def test_one_block_ticks_at_each_user_count(self):
@@ -302,7 +307,9 @@ class PipelineStressTests(StressTestCase):
                 self.add_users(count - users, start=users)
                 rules = rules_services.EnabledRules()
                 ticks = []
-                for number in sorted(self.node.by_number):
+                for tick, number in enumerate(sorted(self.node.by_number)):
+                    if tick == 3:
+                        self._edit(EDITS)
                     self.node.head = number
                     result, seconds = self.timed_tick(rules)
                     self.assertEqual((result.ingested, result.evaluation.blocks), (1, 1))
@@ -312,16 +319,25 @@ class PipelineStressTests(StressTestCase):
                 if baseline is None:
                     baseline = per_user
                 self.assertEqual(per_user, baseline)
-                cold, warm = ticks[0][1], [seconds for _, seconds in ticks[1:]]
-                self.assertTrue(all(seconds["index"] < cold["index"] for seconds in warm))
-                rows.append(
-                    (
-                        count,
-                        cold,
-                        {stage: sum(tick[stage] for tick in warm) / len(warm) for stage in STAGES},
-                    )
-                )
+                seconds = [tick for _, tick in ticks]
+                warm = [seconds[tick] for tick in (1, 2, 4)]
+                self.assertTrue(all(tick["index"] < seconds[0]["index"] for tick in warm))
+                # Ingesting, decoding and evaluating a block do not depend on whether the
+                # rules changed, and the sample blocks differ (one has twice the logs of any
+                # other), so those stages are averaged over every tick; the indexing apart.
+                stages = {
+                    stage: sum(tick[stage] for tick in seconds) / len(seconds)
+                    for stage in STAGES
+                    if stage != "index"
+                }
+                stages["index"] = sum(tick["index"] for tick in warm) / len(warm)
+                rows.append((count, stages, seconds[3]["index"], seconds[0]["index"]))
         self._report(rows)
+
+    def _edit(self, count):
+        """Write ``count`` enabled rules again through the catalog, their conditions as they were."""
+        for rule in Rule.objects.filter(enabled=True).order_by("?")[:count]:
+            rules_services.update_rule(rule, {"conditions": rule.conditions_payload()})
 
     def _reset(self):
         """Forget the sample blocks, so the next ticks ingest, decode and evaluate them afresh."""
@@ -333,19 +349,24 @@ class PipelineStressTests(StressTestCase):
         lines = [
             "",
             f"Pipeline stress: one-block ticks over {len(SAMPLE_BLOCKS)} sample mainnet blocks, "
-            f"{RULES_PER_USER} rules per user, {connection.vendor}; warm ticks, in seconds",
+            f"{RULES_PER_USER} rules per user, {connection.vendor}; seconds",
             f"{'users':>8} {'rules':>8} {'ingest':>8} {'decode':>8} {'evaluate':>9} "
-            f"{'warm tick':>10} {'index':>8} {'cold tick':>10}",
+            f"{'index':>8} {'warm tick':>10} {'+ edits':>8} {'+ cold':>8}",
         ]
-        for count, cold, warm in rows:
+        for count, stages, edited, cold in rows:
             lines.append(
-                f"{count:>8} {count * RULES_PER_USER:>8} {warm['ingest_new_blocks']:>8.3f} "
-                f"{warm['decode_transactions']:>8.3f} {warm['evaluate_blocks']:>9.3f} "
-                f"{sum(warm.values()):>10.3f} {cold['index']:>8.3f} {sum(cold.values()):>10.3f}"
+                f"{count:>8} {count * RULES_PER_USER:>8} {stages['ingest_new_blocks']:>8.3f} "
+                f"{stages['decode_transactions']:>8.3f} {stages['evaluate_blocks']:>9.3f} "
+                f"{stages['index']:>8.3f} {sum(stages.values()):>10.3f} "
+                f"{edited - stages['index']:>8.3f} {cold - stages['index']:>8.3f}"
             )
-        lines.append("index: reading and indexing the rules, which a cold tick adds")
+        lines.append(
+            f"index: checking the rules are unchanged. + edits: what indexing {EDITS} rules "
+            "written since adds to a tick. + cold: what indexing every rule adds, as the first "
+            "tick does"
+        )
         if len(rows) > 1:
-            fixed, per_user = _fit([(count, sum(warm.values())) for count, _, warm in rows])
+            fixed, per_user = _fit([(count, sum(stages.values())) for count, stages, *_ in rows])
             lines.append(
                 f"fit: {fixed:.3f}s + {per_user * 1000:.3f}ms per user per warm tick; "
                 f"about {int((BLOCK_SECONDS - fixed) / per_user):,} users fit in a "
