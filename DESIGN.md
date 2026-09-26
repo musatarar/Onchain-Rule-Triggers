@@ -376,6 +376,14 @@ Plays when a match is opened: on first load, on selecting a journal row, with J/
 - **Coil burst:** when power reaches the coil's input, the arcs light (0.22s), the labels fade in (0.3s), and the disc bursts (0.9s ease-out: scale 0.4 and invisible, scale 1.5 with a 12px glow at 35%, then scale 1).
 - **Reduced motion:** every animation above is off; the circuit is drawn in its final lit state straight away. The `?` and the status-line cursor don't blink. Nothing else changes.
 
+### Power-on boot
+Plays once per page load, on whichever shell opens first (sign-in, the session check, or the console); client-side navigation never replays it. 1.15s in total (`Boot.tsx`, `console.css`):
+- **Dot → line (0–0.35s):** the glass is unlit tube (`scr-edge`). A dot appears at the centre and stretches into a 2px `phosphor-hot` line the full width of the tube, with a 10px/36px phosphor glow.
+- **Open (0.44–0.85s):** two shutters of unlit tube, meeting at the line, fold away up and down (ease-out) while the line swells into a fading band of light, so the picture opens from the middle to fill the tube.
+- **Settle (0.44–1.15s):** the whole picture flares to 1.9× brightness as it opens and settles back to normal.
+- **Hand-over:** it is timed from the first shell that mounts; a shell that replaces it mid-boot (session check → console) joins with a negative delay rather than restarting.
+- **Reduced motion:** no boot; the tube is simply on.
+
 ### Inspector
 A panel under the trace that explains the coil or one gate.
 - **Container:** 1px `phosphor-3` top border, sitting under the diagram so it never covers the animation. Clicking a gate, the coil or a chain row **pins** it: gradient from `inspector-top` to `screen` at 40%, sticky at the bottom of the trace pane (max 42% of its height, scrolls inside), with the inspector lift shadow and a square close (×) button in the heading that unpins it. Opening another match unpins it. At 860px and below it's always static. Announces changes politely.
