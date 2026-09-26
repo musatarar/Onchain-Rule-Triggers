@@ -54,6 +54,8 @@ db.sqlite3
 
 # secrets
 .env
+# ...except the frontend's build-time switches, which Vite embeds in the public bundle.
+!frontend/.env
 
 # Per-branch worktrees. The path is `worktrees`, plural.
 .claude/worktrees/

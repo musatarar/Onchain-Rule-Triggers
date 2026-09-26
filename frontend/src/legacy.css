@@ -1,0 +1,6 @@
+/* The sign-in pages' stylesheets, in the order they always loaded, inside one
+   cascade layer. Their bare element rules (button, header, nav, h1) then lose to
+   any unlayered rule, so the console's styles, all scoped under .phosphor, win
+   without a specificity fight, and the sign-in pages look exactly as before. */
+@import './pages/auth.css' layer(legacy);
+@import './styles.css' layer(legacy);
