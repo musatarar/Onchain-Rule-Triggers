@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { useBoot } from '../console/Boot.tsx';
 import { pageTitle } from '../console/product.ts';
 import { Mark } from '../console/ui/Mark.tsx';
 import { NoSignal } from './NoSignal.tsx';
@@ -50,11 +51,14 @@ export function TuningShell({ title, tab, signal, status, children }: Props) {
 
   const caption = signal === 'locking' || signal === 'locked' ? 'SIGNAL LOCKED' : signal === 'tuning' ? 'TUNING' : 'NO SIGNAL';
 
+  const boot = useBoot();
+
   return (
     <div className="phosphor">
       <div className="dev">
         <div className="screen">
-          <div className="scr-in">
+          <div className={boot.className} style={boot.style}>
+            {boot.overlay}
             <header className="sh">
               <div className="logo">
                 <Mark />
