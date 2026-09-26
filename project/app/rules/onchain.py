@@ -44,6 +44,7 @@ the number of rules.
 import bisect
 import datetime
 import functools
+import operator
 from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
@@ -146,16 +147,18 @@ class RuleIndex:
     :func:`matches_for_rules` answers what :func:`matches_in_block` would for
     each rule, having walked far fewer trees.
 
-    A rule with no tree is refused here, once, into :attr:`refused`. Any other
-    refusal comes from walking the tree, so a rule never tried against a row
-    is never refused on that block.
+    Each tree is compiled once, here, into a function of the rows bound by
+    source (:func:`_compile`), so trying a rule against a row is a call rather
+    than a walk of its nodes. A rule the evaluator would refuse on walking its
+    tree (no tree, an empty or unknown group, an unknown field or operator) is
+    refused here, once, into :attr:`refused`.
     """
 
     def __init__(self, rules):
         self.rules = []  # every rule not refused, in the order given; filed below by position
         self.refused = {}  # rule -> the ConditionError refusing it
         self.reads_transfers = False  # a transaction rule compares token transfers
-        self._trees = []
+        self._predicates = []  # each rule's compiled tree, by position
         # Per source whose rows the rules are tried against, one at a time:
         self._everywhere = {source: [] for source in _ROW_SOURCES}  # tried against every row
         self._equal = {source: {} for source in _ROW_SOURCES}  # (source, field, value) -> rules
@@ -163,14 +166,16 @@ class RuleIndex:
         for rule in rules:
             nodes = list(rule.all_conditions.all())
             root, children = utils.root_and_children(nodes)
-            if root is None:
-                self.refused[rule] = ConditionError(
-                    f"Rule {rule.pk} has no conditions to evaluate."
-                )
+            try:
+                if root is None:
+                    raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
+                predicate = _compile(root, children)
+            except ConditionError as exc:
+                self.refused[rule] = exc
                 continue
             position = len(self.rules)
             self.rules.append(rule)
-            self._trees.append((root, children))
+            self._predicates.append(predicate)
             sources = utils.tree_sources(nodes)
             if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
                 self._file(position, utils.SOURCE_TRANSACTION, root, children)
@@ -227,9 +232,9 @@ class RuleIndex:
                 found.extend(filed.past(value, lower))
         return found
 
-    def holds(self, position, block, **bound):
-        root, children = self._trees[position]
-        return _holds(root, children, {utils.SOURCE_BLOCK: block, **bound})
+    def holds(self, position, bound):
+        """Whether the rule at ``position`` holds of the rows ``bound`` by source, the block's included."""
+        return self._predicates[position](bound)
 
 
 class _Range:
@@ -259,54 +264,40 @@ class _Range:
 def matches_for_rules(index, block, rows=None):
     """The rows of ``block`` each rule of ``index`` matches, as :func:`matches_in_block` answers them.
 
-    Answers ``(matches, refused)``: each rule of ``index.rules`` not refused on
-    this block, in that order, with the rows it matched (``[]`` for none), and
-    each rule the evaluator refused on this block with its
-    :class:`ConditionError`. Raises :class:`NotDecodedError` when a rule
+    Answers each rule of ``index.rules``, in that order, with the rows it
+    matched (``[]`` for none). Raises :class:`NotDecodedError` when a rule
     reads token transfers before decoding has finished with the block.
     """
     rows = rows or BlockRows(block)
     matched = [[] for _ in index.rules]
-    refused = {}  # position -> ConditionError
-
-    def holds(position, **bound):
-        if position in refused:
-            return False
-        try:
-            return index.holds(position, block, **bound)
-        except ConditionError as exc:
-            refused[position] = exc
-            return False
-
+    holds = index.holds
     transfers = rows.transfers if index.reads_transfers else {}
     if index.tries(utils.SOURCE_TRANSACTION):
         for transaction in rows.transactions:
             held = set()
             # No transfer is bound only when there is none to bind, as matches_in_block binds them.
             for transfer in transfers.get(transaction.hash) or [None]:
-                bound = {"transaction": transaction, "token_transfer": transfer}
+                bound = {
+                    utils.SOURCE_BLOCK: block,
+                    utils.SOURCE_TRANSACTION: transaction,
+                    utils.SOURCE_TOKEN_TRANSFER: transfer,
+                }
                 for position in index.candidates(utils.SOURCE_TRANSACTION, bound):
-                    if position not in held and holds(position, **bound):
+                    if position not in held and holds(position, bound):
                         held.add(position)
             for position in held:
                 matched[position].append(transaction)
     if index.tries(utils.SOURCE_WITHDRAWAL):
         for withdrawal in rows.withdrawals:
-            bound = {"withdrawal": withdrawal}
+            bound = {utils.SOURCE_BLOCK: block, utils.SOURCE_WITHDRAWAL: withdrawal}
             for position in index.candidates(utils.SOURCE_WITHDRAWAL, bound):
-                if holds(position, **bound):
+                if holds(position, bound):
                     matched[position].append(withdrawal)
-    for position in index.candidates(utils.SOURCE_BLOCK, {}):
-        if holds(position):
+    bound = {utils.SOURCE_BLOCK: block}
+    for position in index.candidates(utils.SOURCE_BLOCK, bound):
+        if holds(position, bound):
             matched[position].append(block)
-    return (
-        {
-            rule: matched[position]
-            for position, rule in enumerate(index.rules)
-            if position not in refused
-        },
-        {index.rules[position]: error for position, error in refused.items()},
-    )
+    return dict(zip(index.rules, matched, strict=True))
 
 
 # The sources whose rows a rule is tried against, one at a time.
@@ -419,6 +410,124 @@ def _transfers_by_hash(block):
         if transfer.token.contract.chain == block.chain:
             by_hash.setdefault(transfer.transaction_hash, []).append(transfer)
     return by_hash
+
+
+def _compile(node, children):
+    """The tree under ``node`` as a function of the rows bound by source, answering whether it holds.
+
+    It answers what :func:`_holds` does for the same rows, with each field's
+    reader, each threshold's ``Decimal`` and each operator looked up once
+    here rather than on every row. Raises :class:`ConditionError` up front for
+    what :func:`_holds` refuses on walking the tree.
+    """
+    if node.type == utils.TREE_TYPE_COMPARISON:
+        return _compile_leaf(node)
+    if node.type not in GROUP_CHECKS:
+        raise ConditionError(f"Unknown group type {node.type!r}.")
+    group = children.get(node.pk)
+    if not group:
+        raise ConditionError(f"A {node.type} group with no conditions has no verdict.")
+    parts = tuple(_compile(child, children) for child in group)
+    if len(parts) == 1:
+        return parts[0]
+    if GROUP_CHECKS[node.type] is all:
+
+        def all_of(bound):
+            for part in parts:
+                if not part(bound):
+                    return False
+            return True
+
+        return all_of
+
+    def any_of(bound):
+        for part in parts:
+            if part(bound):
+                return True
+        return False
+
+    return any_of
+
+
+# Each operator comparing a present value with its threshold.
+_COMPARISONS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+}
+
+
+def _compile_leaf(node):
+    """One comparison as a function of the rows bound by source; see :func:`_leaf` and :func:`_compare`."""
+    field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
+    if field_type is None:
+        raise ConditionError(f"Unknown field {node.field_name!r} on source {node.source!r}.")
+    read = _reader(node.source, node.field_name, field_type)
+    threshold = node.value
+    if field_type == utils.NUMBER:
+        threshold = (
+            [_exact(item) for item in threshold]
+            if isinstance(threshold, list)
+            else _exact(threshold)
+        )
+    if node.operator == "exists":
+        return lambda bound: not _blank(read(bound))
+    if node.operator == "absent":
+        return lambda bound: _blank(read(bound))
+    if node.operator == "contains":
+        if not isinstance(threshold, str):
+            return lambda bound: _contains(read(bound), threshold)
+        needle = threshold.strip().lower()
+        return lambda bound: needle in str(read(bound) or "").lower()
+    if node.operator == "in":
+        items = [_coerce(item, field_type) for item in threshold]
+        try:
+            items = frozenset(items)
+        except TypeError:
+            pass  # an unhashable item: look through the list, as _compare does
+
+        def within(bound):
+            value = read(bound)
+            return not _blank(value) and value in items
+
+        return within
+    compare = _COMPARISONS.get(node.operator)
+    if compare is None:
+        raise ConditionError(f"Unknown operator {node.operator!r}.")
+    threshold = _coerce(threshold, field_type)
+
+    def compared(bound):
+        value = read(bound)
+        return not _blank(value) and compare(value, threshold)
+
+    return compared
+
+
+def _reader(source, field, field_type):
+    """A function of the rows bound by source answering ``field`` as :func:`_value` reads it."""
+    if source == utils.SOURCE_TOKEN_TRANSFER and field == "token":
+
+        def read(bound):
+            row = bound.get(source)
+            return None if row is None else row.token.contract.address
+
+    elif field_type == utils.DATE:
+
+        def read(bound):
+            row = bound.get(source)
+            return None if row is None else _value(source, field, field_type, row)
+
+    else:
+        get = operator.attrgetter(field)
+
+        def read(bound):
+            row = bound.get(source)
+            return None if row is None else get(row)
+
+    return read
 
 
 def _holds(node, children, rows):

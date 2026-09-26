@@ -17,6 +17,7 @@ import io
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Count, Max, Sum
 from django.utils import timezone
 
 from project.app.evm.block.models import Block, Transaction, Withdrawal
@@ -149,44 +150,73 @@ class Evaluation:
     refused: dict = dataclasses.field(default_factory=dict)
 
 
-def evaluate_blocks():
+class EnabledRules:
+    """Every owner's enabled rules as an index, kept between runs and rebuilt only when they change.
+
+    Reading every rule with its tree and indexing it grows with the number of
+    rules, and a long-running pipeline evaluates a block or so a tick, so one
+    held across ticks spares that on every tick the rules stay as they were.
+    Whether they have is read in one aggregate over the enabled rules: how
+    many, which (the sum of their ids) and when one was last written (every
+    write through this module saves the rule, bumping ``updated_at``, and
+    replaces its tree in the same transaction).
+    """
+
+    def __init__(self):
+        self._index = None
+        self._version = None
+
+    def index(self):
+        """The enabled rules' :class:`~project.app.rules.onchain.RuleIndex`, current as of this call."""
+        enabled = Rule.objects.filter(enabled=True)
+        version = enabled.aggregate(count=Count("id"), ids=Sum("id"), latest=Max("updated_at"))
+        if self._index is None or version != self._version:
+            self._index = onchain.RuleIndex(enabled.prefetch_related("all_conditions"))
+            self._version = version
+        return self._index
+
+
+def evaluate_blocks(rules=None):
     """Evaluate every enabled rule against each block not evaluated yet; answer an :class:`Evaluation`.
 
-    Every owner's enabled rules are read once, with their trees, and the blocks
-    are taken by chain and number. A block's rows are read once and shared by
-    every rule (:class:`~project.app.rules.onchain.BlockRows`), so a block costs
-    the same queries however many rules there are, and each row is tried only
-    against the rules whose equality checks it could satisfy
-    (:class:`~project.app.rules.onchain.RuleIndex`). Each block is evaluated in one transaction
-    that records its matches and marks it evaluated, so a run that fails partway
-    keeps the blocks it finished, and a re-run evaluates only the rest. The mark
-    is a conditional UPDATE, so a block two runs reach at once is evaluated by
-    one of them.
+    Every owner's enabled rules are read once, with their trees, from
+    ``rules`` (an :class:`EnabledRules` kept across runs) or afresh, and the
+    blocks are taken by chain and number. A block's rows are read once and
+    shared by every rule (:class:`~project.app.rules.onchain.BlockRows`), so a
+    block costs the same queries however many rules there are, and each row is
+    tried only against the rules whose equality or threshold checks it could
+    satisfy (:class:`~project.app.rules.onchain.RuleIndex`). Each block is
+    evaluated in one transaction that records its matches and marks it
+    evaluated, so a run that fails partway keeps the blocks it finished, and a
+    re-run evaluates only the rest. The mark is a conditional UPDATE, so a
+    block two runs reach at once is evaluated by one of them.
 
     A rule the evaluator refuses (:class:`~project.app.rules.onchain.ConditionError`)
-    matches nothing there and holds up no other rule. A block that a rule reads
+    matches nothing and holds up no other rule. A block that a rule reads
     token transfers of before decoding has finished with it
     (:class:`~project.app.rules.onchain.NotDecodedError`) is left unevaluated,
     with nothing recorded, for a run after decoding. A rule written or enabled
     after a block was evaluated is not evaluated against that block.
     """
-    rules = onchain.RuleIndex(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
+    index = (rules or EnabledRules()).index()
     run = Evaluation()
     blocks = Block.objects.filter(evaluated_at__isnull=True).order_by("chain", "number", "hash")
     for block in blocks:
         try:
-            recorded = _evaluate(block, rules, run.refused)
+            recorded = _evaluate(block, index)
         except onchain.NotDecodedError:
             run.undecoded += 1
             continue
         if recorded is not None:
             run.blocks += 1
             run.matches += recorded
+            for rule, error in index.refused.items():
+                run.refused.setdefault(rule, error)
     return run
 
 
-def _evaluate(block, rules, refused):
-    """Record the rows of ``block`` each rule of the index ``rules`` matches, and mark it evaluated.
+def _evaluate(block, index):
+    """Record the rows of ``block`` each rule of ``index`` matches, and mark it evaluated.
 
     Answers how many matches were recorded, or ``None`` when another run marked
     the block first. A ``NotDecodedError`` rolls the mark back with the matches.
@@ -198,9 +228,7 @@ def _evaluate(block, rules, refused):
         )
         if not claimed:
             return None
-        found, refused_here = onchain.matches_for_rules(rules, block)
-        for rule, error in {**rules.refused, **refused_here}.items():
-            refused.setdefault(rule, error)
+        found = onchain.matches_for_rules(index, block)
         matches = [_match(rule, block, row, now) for rule, rows in found.items() for row in rows]
         _record(matches)
     return len(matches)

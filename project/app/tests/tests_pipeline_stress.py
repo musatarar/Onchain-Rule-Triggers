@@ -14,12 +14,14 @@ takes minutes at scale::
 
     STRESS_USERS=10,100,500,1000 python manage.py test project.app.tests.tests_pipeline_stress
 
-For each user count it times one tick over the five blocks, checks every
-user's rules matched what one user's do, and prints the time per block by
-stage, then fits a line through them and prints how many users fit in
-Ethereum's 12 second block time (``STRESS_BLOCK_SECONDS`` to change it). Run
-it against Postgres (``DATABASE_URL``) for numbers that mean something in
-production.
+For each user count it runs five one-block ticks, as live polling does,
+keeping the rules across them as ``run_pipeline`` does: the first reads and
+indexes them, the rest find them unchanged. It checks every user's rules
+matched what one user's do, prints the seconds of a warm tick by stage and of
+the cold one, then fits a line through the warm ticks and prints how many
+users fit in Ethereum's 12 second block time (``STRESS_BLOCK_SECONDS`` to
+change it). Run it against Postgres (``DATABASE_URL``) for numbers that mean
+something in production.
 """
 
 import contextlib
@@ -156,18 +158,20 @@ class StressTestCase(NodeTestCase):
             ]
         )
 
-    def timed_tick(self):
-        """One pipeline tick; answers its result and the seconds each stage took.
+    def timed_tick(self, rules):
+        """One pipeline tick with ``rules`` kept across ticks; answers its result and each stage's seconds.
 
-        A test runs in a transaction it rolls back, so Postgres would check the
-        foreign keys, which Django makes deferred, at a commit that never comes.
-        They are checked as each row is written instead, so the tick pays for
-        them as a committed one does.
+        ``index`` is the part of ``evaluate_blocks`` spent reading and indexing
+        the rules, which ``rules`` does only when they changed since the last
+        tick; ``evaluate_blocks`` is the rest. A test runs in a transaction it
+        rolls back, so Postgres would check the foreign keys, which Django makes
+        deferred, at a commit that never comes. They are checked as each row is
+        written instead, so the tick pays for them as a committed one does.
         """
         if connection.vendor == "postgresql":
             with connection.cursor() as cursor:
                 cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
-        seconds = {}
+        seconds = dict.fromkeys(STAGES, 0.0)
 
         def timed(stage, function):
             def run(*args, **kwargs):
@@ -175,7 +179,7 @@ class StressTestCase(NodeTestCase):
                 try:
                     return function(*args, **kwargs)
                 finally:
-                    seconds[stage] = time.perf_counter() - started
+                    seconds[stage] += time.perf_counter() - started
 
             return run
 
@@ -184,9 +188,15 @@ class StressTestCase(NodeTestCase):
                 stack.enter_context(
                     mock.patch.object(pipeline, stage, timed(stage, getattr(pipeline, stage)))
                 )
-            result = pipeline.run_tick()
+            stack.enter_context(mock.patch.object(rules, "index", timed("index", rules.index)))
+            result = pipeline.run_tick(rules)
+        seconds["evaluate_blocks"] -= seconds["index"]
         self.assertIsNone(result.ingest_error)
         return result, seconds
+
+
+# What timed_tick times, in the order the report prints them.
+STAGES = ("ingest_new_blocks", "decode_transactions", "index", "evaluate_blocks")
 
 
 def _clone_trees(pairs):
@@ -225,7 +235,7 @@ class QueryScalingTests(StressTestCase):
     def setUp(self):
         super().setUp()
         # Ingest and decode the sample blocks, leaving evaluation to each test.
-        with mock.patch.object(pipeline, "evaluate_blocks", lambda: None):
+        with mock.patch.object(pipeline, "evaluate_blocks", lambda rules=None: None):
             pipeline.run_tick()
 
     def evaluate_again(self):
@@ -264,8 +274,8 @@ class QueryScalingTests(StressTestCase):
         index = onchain.RuleIndex(rules)
 
         for block in Block.objects.order_by("number"):
-            found, refused = onchain.matches_for_rules(index, block)
-            self.assertEqual(refused, {})
+            found = onchain.matches_for_rules(index, block)
+            self.assertEqual(index.refused, {})
             for rule in rules:
                 with self.subTest(block=block.number, rule=rule.name):
                     self.assertEqual(found[rule], onchain.matches_in_block(rule, block))
@@ -273,9 +283,16 @@ class QueryScalingTests(StressTestCase):
 
 @unittest.skipUnless(STRESS_USERS, "set STRESS_USERS=10,100,... to run the pipeline stress tests")
 class PipelineStressTests(StressTestCase):
-    def test_a_tick_over_the_sample_blocks_at_each_user_count(self):
+    """One-block ticks, as live polling runs: the node's head moves a block before each tick.
+
+    The rules are kept across ticks, as ``run_pipeline`` keeps them, so the
+    first tick at each user count reads and indexes them (cold) and the rest
+    find them unchanged (warm). The fit and the capacity it gives are the warm
+    ticks'; a rule written between ticks makes the next one cold again.
+    """
+
+    def test_one_block_ticks_at_each_user_count(self):
         counts = sorted(int(count) for count in STRESS_USERS.split(","))
-        blocks = len(SAMPLE_BLOCKS)
         rows = []
         baseline = None
         for count in counts:
@@ -283,18 +300,31 @@ class PipelineStressTests(StressTestCase):
                 self._reset()
                 users = Rule.objects.filter(enabled=True).count() // RULES_PER_USER
                 self.add_users(count - users, start=users)
-                result, seconds = self.timed_tick()
-                self.assertEqual(result.evaluation.blocks, blocks)
-                self.assertEqual(result.evaluation.refused, {})
-                per_user = result.evaluation.matches / count
+                rules = rules_services.EnabledRules()
+                ticks = []
+                for number in sorted(self.node.by_number):
+                    self.node.head = number
+                    result, seconds = self.timed_tick(rules)
+                    self.assertEqual((result.ingested, result.evaluation.blocks), (1, 1))
+                    self.assertEqual(result.evaluation.refused, {})
+                    ticks.append((result.evaluation.matches, seconds))
+                per_user = sum(matches for matches, _ in ticks) / count
                 if baseline is None:
                     baseline = per_user
                 self.assertEqual(per_user, baseline)
-                rows.append((count, {stage: spent / blocks for stage, spent in seconds.items()}))
+                cold, warm = ticks[0][1], [seconds for _, seconds in ticks[1:]]
+                self.assertTrue(all(seconds["index"] < cold["index"] for seconds in warm))
+                rows.append(
+                    (
+                        count,
+                        cold,
+                        {stage: sum(tick[stage] for tick in warm) / len(warm) for stage in STAGES},
+                    )
+                )
         self._report(rows)
 
     def _reset(self):
-        """Forget the sample blocks, so the next tick ingests, decodes and evaluates them afresh."""
+        """Forget the sample blocks, so the next ticks ingest, decode and evaluate them afresh."""
         for model in (MatchedRule, TokenTransfer, Receipt, Transaction, Withdrawal, Block):
             model.objects.all().delete()
         IngestCursor.objects.update(last_indexed_block=min(self.node.by_number) - 1)
@@ -302,20 +332,22 @@ class PipelineStressTests(StressTestCase):
     def _report(self, rows):
         lines = [
             "",
-            f"Pipeline stress: seconds per block over {len(SAMPLE_BLOCKS)} sample mainnet blocks, "
-            f"{RULES_PER_USER} rules per user, {connection.vendor}",
-            f"{'users':>8} {'rules':>8} {'ingest':>8} {'decode':>8} {'evaluate':>9} {'total':>8}",
+            f"Pipeline stress: one-block ticks over {len(SAMPLE_BLOCKS)} sample mainnet blocks, "
+            f"{RULES_PER_USER} rules per user, {connection.vendor}; warm ticks, in seconds",
+            f"{'users':>8} {'rules':>8} {'ingest':>8} {'decode':>8} {'evaluate':>9} "
+            f"{'warm tick':>10} {'index':>8} {'cold tick':>10}",
         ]
-        for count, stages in rows:
-            total = sum(stages.values())
+        for count, cold, warm in rows:
             lines.append(
-                f"{count:>8} {count * RULES_PER_USER:>8} {stages['ingest_new_blocks']:>8.3f} "
-                f"{stages['decode_transactions']:>8.3f} {stages['evaluate_blocks']:>9.3f} {total:>8.3f}"
+                f"{count:>8} {count * RULES_PER_USER:>8} {warm['ingest_new_blocks']:>8.3f} "
+                f"{warm['decode_transactions']:>8.3f} {warm['evaluate_blocks']:>9.3f} "
+                f"{sum(warm.values()):>10.3f} {cold['index']:>8.3f} {sum(cold.values()):>10.3f}"
             )
+        lines.append("index: reading and indexing the rules, which a cold tick adds")
         if len(rows) > 1:
-            fixed, per_user = _fit([(count, sum(stages.values())) for count, stages in rows])
+            fixed, per_user = _fit([(count, sum(warm.values())) for count, _, warm in rows])
             lines.append(
-                f"fit: {fixed:.3f}s + {per_user * 1000:.3f}ms per user per block; "
+                f"fit: {fixed:.3f}s + {per_user * 1000:.3f}ms per user per warm tick; "
                 f"about {int((BLOCK_SECONDS - fixed) / per_user):,} users fit in a "
                 f"{BLOCK_SECONDS:g}s block"
             )

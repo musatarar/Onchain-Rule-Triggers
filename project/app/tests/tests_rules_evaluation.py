@@ -10,6 +10,7 @@ rules ``scripts/create_demo_rules.py`` loads, evaluated against the sample block
 import contextlib
 import io
 from collections import Counter
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -124,7 +125,7 @@ class EvaluateBlocksTests(EvaluationTestCase):
         # Another run marks the block after this one read it as not evaluated.
         Block.objects.filter(hash=stored.hash).update(evaluated_at=timezone.now())
 
-        self.assertIsNone(rules_services._evaluate(stored, onchain.RuleIndex([rule]), {}))
+        self.assertIsNone(rules_services._evaluate(stored, onchain.RuleIndex([rule])))
         self.assertFalse(MatchedRule.objects.exists())
 
     def test_a_block_costs_the_same_queries_however_many_rules_read_it(self):
@@ -142,6 +143,47 @@ class EvaluateBlocksTests(EvaluationTestCase):
         self._store()
 
         self.assertEqual(queries_with(1), queries_with(10))
+
+
+class EnabledRulesTests(EvaluationTestCase):
+    def setUp(self):
+        super().setUp()
+        self.rule = self._named("built", built_by_the_sample_miner())
+        self.rules = rules_services.EnabledRules()
+        self.first = self.rules.index()
+
+    def test_the_index_is_kept_while_the_rules_are_unchanged(self):
+        with self.assertNumQueries(1):  # the aggregate saying nothing changed
+            self.assertIs(self.rules.index(), self.first)
+
+    def test_the_index_is_rebuilt_after_any_write_to_the_rules(self):
+        writes = [
+            lambda: self._named("another", built_by_the_sample_miner()),
+            lambda: rules_services.update_rule(
+                self.rule, {"conditions": _all_of(tx("value", ">=", 0))}
+            ),
+            lambda: rules_services.update_rule(self.rule, {"enabled": False}),
+            lambda: rules_services.update_rule(self.rule, {"enabled": True}),
+            lambda: rules_services.delete_rule(Rule.objects.get(name="another")),
+        ]
+        index = self.first
+        for write in writes:
+            write()
+            rebuilt = self.rules.index()
+            self.assertIsNot(rebuilt, index)
+            self.assertEqual(
+                [rule.pk for rule in rebuilt.rules],
+                list(Rule.objects.filter(enabled=True).values_list("pk", flat=True)),
+            )
+            index = rebuilt
+
+    def test_evaluation_reads_the_rules_from_the_one_kept(self):
+        self._store()
+
+        with mock.patch.object(onchain, "RuleIndex", side_effect=AssertionError("rebuilt")):
+            run = rules_services.evaluate_blocks(self.rules)
+
+        self.assertEqual((run.blocks, run.matches), (1, 1))
 
 
 class DecodingTests(EvaluationTestCase):

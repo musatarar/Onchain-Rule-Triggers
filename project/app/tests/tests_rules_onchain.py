@@ -602,9 +602,9 @@ class RuleIndexTests(OnchainTestCase):
         ]
         rules, index = self._index(*trees)
 
-        found, refused = onchain.matches_for_rules(index, stored)
+        found = onchain.matches_for_rules(index, stored)
 
-        self.assertEqual(refused, {})
+        self.assertEqual(index.refused, {})
         self.assertEqual(list(found), rules)
         for rule in rules:
             with self.subTest(rule=rule.conditions_payload()):
@@ -621,12 +621,12 @@ class RuleIndexTests(OnchainTestCase):
         tried = []
         holds = index.holds
 
-        def counted(position, block, **bound):
+        def counted(position, bound):
             tried.append((index.rules[position], bound["transaction"].hash))
-            return holds(position, block, **bound)
+            return holds(position, bound)
 
         index.holds = counted
-        found, _ = onchain.matches_for_rules(index, stored)
+        found = onchain.matches_for_rules(index, stored)
 
         self.assertEqual(tried, [(rules[0], DYNAMIC_FEE_HASH)])
         self.assertEqual(
@@ -662,12 +662,12 @@ class RuleIndexTests(OnchainTestCase):
         tried = []
         holds = index.holds
 
-        def counted(position, block, **bound):
+        def counted(position, bound):
             tried.append((index.rules[position], bound["transaction"].hash))
-            return holds(position, block, **bound)
+            return holds(position, bound)
 
         index.holds = counted
-        found, _ = onchain.matches_for_rules(index, stored)
+        found = onchain.matches_for_rules(index, stored)
 
         # The lower bounds are tried only against the transaction at 9, the upper against both.
         self.assertCountEqual(
@@ -690,10 +690,41 @@ class RuleIndexTests(OnchainTestCase):
         working = self._rule(_all_of(_cond("miner", "==", MINER, source="block")))
 
         index = onchain.RuleIndex([broken, working])
-        found, refused = onchain.matches_for_rules(index, stored)
+        found = onchain.matches_for_rules(index, stored)
 
         self.assertIsInstance(index.refused[broken], ConditionError)
-        self.assertEqual((found, refused), ({working: [stored]}, {}))
+        self.assertEqual(found, {working: [stored]})
+
+    def test_a_tree_the_evaluator_cannot_judge_is_refused_when_indexed(self):
+        stored = self._store()
+        working = self._rule(_all_of(_cond("miner", "==", MINER, source="block")))
+        broken = {}
+        for problem, leaf in (
+            ("empty group", None),
+            (
+                "unknown operator",
+                {"field_name": "value", "operator": "~=", "source": "transaction"},
+            ),
+            ("unknown field", {"field_name": "colour", "operator": "==", "source": "transaction"}),
+        ):
+            rule = Rule.objects.create(owner=self.owner, name=problem)
+            root = Condition.objects.create(rule=rule, type=Condition.TYPE_AND)
+            if leaf is not None:
+                Condition.objects.create(rule=rule, parent=root, value=1, **leaf)
+            broken[problem] = rule
+        rules = Rule.objects.filter(pk__in=[working.pk, *(r.pk for r in broken.values())])
+
+        index = onchain.RuleIndex(rules.prefetch_related("all_conditions"))
+
+        self.assertEqual(set(index.refused), set(broken.values()))
+        for problem, message in (
+            ("empty group", "no conditions has no verdict"),
+            ("unknown operator", "Unknown operator"),
+            ("unknown field", "Unknown field"),
+        ):
+            with self.subTest(problem=problem):
+                self.assertIn(message, str(index.refused[broken[problem]]))
+        self.assertEqual(onchain.matches_for_rules(index, stored), {working: [stored]})
 
     def test_a_transfer_rule_before_decoding_finished_refuses_the_block(self):
         stored = self._store(decoded=False)

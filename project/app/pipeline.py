@@ -34,8 +34,13 @@ class TickResult:
     ingest_error: Exception | None = None
 
 
-def run_tick():
-    """Ingest, decode and evaluate once; answer a :class:`TickResult`."""
+def run_tick(rules=None):
+    """Ingest, decode and evaluate once; answer a :class:`TickResult`.
+
+    ``rules`` is the :class:`~project.app.rules.services.EnabledRules` a
+    long-running caller keeps across ticks, so the rules are indexed again
+    only when they change; without it they are read and indexed afresh.
+    """
     ingested, ingest_error = None, None
     try:
         ingested = ingest_new_blocks()
@@ -48,6 +53,6 @@ def run_tick():
         ingested=ingested,
         decoded=counts[DecodeStatus.DECODED],
         undecodable=counts[DecodeStatus.UNABLE_TO_DECODE],
-        evaluation=evaluate_blocks(),
+        evaluation=evaluate_blocks(rules),
         ingest_error=ingest_error,
     )
