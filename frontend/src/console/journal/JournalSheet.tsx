@@ -469,7 +469,7 @@ export function JournalSheet() {
           </button>
           <h2>Trace</h2>
           <span className="acts-r">
-            <button type="button" className="btn sm" onClick={() => selectedId !== null && replayFor(selectedId)} disabled={!current}>
+            <button type="button" className="btn sm" onClick={() => selectedId !== null && replayFor(selectedId)} disabled={!current?.trace}>
               <Icon name="play" />
               Replay
             </button>
