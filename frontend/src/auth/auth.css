@@ -215,7 +215,7 @@
 
 /* ----- switched-off entry points (auth/Unavailable.tsx) ----- */
 /* Dimmed to phosphor-4 and inert; hover or focus shows the tooltip instead. */
-.phosphor .off { position: relative; color: var(--ph-4); cursor: not-allowed; }
+.phosphor .off { position: relative; color: var(--ph-4); cursor: var(--cursor-off); }
 .phosphor .stabs .tab.off:hover { color: var(--ph-4); }
 .phosphor .alt-off { text-decoration: line-through; text-decoration-color: var(--ph-5); }
 .phosphor .soon {
