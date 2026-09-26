@@ -1,7 +1,5 @@
 """Each token transfer names its transaction's chain and block, indexed together, and every on-chain row
 that lacked it gets its block's timestamp; all nullable, since rows stored before them have none.
-
-It follows both migrations the graph had split into after 0010, the receipts and the address fields.
 """
 
 from django.db import migrations, models
@@ -10,8 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0011_evm_receipts"),
-        ("app", "0013_address_fields"),
+        ("app", "0014_merge_0011_evm_receipts_0013_address_fields"),
     ]
 
     operations = [
