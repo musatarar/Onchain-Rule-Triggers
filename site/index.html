@@ -63,15 +63,9 @@
           repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px),
           radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.45) 100%);
       }
-      h1, h2 { font-family: var(--display); font-weight: 400; margin: 0; }
-      h1 { font-size: 30px; line-height: 1; letter-spacing: 0.04em; }
-      h2 { font-size: 24px; line-height: 1; letter-spacing: 0.05em; margin: 32px 0 10px; }
+      h1 { font-family: var(--display); font-weight: 400; margin: 0; font-size: 30px; line-height: 1; letter-spacing: 0.04em; }
       .tag { color: var(--phosphor-3); font-size: 12px; letter-spacing: 0.06em; margin-top: 6px; }
-      p, li { max-width: 68ch; }
-      p { margin: 10px 0; }
-      ul { padding-left: 1.2em; margin: 8px 0; }
-      li { margin: 4px 0; }
-      .muted { color: var(--phosphor-3); }
+      p { max-width: 68ch; margin: 10px 0; }
       hr { border: 0; border-top: 1.5px dotted var(--phosphor-4); margin: 24px 0; }
       a { color: var(--phosphor-hot); }
       a:hover { background: var(--phosphor-6); }
@@ -84,24 +78,6 @@
         text-shadow: none;
       }
       .btn:hover { background: var(--phosphor-hot); }
-      code { color: var(--phosphor-hot); overflow-wrap: anywhere; }
-      /* A single-rung example, drawn as a ladder: two gates in series, then the coil. */
-      .rung {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0;
-        margin: 16px 0 4px;
-        font-size: 14px;
-      }
-      .wire { flex: 1 1 24px; min-width: 16px; height: 0; border-top: 3.5px solid var(--phosphor); box-shadow: 0 0 3px var(--phosphor); }
-      .gate { border: 1.5px solid var(--phosphor); padding: 6px 10px; }
-      .gate small { display: block; font-size: 10px; color: var(--phosphor-3); }
-      .coil { border: 1.5px solid var(--phosphor); border-radius: 0; padding: 6px 10px; background: var(--phosphor); color: var(--screen); text-shadow: none; }
-      @media (max-width: 560px) {
-        .rung { flex-direction: column; align-items: stretch; }
-        .wire { flex: 0 0 14px; min-height: 14px; border-top: 0; border-left: 3.5px solid var(--phosphor); width: 0; margin-left: 12px; }
-      }
     </style>
   </head>
   <body>
@@ -115,36 +91,6 @@
           token transfer its calldata makes, and evaluates every enabled rule against that stored data. Every
           match leads back to its transaction hash, block, token and the conditions that held.
         </p>
-
-        <div class="rung" role="img" aria-label="Example rule: G1 token is USDT, and G2 amount is greater than 1,000,000, then match.">
-          <span class="gate"><small>G1 &middot; TOKEN</small>= USDT</span>
-          <span class="wire"></span>
-          <span class="gate"><small>G2 &middot; AMOUNT</small>&gt; 1,000,000</span>
-          <span class="wire"></span>
-          <span class="coil">MATCH</span>
-        </div>
-        <p class="muted">"More than 1M USDT leaves our hot wallet", as a tree you can read before you save it.</p>
-
-        <h2>HOW A RULE IS WRITTEN</h2>
-        <ul>
-          <li>Type the rule as a sentence. The LLM layer proposes a condition tree of AND / OR / comparison nodes.</li>
-          <li>Check and edit the tree before saving. The structured builder is always available.</li>
-          <li>Every rule is evaluated; every rule that matched is recorded. Rules are not first-match.</li>
-        </ul>
-
-        <h2>WHAT IT DOES TODAY</h2>
-        <ul>
-          <li>EVM chains by EIP-155 id. Sample data is five Ethereum mainnet blocks.</li>
-          <li>Decodes <code>transfer(address,uint256)</code> and <code>transferFrom(address,address,uint256)</code> calldata.</li>
-          <li>Single-row comparisons within one block. Aggregates across blocks (sums, counts) are not available.</li>
-        </ul>
-
-        <h2>WHAT IT DOES NOT KNOW</h2>
-        <ul>
-          <li>Decoded transfers are <strong>unverified</strong>: nothing checks that the call succeeded.</li>
-          <li>A transfer on a contract the token catalog does not recognise has an unknown token.</li>
-          <li>Amounts are stored raw. When a token's decimals are unknown, they stay unknown; nothing guesses 18.</li>
-        </ul>
 
         <hr />
         <a class="btn" href="https://github.com/musatarar/Onchain-Rule-Triggers">SOURCE ON GITHUB</a>
