@@ -96,7 +96,7 @@ class AuthRequestLinkView(APIView):
 class AuthConsumeView(APIView):
     """``POST /api/auth/consume/`` -- redeem a link and establish the session.
 
-    ``expired`` and ``invalid`` are distinguished on purpose so the page can
+    ``expired`` and ``invalid`` are distinguished on purpose so a client can
     offer "send me a new one"; neither reveals which addresses exist.
     """
 
@@ -164,7 +164,7 @@ class AuthLogoutView(APIView):
 class AuthMeView(APIView):
     """``GET /api/auth/me/`` -- the route guard's one question.
 
-    ``AllowAny`` with a hand-raised 401, so the frontend's global 401 handler
+    ``AllowAny`` with a hand-raised 401, so a client's global 401 handler
     does not fire recursively on its own probe.
     """
 

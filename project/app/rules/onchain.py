@@ -30,7 +30,7 @@ A comparison on a source the binding leaves unbound (a ``token_transfer``
 comparison with no transfer bound) reads no value: ``absent`` holds of it,
 ``exists`` and every other operator do not. Quantities are compared exactly,
 as ``Decimal``: a uint256 is past what a float holds. A block's ``timestamp``
-is compared by its UTC date, as the lead vocabulary compares dates.
+is compared by its UTC date, since a date threshold names a day.
 
 The block's rows are read once, whatever the number of transactions:
 :func:`matches_in_block` runs one query for the transactions (or withdrawals),
@@ -41,7 +41,6 @@ that came prefetched.
 import datetime
 from decimal import Decimal
 
-from project.app.actions import evaluate
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import utils
@@ -50,6 +49,10 @@ GROUP_CHECKS = {"AND": all, "OR": any}
 
 # A transaction decoding has not finished with: its transfers may not be stored yet.
 UNDECODED = (DecodeStatus.INGESTED, DecodeStatus.PROCESSING)
+
+
+class ConditionError(Exception):
+    """A rule this evaluator cannot judge: it has no tree, or names something unknown."""
 
 
 class NotDecodedError(Exception):
@@ -64,22 +67,15 @@ def matches_in_block(rule, block):
     for a rule reading transactions or token transfers, the matching
     :class:`~project.app.evm.block.models.Withdrawal` rows for a withdrawal
     rule, and ``[block]`` or ``[]`` for a block-only rule. Raises
-    :class:`~project.app.actions.evaluate.ConditionError` for a rule that reads
-    lead sources, has no tree, or names something this evaluator cannot read,
-    and :class:`NotDecodedError` for a rule reading token transfers before
-    decoding has finished with the block.
+    :class:`ConditionError` for a rule that has no tree or names something
+    this evaluator cannot read, and :class:`NotDecodedError` for a rule
+    reading token transfers before decoding has finished with the block.
     """
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
-    if utils.reads_lead(sources):
-        raise evaluate.ConditionError(
-            f"Rule {rule.pk} reads lead sources "
-            f"({', '.join(sorted(sources & utils.LEAD_SOURCES))}); only an on-chain rule "
-            "is evaluated against a block."
-        )
     root, children = utils.root_and_children(nodes)
     if root is None:
-        raise evaluate.ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
+        raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
 
     def holds(**rows):
         return _holds(root, children, {utils.SOURCE_BLOCK: block, **rows})
@@ -156,19 +152,17 @@ def _holds(node, children, rows):
         return _leaf(node, rows)
     check = GROUP_CHECKS.get(node.type)
     if check is None:
-        raise evaluate.ConditionError(f"Unknown group type {node.type!r}.")
+        raise ConditionError(f"Unknown group type {node.type!r}.")
     group = children.get(node.pk)
     if not group:
-        raise evaluate.ConditionError(f"A {node.type} group with no conditions has no verdict.")
+        raise ConditionError(f"A {node.type} group with no conditions has no verdict.")
     return check(_holds(child, children, rows) for child in group)
 
 
 def _leaf(node, rows):
     field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
     if field_type is None:
-        raise evaluate.ConditionError(
-            f"Unknown field {node.field_name!r} on source {node.source!r}."
-        )
+        raise ConditionError(f"Unknown field {node.field_name!r} on source {node.source!r}.")
     value = _value(node.source, node.field_name, field_type, rows.get(node.source))
     threshold = node.value
     if field_type == utils.NUMBER:
@@ -177,7 +171,7 @@ def _leaf(node, rows):
             if isinstance(threshold, list)
             else _exact(threshold)
         )
-    return evaluate._compare(value, node.operator, threshold, field_type)
+    return _compare(value, node.operator, threshold, field_type)
 
 
 def _value(source, field, field_type, row):
@@ -203,3 +197,45 @@ def _exact(number):
     if isinstance(number, float):
         return Decimal(repr(number))
     return Decimal(number)
+
+
+def _blank(value):
+    """Absent for `exists`/`absent`. ``False`` and ``0`` are present values."""
+    return value is None or value == ""
+
+
+def _compare(value, operator, threshold, field_type):
+    if operator == "exists":
+        return not _blank(value)
+    if operator == "absent":
+        return _blank(value)
+    if operator == "contains":
+        return _contains(value, threshold)
+    if _blank(value):
+        return False
+    if operator == "in":
+        return value in [_coerce(item, field_type) for item in threshold]
+    threshold = _coerce(threshold, field_type)
+    if operator == "==":
+        return value == threshold
+    if operator == "!=":
+        return value != threshold
+    if operator == ">":
+        return value > threshold
+    if operator == ">=":
+        return value >= threshold
+    if operator == "<":
+        return value < threshold
+    if operator == "<=":
+        return value <= threshold
+    raise ConditionError(f"Unknown operator {operator!r}.")
+
+
+def _contains(value, threshold):
+    return threshold.strip().lower() in str(value or "").lower()
+
+
+def _coerce(threshold, field_type):
+    if field_type == utils.DATE and isinstance(threshold, str):
+        return datetime.date.fromisoformat(threshold)
+    return threshold

@@ -15,6 +15,7 @@ from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
 from django.db import OperationalError, connections
+from django.middleware.csrf import CSRF_SECRET_LENGTH
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.parsers import JSONParser
@@ -31,6 +32,8 @@ from project.app.throttling import LoginEmailRateThrottle
 
 ALLOWED = "tester@example.com"
 NOT_ALLOWED = "stranger@example.com"
+# The csrftoken cookie a client holds before signing in, which signing in rotates.
+PRE_LOGIN_CSRF = "a" * CSRF_SECRET_LENGTH
 
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
@@ -473,7 +476,7 @@ class ConsumeEndpointTests(AuthAPITestCase):
     def test_consume_rotates_the_csrf_token(self):
         # Contract 9.12: a pre-consume csrftoken 403s unless the client re-reads
         # the cookie.
-        self.client.get("/leads/")
+        self.client.cookies["csrftoken"] = PRE_LOGIN_CSRF
         before = self.client.cookies["csrftoken"].value
         issued = self._issue()
 
@@ -657,7 +660,6 @@ class UnauthenticatedAccessTests(APITestCase):
     `SessionAuthenticationWith401` in place."""
 
     PREVIOUSLY_PUBLIC = [
-        ("get", "/api/leads/"),
         ("get", "/api/rules/"),
         # The permission check runs before the view, so an id that does not
         # exist still answers 401 rather than 404.
@@ -680,7 +682,7 @@ class UnauthenticatedAccessTests(APITestCase):
 
     def test_the_401_carries_a_www_authenticate_header(self):
         # This header is *why* the status is 401 rather than 403.
-        resp = self.client.get("/api/leads/")
+        resp = self.client.get("/api/rules/")
         self.assertEqual(resp.headers["WWW-Authenticate"], 'Session realm="api"')
 
     def test_the_allow_any_exemption_list_is_exactly_three_endpoints(self):
@@ -691,22 +693,15 @@ class UnauthenticatedAccessTests(APITestCase):
         }
         self.assertEqual(exempt, {"auth-request-link", "auth-consume", "auth-me"})
 
-    def test_the_html_shells_stay_public(self):
-        # The shells render an empty #root; @login_required would replace the
-        # designed sign-in redirect with a Django 302.
-        for url in ("/leads/", "/signin"):
-            with self.subTest(url=url):
-                self.assertEqual(Client().get(url).status_code, 200)
-
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
 class CsrfAcrossTheLoginBoundaryTests(TestCase):
-    """Contract 9.12: ``login()`` rotates the CSRF token, so the frontend must
-    re-read the cookie per request."""
+    """Contract 9.12: ``login()`` rotates the CSRF token, so a client must
+    re-read the cookie after signing in."""
 
     def test_stale_csrf_token_is_rejected_and_the_fresh_one_is_accepted(self):
         client = Client(enforce_csrf_checks=True)
-        client.get("/signin")  # @ensure_csrf_cookie shell
+        client.cookies["csrftoken"] = PRE_LOGIN_CSRF
         stale = client.cookies["csrftoken"].value
 
         issued = login_links.issue_login_link(ALLOWED)

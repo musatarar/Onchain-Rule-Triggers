@@ -250,7 +250,7 @@ class ClaudeClient(LLMClient):
 
         if not text and not tool_calls:
             # A 200 with neither text nor tool calls is a degenerate sample;
-            # returning "" would land a blank draft in the review queue.
+            # returning "" would pass an empty answer off as a real one.
             raise LLMEmptyCompletionError(
                 "Claude returned a response with no text content and no tool calls.",
                 provider=self.provider_name,

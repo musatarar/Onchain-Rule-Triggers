@@ -12,8 +12,8 @@ from project.app.services.llm.base import FINISH_TOOL_CALLS
 from project.app.services.llm.chat_types import Message, ToolCallRequest, ToolSpec
 from project.app.services.llm.errors import LLMEmptyCompletionError, LLMMalformedResponseError
 
-HISTORY_TOOL = ToolSpec(
-    name="get_lead_history",
+BALANCE_TOOL = ToolSpec(
+    name="get_balance",
     description="d",
     parameters={"type": "object", "properties": {}},
 )
@@ -49,7 +49,7 @@ def _oa_body(tool_calls, *, content=None, finish_reason="tool_calls"):
     }
 
 
-def _oa_entry(call_id="call_1", name="get_lead_history", arguments="{}"):
+def _oa_entry(call_id="call_1", name="get_balance", arguments="{}"):
     """One ``tool_calls`` entry; pass ``arguments=None`` to omit the key."""
     function = {"name": name}
     if arguments is not None:
@@ -78,7 +78,7 @@ class OpenAIBlankArgumentsTests(TestCase):
     def test_empty_string_arguments_are_an_empty_object(self):
         calls = self._one_call("")
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0].name, "get_lead_history")
+        self.assertEqual(calls[0].name, "get_balance")
         self.assertEqual(dict(calls[0].arguments), {})
 
     def test_whitespace_only_arguments_are_an_empty_object(self):
@@ -106,26 +106,26 @@ class OpenAIMultiCallTests(TestCase):
     def test_parallel_calls_all_survive_in_order(self):
         body = _oa_body(
             [
-                _oa_entry(call_id="call_1", name="get_lead_history", arguments=""),
-                _oa_entry(call_id="call_2", name="get_product_details", arguments="{}"),
-                _oa_entry(call_id="call_3", name="check_ae_calendar", arguments='{"days": 7}'),
+                _oa_entry(call_id="call_1", name="get_balance", arguments=""),
+                _oa_entry(call_id="call_2", name="get_token", arguments="{}"),
+                _oa_entry(call_id="call_3", name="get_gas_price", arguments='{"blocks": 7}'),
             ]
         )
         calls = self._client()._build_result(body, 0.1).tool_calls
         self.assertEqual([c.id for c in calls], ["call_1", "call_2", "call_3"])
         self.assertEqual(
             [c.name for c in calls],
-            ["get_lead_history", "get_product_details", "check_ae_calendar"],
+            ["get_balance", "get_token", "get_gas_price"],
         )
-        self.assertEqual([dict(c.arguments) for c in calls], [{}, {}, {"days": 7}])
+        self.assertEqual([dict(c.arguments) for c in calls], [{}, {}, {"blocks": 7}])
 
     def test_tool_call_turn_carrying_text_keeps_both(self):
         body = _oa_body(
             [_oa_entry()],
-            content="Let me check the lead history first.",
+            content="Let me check the balance first.",
         )
         result = self._client()._build_result(body, 0.1)
-        self.assertEqual(result.text, "Let me check the lead history first.")
+        self.assertEqual(result.text, "Let me check the balance first.")
         self.assertEqual(len(result.tool_calls), 1)
         self.assertEqual(result.finish_reason, FINISH_TOOL_CALLS)
 
@@ -161,8 +161,8 @@ class OpenAIDroppedEntryTests(TestCase):
         body = _oa_body(
             [
                 _oa_entry(call_id="call_1"),
-                _oa_entry(call_id=None, name="get_product_details"),
-                _oa_entry(call_id="call_3", name="check_ae_calendar"),
+                _oa_entry(call_id=None, name="get_token"),
+                _oa_entry(call_id="call_3", name="get_gas_price"),
             ]
         )
         self._assert_raises_structural(body)
@@ -188,7 +188,7 @@ class ClaudeToolUseBlockTests(TestCase):
             _Obj(content=blocks, stop_reason="tool_use", model="claude-sonnet-4-6", usage=_usage())
         )
         return asyncio.run(
-            client.agenerate_chat([Message(role="user", content="hi")], tools=(HISTORY_TOOL,))
+            client.agenerate_chat([Message(role="user", content="hi")], tools=(BALANCE_TOOL,))
         )
 
     def _assert_raises_structural(self, blocks):
@@ -201,23 +201,23 @@ class ClaudeToolUseBlockTests(TestCase):
         result = self._result_for(
             [
                 _Obj(type="text", text="Gathering context."),
-                _Obj(type="tool_use", id="toolu_1", name="get_lead_history", input={}),
-                _Obj(type="tool_use", id="toolu_2", name="check_ae_calendar", input={"days": 7}),
+                _Obj(type="tool_use", id="toolu_1", name="get_balance", input={}),
+                _Obj(type="tool_use", id="toolu_2", name="get_gas_price", input={"blocks": 7}),
             ]
         )
         self.assertEqual([c.id for c in result.tool_calls], ["toolu_1", "toolu_2"])
-        self.assertEqual([dict(c.arguments) for c in result.tool_calls], [{}, {"days": 7}])
+        self.assertEqual([dict(c.arguments) for c in result.tool_calls], [{}, {"blocks": 7}])
         self.assertEqual(result.text, "Gathering context.")
 
     def test_block_without_an_input_is_a_zero_argument_call(self):
         result = self._result_for(
-            [_Obj(type="tool_use", id="toolu_1", name="get_lead_history", input=None)]
+            [_Obj(type="tool_use", id="toolu_1", name="get_balance", input=None)]
         )
         self.assertEqual(dict(result.tool_calls[0].arguments), {})
 
     def test_block_without_an_id_raises(self):
         self._assert_raises_structural(
-            [_Obj(type="tool_use", id=None, name="get_lead_history", input={})]
+            [_Obj(type="tool_use", id=None, name="get_balance", input={})]
         )
 
     def test_block_without_a_name_raises(self):
@@ -225,7 +225,7 @@ class ClaudeToolUseBlockTests(TestCase):
 
     def test_block_whose_input_is_not_an_object_raises(self):
         self._assert_raises_structural(
-            [_Obj(type="tool_use", id="toolu_1", name="get_lead_history", input=[1, 2])]
+            [_Obj(type="tool_use", id="toolu_1", name="get_balance", input=[1, 2])]
         )
 
 
@@ -245,27 +245,27 @@ class ClaudeToolResultFoldTests(TestCase):
                 Message(
                     role="assistant",
                     tool_calls=(
-                        ToolCallRequest(id="toolu_1", name="get_lead_history", arguments={}),
-                        ToolCallRequest(id="toolu_2", name="check_ae_calendar", arguments={}),
+                        ToolCallRequest(id="toolu_1", name="get_balance", arguments={}),
+                        ToolCallRequest(id="toolu_2", name="get_gas_price", arguments={}),
                     ),
                 ),
-                Message(role="tool_result", tool_call_id="toolu_1", content="history"),
-                Message(role="tool_result", tool_call_id="toolu_2", content="calendar"),
+                Message(role="tool_result", tool_call_id="toolu_1", content="balance"),
+                Message(role="tool_result", tool_call_id="toolu_2", content="gas price"),
             ]
         )["messages"]
         self.assertEqual([m["role"] for m in wire], ["user", "assistant", "user"])
         blocks = wire[-1]["content"]
         self.assertEqual([b["type"] for b in blocks], ["tool_result", "tool_result"])
         self.assertEqual([b["tool_use_id"] for b in blocks], ["toolu_1", "toolu_2"])
-        self.assertEqual([b["content"] for b in blocks], ["history", "calendar"])
+        self.assertEqual([b["content"] for b in blocks], ["balance", "gas price"])
 
     def test_tool_results_split_by_another_turn_stay_separate(self):
         wire = self._kwargs_for(
             [
                 Message(role="user", content="hi"),
-                Message(role="tool_result", tool_call_id="toolu_1", content="history"),
+                Message(role="tool_result", tool_call_id="toolu_1", content="balance"),
                 Message(role="assistant", content="thinking"),
-                Message(role="tool_result", tool_call_id="toolu_2", content="calendar"),
+                Message(role="tool_result", tool_call_id="toolu_2", content="gas price"),
             ]
         )["messages"]
         self.assertEqual([m["role"] for m in wire], ["user", "user", "assistant", "user"])

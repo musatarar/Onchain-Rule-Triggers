@@ -1,5 +1,4 @@
-"""The ``conditions`` payload contract: schema, vocabulary, and the rule that a
-rule may never fire on lead-controlled text alone.
+"""The ``conditions`` payload contract: its schema and the on-chain vocabulary.
 
 Pure — no database. What is stored here is what the evaluator must resolve, so
 anything this accepts is a promise and anything it rejects never reaches a row.
@@ -8,307 +7,57 @@ anything this accepts is a promise and anything it rejects never reaches a row.
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
-from project.app.models import Shape
 from project.app.rules import utils
-from project.app.tests.tests_shape_utils import shape
 
-SHAPE = shape()
-
-
-def _cond(field, operator, threshold=None, source=None):
-    return utils._cond(field, operator, threshold, source=source, shape=SHAPE)
-
-
-def _validate(payload, against=SHAPE):
-    utils.validate_conditions(payload, against)
+TX = utils._cond("from_address", "==", "0x" + "a1" * 20, source="transaction")
+TRANSFER = utils._cond("token", "==", "0x" + "b0" * 20, source="token_transfer")
+BLOCK = utils._cond("number", ">=", 18_000_000, source="block")
+WITHDRAWAL = utils._cond("amount", ">", 32_000_000_000, source="withdrawal")
 
 
 def _payload(*conditions, operator="all_of", version=utils.SCHEMA_VERSION):
     return {"version": version, "operator": operator, "conditions": list(conditions)}
 
 
-LEAD = _cond("deals_closed", ">", 20)
-DERIVED = _cond("days_since_last_contacted_date", ">=", 14, source="derived")
-NOTES = _cond("hubspot_notes", "contains", "waiting on", source="notes")
-EVENTS = _cond("type", "==", "email_sent", source="events")
-
-
 class ValidPayloadTests(SimpleTestCase):
     def test_the_builders_produce_a_payload_the_validator_accepts(self):
-        _validate(utils._all_of(LEAD))
+        utils.validate_conditions(utils._all_of(TX))
 
-    def test_notes_alongside_a_corroborator_is_accepted(self):
-        _validate(_payload(NOTES, DERIVED))
-
-    def test_every_seeded_shape_of_condition_is_evaluable(self):
-        _validate(
+    def test_the_seeded_shapes_of_condition_are_accepted(self):
+        utils.validate_conditions(
             _payload(
-                _cond("stage", "==", "demo_completed"),
-                _cond("signed_up_date", "absent"),
-                _cond("last_login_date", ">=", "2026-01-01"),
-                _cond("state", "in", ["ID", "TX"]),
-                _cond("days_since_last_login_date", "<=", 21, source="derived"),
-                _cond("hubspot_notes", "contains", "waiting on", source="notes"),
+                TX,
+                TRANSFER,
+                BLOCK,
+                utils._cond("input", "contains", "0xa9059cbb", source="transaction"),
+                utils._cond("to_address", "absent", source="transaction"),
+                utils._cond("timestamp", ">=", "2023-08-26", source="block"),
+                utils._cond("raw_value", "in", [1, 2**255], source="token_transfer"),
+                {"operator": "any_of", "conditions": [TX, TRANSFER]},
             )
         )
 
-    def test_one_level_of_grouping_is_allowed(self):
-        _validate(_payload(LEAD, {"operator": "any_of", "conditions": [NOTES]}))
+    def test_a_lone_leaf_under_any_of_is_accepted(self):
+        utils.validate_conditions(_payload(TX, operator="any_of"))
 
+    def test_every_field_is_nameable(self):
+        for source, fields in utils.ONCHAIN_FIELDS.items():
+            for field in fields:
+                with self.subTest(source=source, field=field):
+                    utils.validate_conditions(_payload(utils._cond(field, "exists", source=source)))
 
-class CorroboratorTests(SimpleTestCase):
-    """A conditions payload must not be satisfiable by CRM text on its own."""
-
-    def _refused(self, payload):
-        with self.assertRaises(ValidationError) as ctx:
-            _validate(payload)
-        self.assertIn("lead-controlled text alone", str(ctx.exception))
-
-    def test_a_notes_only_payload_is_refused(self):
-        self._refused(_payload(NOTES))
-
-    def test_an_events_only_payload_is_refused(self):
-        self._refused(_payload(EVENTS))
-
-    def test_an_any_of_branch_that_notes_alone_could_satisfy_is_refused(self):
-        # `any_of` means the notes branch fires the rule by itself, so the
-        # sibling lead condition corroborates nothing.
-        self._refused(_payload(NOTES, LEAD, operator="any_of"))
-
-    def test_an_any_of_of_groups_needs_a_corroborator_in_every_branch(self):
-        corroborated = {"operator": "all_of", "conditions": [NOTES, LEAD]}
-        self._refused(
-            _payload(corroborated, {"operator": "all_of", "conditions": [NOTES]}, operator="any_of")
+    def test_a_uint256_threshold_is_accepted_and_a_numeric_string_is_not(self):
+        utils.validate_conditions(
+            _payload(utils._cond("value", ">", 2**256 - 1, source="transaction"))
         )
-        _validate(_payload(corroborated, corroborated, operator="any_of"))
-
-    def test_hubspot_notes_cannot_be_read_as_a_lead_field(self):
-        # Otherwise a notes-only payload would launder through a trusted source.
-        with self.assertRaises(ValidationError):
-            _validate(_payload(_cond("hubspot_notes", "contains", "budget", source="lead")))
-
-
-class SchemaRejectionTests(SimpleTestCase):
-    def _refused(self, payload):
-        with self.assertRaises(ValidationError):
-            _validate(payload)
-
-    def test_payloads_that_are_not_a_versioned_object_are_refused(self):
-        for payload in ("yes", [1, 2, 3], 42, None, {}, {"lol": 1}):
-            with self.subTest(payload=payload):
-                self._refused(payload)
-
-    def test_a_future_schema_version_is_refused(self):
-        self._refused(_payload(LEAD, version=utils.SCHEMA_VERSION + 1))
-
-    def test_an_unknown_group_operator_is_refused(self):
-        self._refused(_payload(LEAD, operator="xor"))
-
-    def test_an_empty_condition_list_is_refused(self):
-        self._refused(_payload())
-
-    def test_groups_nest_one_level_only(self):
-        self._refused(
-            _payload(
-                LEAD,
-                {
-                    "operator": "any_of",
-                    "conditions": [{"operator": "all_of", "conditions": [LEAD]}],
-                },
+        with self.assertRaisesMessage(ValidationError, "expected a number"):
+            utils.validate_conditions(
+                _payload(utils._cond("value", ">", "1000", source="transaction"))
             )
-        )
-
-    def test_an_unknown_field_or_source_is_refused(self):
-        self._refused(_payload(_cond("favourite_colour", "==", "blue")))
-        self._refused(_payload(_cond("deals_closed", ">", 1, source="vibes")))
-        self._refused(_payload(_cond("deals_closed", ">", 1, source="derived")))
-
-    def test_an_unknown_key_on_a_condition_is_refused(self):
-        leaf = dict(LEAD, sneaky="payload")
-        self._refused(_payload(leaf))
-
-    def test_an_operator_that_does_not_apply_to_the_field_is_refused(self):
-        self._refused(_payload(_cond("deals_closed", "contains", "20")))
-        self._refused(_payload(_cond("signed_up_date", "contains", "2026")))
-
-    def test_a_threshold_of_the_wrong_type_is_refused(self):
-        self._refused(_payload(_cond("deals_closed", ">", "twenty")))
-        self._refused(_payload(_cond("deals_closed", ">", True)))
-        self._refused(_payload(_cond("signed_up_date", ">", "last tuesday")))
-        self._refused(_payload(_cond("days_since_last_login_date", ">", "21", source="derived")))
-
-    def test_a_missing_or_surplus_threshold_is_refused(self):
-        self._refused(_payload({"field": "deals_closed", "operator": ">", "source": "lead"}))
-        self._refused(
-            _payload(
-                {
-                    "field": "signed_up_date",
-                    "operator": "exists",
-                    "source": "lead",
-                    "threshold": "2026-01-01",
-                }
-            )
-        )
-
-    def test_a_phrase_too_short_to_mean_anything_is_refused(self):
-        self._refused(_payload(_cond("hubspot_notes", "contains", "up", source="notes"), LEAD))
-        self._refused(_payload(_cond("hubspot_notes", "contains", "   ", source="notes"), LEAD))
-
-    def test_a_literal_phrase_is_accepted_alongside_a_corroborator(self):
-        _validate(_payload(_cond("hubspot_notes", "contains", "budget", source="notes"), LEAD))
 
 
 class VocabularyTests(SimpleTestCase):
-    """The nameable fields come off the owner's declared shape, not a list
-    restated in utils that a re-declaration could leave behind."""
-
-    def test_every_trusted_lead_column_is_nameable_under_the_lead_source(self):
-        trusted = {column["name"] for column in SHAPE.trusted()}
-        self.assertEqual(trusted, set(utils.fields_by_source(SHAPE)[utils.SOURCE_LEAD]))
-
-    def test_event_columns_are_nameable_under_the_events_source(self):
-        events = utils.fields_by_source(SHAPE)[utils.SOURCE_EVENTS]
-        self.assertEqual(events["type"], utils.TEXT)
-        self.assertEqual(events["premium"], utils.NUMBER)
-
-    def test_the_structural_event_timestamp_is_nameable_though_undeclared(self):
-        events = utils.fields_by_source(SHAPE)[utils.SOURCE_EVENTS]
-        self.assertEqual(events[utils.EVENT_TIMESTAMP], utils.DATE)
-
-    def test_a_lead_authored_column_lands_in_notes_and_never_in_lead(self):
-        fields = utils.fields_by_source(SHAPE)
-        authored = {column["name"] for column in SHAPE.authored()}
-        self.assertTrue(authored)
-        self.assertEqual(authored, set(fields[utils.SOURCE_NOTES]))
-        self.assertFalse(authored & set(fields[utils.SOURCE_LEAD]))
-
-    def test_every_trusted_date_column_gets_a_days_since_twin(self):
-        derived = utils.fields_by_source(SHAPE)[utils.SOURCE_DERIVED]
-        dates = [c["name"] for c in SHAPE.trusted() if c["type"] == utils.DATE]
-        self.assertEqual(set(derived), {f"{utils.DAYS_SINCE_PREFIX}{name}" for name in dates})
-        self.assertTrue(all(field_type == utils.NUMBER for field_type in derived.values()))
-
-    def test_column_types_follow_the_declaration(self):
-        lead = utils.fields_by_source(SHAPE)[utils.SOURCE_LEAD]
-        self.assertEqual(lead["state"], utils.TEXT)
-        self.assertEqual(lead["estimated_book_size_usd"], utils.NUMBER)
-        self.assertEqual(lead["signed_up_date"], utils.DATE)
-
-    def test_an_undeclared_name_is_in_no_source(self):
-        fields = utils.fields_by_source(SHAPE)
-        for source in utils.SOURCES:
-            with self.subTest(source=source):
-                self.assertNotIn("owner", fields[source])
-                self.assertNotIn("id", fields[source])
-
-    def test_renaming_a_column_takes_the_old_name_out_of_the_vocabulary(self):
-        renamed = shape(
-            lead_columns=[
-                {"name": "closed_deals", "type": "number", "lead_authored": False},
-                {"name": "agency_name", "type": "text", "lead_authored": False},
-                {"name": "contact_name", "type": "text", "lead_authored": False},
-            ]
-        )
-        fields = utils.fields_by_source(renamed)[utils.SOURCE_LEAD]
-        self.assertIn("closed_deals", fields)
-        self.assertNotIn("deals_closed", fields)
-        with self.assertRaises(ValidationError):
-            _validate(_payload(LEAD), renamed)
-
-    def test_an_authored_column_is_nameable_at_the_type_it_was_declared(self):
-        typed = shape(
-            lead_columns=[
-                {"name": "deals_closed", "type": "number", "lead_authored": False},
-                {"name": "self_reported_seats", "type": "number", "lead_authored": True},
-            ]
-        )
-        notes = utils.fields_by_source(typed)[utils.SOURCE_NOTES]
-        self.assertEqual(notes["self_reported_seats"], utils.NUMBER)
-        _validate(
-            _payload(
-                _cond("deals_closed", ">", 1),
-                {
-                    "field": "self_reported_seats",
-                    "operator": ">",
-                    "source": utils.SOURCE_NOTES,
-                    "threshold": 5,
-                },
-            ),
-            typed,
-        )
-
-    def test_a_stored_column_missing_its_name_or_type_names_nothing(self):
-        malformed = shape(
-            lead_columns=[{"type": "text", "lead_authored": False}, {"name": "stage"}],
-            event_columns=[{"name": "premium"}],
-        )
-        fields = utils.fields_by_source(malformed)
-        self.assertEqual(fields[utils.SOURCE_LEAD], {})
-        self.assertEqual(fields[utils.SOURCE_NOTES], {})
-        self.assertEqual(fields[utils.SOURCE_EVENTS], {utils.EVENT_TIMESTAMP: utils.DATE})
-
-    def test_a_shape_that_declares_nothing_names_only_the_event_timestamp(self):
-        empty = Shape()
-        fields = utils.fields_by_source(empty)
-        self.assertEqual(fields[utils.SOURCE_LEAD], {})
-        self.assertEqual(fields[utils.SOURCE_NOTES], {})
-        self.assertEqual(fields[utils.SOURCE_DERIVED], {})
-        self.assertEqual(fields[utils.SOURCE_EVENTS], {utils.EVENT_TIMESTAMP: utils.DATE})
-
-    def test_no_field_name_is_claimed_by_two_sources(self):
-        fields = utils.fields_by_source(SHAPE)
-        names = [name for source in utils.SOURCES for name in fields[source]]
-        self.assertEqual(len(names), len(set(names)))
-
-
-class SourceResolutionTests(SimpleTestCase):
-    """A condition that does not name its source gets it from the field."""
-
-    def test_a_lead_column_resolves_to_the_lead_source(self):
-        self.assertEqual(_cond("deals_closed", ">", 1)["source"], utils.SOURCE_LEAD)
-
-    def test_without_a_shape_every_name_falls_through_to_lead(self):
-        # The builder has no vocabulary to consult; the validator refuses it.
-        self.assertEqual(
-            utils._cond("hubspot_notes", "contains", "budget")["source"], utils.SOURCE_LEAD
-        )
-
-    def test_an_event_column_resolves_to_the_events_source(self):
-        self.assertEqual(_cond("type", "==", "login")["source"], utils.SOURCE_EVENTS)
-
-    def test_a_lead_authored_column_resolves_to_notes(self):
-        self.assertEqual(_cond("hubspot_notes", "contains", "budget")["source"], utils.SOURCE_NOTES)
-
-    def test_a_computed_figure_resolves_to_its_declared_source(self):
-        self.assertEqual(
-            _cond("days_since_last_contacted_date", ">=", 14)["source"], utils.SOURCE_DERIVED
-        )
-
-    def test_an_explicit_source_is_never_overridden(self):
-        # Including a wrong one -- validate_conditions is what refuses it.
-        self.assertEqual(
-            _cond("hubspot_notes", "contains", "budget", source="lead")["source"], "lead"
-        )
-
-    def test_an_unclaimed_name_falls_through_to_lead_for_the_validator_to_refuse(self):
-        self.assertEqual(_cond("favourite_colour", "==", "blue")["source"], "lead")
-        with self.assertRaises(ValidationError):
-            _validate(_payload(_cond("favourite_colour", "==", "blue")))
-
-
-CHAIN_TX = utils._cond("from_address", "==", "0x" + "a1" * 20, source="transaction")
-CHAIN_TRANSFER = utils._cond("token", "==", "0x" + "b0" * 20, source="token_transfer")
-CHAIN_BLOCK = utils._cond("number", ">=", 18_000_000, source="block")
-CHAIN_WITHDRAWAL = utils._cond("amount", ">", 32_000_000_000, source="withdrawal")
-
-
-def _validate_onchain(payload):
-    # No shape: the on-chain vocabulary is fixed.
-    utils.validate_conditions(payload)
-
-
-class OnchainVocabularyTests(SimpleTestCase):
-    def test_the_onchain_fields_are_exactly_these(self):
+    def test_the_fields_are_exactly_these(self):
         self.assertEqual(
             utils.ONCHAIN_FIELDS,
             {
@@ -329,77 +78,12 @@ class OnchainVocabularyTests(SimpleTestCase):
             },
         )
 
-    def test_every_onchain_field_is_nameable_without_a_shape(self):
-        for source, fields in utils.ONCHAIN_FIELDS.items():
-            for field in fields:
-                with self.subTest(source=source, field=field):
-                    _validate_onchain(_payload(utils._cond(field, "exists", source=source)))
-
-    def test_the_seeded_shapes_of_onchain_condition_are_accepted(self):
-        _validate_onchain(
-            _payload(
-                CHAIN_TX,
-                CHAIN_TRANSFER,
-                CHAIN_BLOCK,
-                utils._cond("input", "contains", "0xa9059cbb", source="transaction"),
-                utils._cond("timestamp", ">=", "2023-08-26", source="block"),
-                utils._cond("raw_value", "in", [1, 2**255], source="token_transfer"),
-                {"operator": "any_of", "conditions": [CHAIN_TX, CHAIN_TRANSFER]},
-            )
-        )
-
-    def test_a_uint256_threshold_is_accepted_and_a_numeric_string_is_not(self):
-        _validate_onchain(_payload(utils._cond("value", ">", 2**256 - 1, source="transaction")))
-        with self.assertRaisesMessage(ValidationError, "expected a number"):
-            _validate_onchain(_payload(utils._cond("value", ">", "1000", source="transaction")))
-
-    def test_an_onchain_payload_needs_no_corroborator(self):
-        # Nothing on chain is lead-authored, so a lone transaction leaf stands.
-        _validate_onchain(_payload(CHAIN_TX, operator="any_of"))
-
-    def test_a_field_the_source_does_not_carry_is_refused(self):
-        for leaf in (
-            utils._cond("gas", ">", 1, source="transaction"),
-            utils._cond("deals_closed", ">", 1, source="block"),
-            utils._cond("token", "==", "0x", source="transaction"),
-        ):
-            with self.subTest(leaf=leaf):
-                with self.assertRaisesMessage(ValidationError, "has no field"):
-                    _validate_onchain(_payload(leaf))
-
-    def test_an_operator_the_type_does_not_take_is_refused(self):
-        with self.assertRaisesMessage(ValidationError, "does not apply"):
-            _validate_onchain(
-                _payload(utils._cond("value", "contains", "100", source="transaction"))
-            )
-
-    def test_lead_and_onchain_sources_cannot_mix(self):
-        for payload in (
-            _payload(LEAD, CHAIN_TX),
-            _payload(CHAIN_BLOCK, {"operator": "any_of", "conditions": [NOTES, CHAIN_TX]}),
-        ):
-            with self.subTest(payload=payload):
-                with self.assertRaisesMessage(ValidationError, "cannot mix lead sources"):
-                    utils.validate_conditions(payload, SHAPE)
-
-    def test_withdrawals_cannot_be_read_with_transactions_or_their_transfers(self):
-        for other in (CHAIN_TX, CHAIN_TRANSFER):
-            with self.subTest(other=other["source"]):
-                with self.assertRaisesMessage(ValidationError, "'withdrawal' together with"):
-                    _validate_onchain(_payload(CHAIN_WITHDRAWAL, other))
-        _validate_onchain(_payload(CHAIN_WITHDRAWAL, CHAIN_BLOCK))
-        _validate_onchain(_payload(CHAIN_TX, CHAIN_TRANSFER, CHAIN_BLOCK))
-
-    def test_a_lead_payload_still_needs_a_shape(self):
-        with self.assertRaisesMessage(ValidationError, "checked against a shape"):
-            utils.validate_conditions(_payload(LEAD))
-
     def test_the_sources_a_payload_names_are_read_from_its_leaves(self):
         self.assertEqual(
             utils.payload_sources(
-                _payload(LEAD, {"operator": "any_of", "conditions": [NOTES, CHAIN_TX]})
+                _payload(BLOCK, {"operator": "any_of", "conditions": [TRANSFER, TX]})
             ),
-            {"lead", "notes", "transaction"},
+            {"block", "token_transfer", "transaction"},
         )
         for malformed in ("yes", None, {"conditions": [1, {"field": "x"}]}):
             with self.subTest(payload=malformed):
@@ -419,7 +103,6 @@ class OnchainVocabularyTests(SimpleTestCase):
                 ],
             },
         )
-        lead_text = _payload(_cond("type", "==", "Email_Sent", source="events"))
 
         lowered = utils.lowercase_thresholds(payload)
 
@@ -431,4 +114,113 @@ class OnchainVocabularyTests(SimpleTestCase):
         )
         self.assertNotIn("threshold", lowered["conditions"][3]["conditions"][1])
         self.assertEqual(payload["conditions"][0]["threshold"], mixed)
-        self.assertEqual(utils.lowercase_thresholds(lead_text), lead_text)
+
+
+class SchemaRejectionTests(SimpleTestCase):
+    def _refused(self, payload, message=""):
+        with self.assertRaisesMessage(ValidationError, message):
+            utils.validate_conditions(payload)
+
+    def test_payloads_that_are_not_a_versioned_object_are_refused(self):
+        for payload in ("yes", [1, 2, 3], 42, None, {}, {"lol": 1}):
+            with self.subTest(payload=payload):
+                self._refused(payload)
+
+    def test_a_future_schema_version_is_refused(self):
+        self._refused(_payload(TX, version=utils.SCHEMA_VERSION + 1), "conditions.version")
+
+    def test_an_unknown_group_operator_is_refused(self):
+        self._refused(_payload(TX, operator="xor"), "must be 'all_of' or 'any_of'")
+
+    def test_an_empty_condition_list_is_refused(self):
+        self._refused(_payload(), "non-empty list")
+
+    def test_groups_nest_one_level_only(self):
+        self._refused(
+            _payload(
+                TX,
+                {
+                    "operator": "any_of",
+                    "conditions": [{"operator": "all_of", "conditions": [TX]}],
+                },
+            ),
+            "groups nest one level only",
+        )
+
+    def test_an_unknown_source_is_refused(self):
+        # The lead sources included: a rule reads blocks and nothing else.
+        for source in ("vibes", "lead", "derived", "notes", "events"):
+            with self.subTest(source=source):
+                self._refused(
+                    _payload(utils._cond("number", ">", 1, source=source)),
+                    "source must be one of",
+                )
+
+    def test_a_field_the_source_does_not_carry_is_refused(self):
+        for leaf in (
+            utils._cond("gas", ">", 1, source="transaction"),
+            utils._cond("deals_closed", ">", 1, source="block"),
+            utils._cond("token", "==", "0x", source="transaction"),
+        ):
+            with self.subTest(leaf=leaf):
+                self._refused(_payload(leaf), "has no field")
+
+    def test_an_unknown_key_on_a_condition_is_refused(self):
+        self._refused(_payload(dict(TX, sneaky="payload")), "unknown key(s): 'sneaky'")
+
+    def test_an_operator_that_does_not_apply_to_the_field_is_refused(self):
+        for leaf in (
+            utils._cond("value", "contains", "100", source="transaction"),
+            utils._cond("timestamp", "contains", "2023", source="block"),
+            utils._cond("timestamp", "in", ["2023-08-26"], source="block"),
+        ):
+            with self.subTest(leaf=leaf):
+                self._refused(_payload(leaf), "does not apply")
+
+    def test_a_threshold_of_the_wrong_type_is_refused(self):
+        for leaf in (
+            utils._cond("value", ">", "twenty", source="transaction"),
+            utils._cond("value", ">", True, source="transaction"),
+            utils._cond("timestamp", ">", "last tuesday", source="block"),
+            utils._cond("from_address", "==", 5, source="transaction"),
+        ):
+            with self.subTest(leaf=leaf):
+                self._refused(_payload(leaf))
+
+    def test_a_missing_or_surplus_threshold_is_refused(self):
+        self._refused(
+            _payload({"field": "value", "operator": ">", "source": "transaction"}),
+            "needs a threshold",
+        )
+        self._refused(
+            _payload(
+                {
+                    "field": "timestamp",
+                    "operator": "exists",
+                    "source": "block",
+                    "threshold": "2023-08-26",
+                }
+            ),
+            "takes no threshold",
+        )
+        self._refused(
+            _payload(utils._cond("value", "in", [], source="transaction")),
+            "'in' needs a non-empty list threshold",
+        )
+
+    def test_a_phrase_too_short_to_mean_anything_is_refused(self):
+        self._refused(
+            _payload(utils._cond("input", "contains", "0x", source="transaction")),
+            "at least 3 characters",
+        )
+        self._refused(
+            _payload(utils._cond("input", "contains", "   ", source="transaction")),
+            "needs a phrase",
+        )
+
+    def test_withdrawals_cannot_be_read_with_transactions_or_their_transfers(self):
+        for other in (TX, TRANSFER):
+            with self.subTest(other=other["source"]):
+                self._refused(_payload(WITHDRAWAL, other), "'withdrawal' together with")
+        utils.validate_conditions(_payload(WITHDRAWAL, BLOCK))
+        utils.validate_conditions(_payload(TX, TRANSFER, BLOCK))

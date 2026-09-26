@@ -203,8 +203,6 @@ REST_FRAMEWORK = {
         "auth_consume_ip": "60/hour",
         # The rules-catalog CRUD surface.
         "rules_catalog": "120/min",
-        # The caller's own lead/event shape.
-        "shape": "120/min",
     },
     # No list endpoint serializes an unbounded table: pagination is the
     # default, and the rules catalog narrows it further with `?page_size=`.
