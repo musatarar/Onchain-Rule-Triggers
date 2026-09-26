@@ -123,8 +123,9 @@ html:has(.phosphor) body {
 }
 
 .phosphor .sh { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 12px 18px 4px; flex-wrap: wrap; }
-.phosphor .logo { font: 400 30px/1 var(--font-big); letter-spacing: 0.04em; color: var(--ph); display: flex; align-items: baseline; gap: 12px; }
-.phosphor .logo .wn { font: 400 13px/1 var(--font-ui); color: var(--ph-3); border: 1px solid var(--ph-4); padding: 2px 6px; letter-spacing: 0.06em; }
+.phosphor .logo { font: 400 30px/1 var(--font-big); letter-spacing: 0.04em; color: var(--ph); display: flex; align-items: center; gap: 10px; }
+.phosphor .logo .mark { flex: none; fill: none; stroke: currentColor; stroke-width: 3.5; filter: drop-shadow(0 0 3px rgba(93, 255, 143, 0.55)); }
+.phosphor .logo .mark circle { fill: currentColor; stroke: none; }
 .phosphor .sh-r { display: flex; gap: 18px; font-size: 13px; color: var(--ph-2); flex-wrap: wrap; align-items: baseline; }
 .phosphor .sh-r b { font-weight: 400; color: var(--ph); }
 .phosphor .sh-err { color: var(--ph); border-bottom: 1px dashed var(--ph-3); }
@@ -619,6 +620,7 @@ html:has(.phosphor) body {
   .phosphor .scr-in { height: auto; }
   .phosphor .sh { padding: 10px 12px 2px; }
   .phosphor .logo { font-size: 24px; flex-wrap: wrap; }
+  .phosphor .logo .mark { width: 22px; height: 22px; }
   .phosphor .stabs { padding: 6px 8px 0; overflow-x: auto; }
   .phosphor .stabs .tab { font-size: 19px; padding: 5px 8px 4px; }
   .phosphor .stabs .newc { font-size: 16px; padding: 5px 6px 4px; }

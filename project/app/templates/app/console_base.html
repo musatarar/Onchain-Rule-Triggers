@@ -1,7 +1,7 @@
 {% load static %}{% comment %}
 Shell for the console routes of the React SPA in frontend/: the same bundle as
-spa_base.html, but dark only, so there is no theme boot, and titled with the
-product's working name rather than Locked In. React re-titles on client-side
+spa_base.html, but dark only, so there is no theme boot, and titled Phosphor
+rather than Locked In. React re-titles on client-side
 navigation with the same suffix (console/shell/ConsoleShell.tsx).
 {% endcomment %}<!DOCTYPE html>
 <html lang="en">
@@ -9,8 +9,8 @@ navigation with the same suffix (console/shell/ConsoleShell.tsx).
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark">
-    <title>{% block title %}Console{% endblock %} · Onchain Rule Triggers</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2303120a'/%3E%3Cg fill='none' stroke='%235dff8f' stroke-width='1.5'%3E%3Ccircle cx='8' cy='8' r='5.5'/%3E%3Ccircle cx='8' cy='8' r='2'/%3E%3C/g%3E%3C/svg%3E">
+    <title>{% block title %}Console{% endblock %} · Phosphor</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' fill='%2303120a'/%3E%3Cg fill='none' stroke='%235dff8f' stroke-width='3.5'%3E%3Cpath d='M2 24H9M39 24H46M18 11A14 14 0 0 0 18 37M30 11A14 14 0 0 1 30 37'/%3E%3C/g%3E%3Ccircle cx='24' cy='24' r='5' fill='%235dff8f'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="{% static 'frontend/assets/index.css' %}">
 </head>
 <body>
