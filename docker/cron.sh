@@ -5,7 +5,7 @@
 # is the whole of it, and it shares the web image so there is one build.
 #
 #   sh docker/cron.sh                       # the compose `cron` service
-#   sh docker/cron.sh ingest_blocks 60      # the compose `ingest` service
+#   sh docker/cron.sh ingest_blocks 5       # the compose `ingest` service
 
 COMMAND="${1:-run_action_jobs}"
 INTERVAL="${2:-${ACTIONS_CRON_INTERVAL_SECONDS:-300}}"

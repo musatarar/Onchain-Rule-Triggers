@@ -84,8 +84,8 @@ services:
     entrypoint: ["sh", "docker/cron.sh"]
     restart: unless-stopped
 
-  # Realtime block ingestion: one `ingest_blocks` tick a minute, storing every
-  # block the node has past the last one stored, with its receipts. Same
+  # Realtime block ingestion: an `ingest_blocks` tick every 5 seconds, storing
+  # every block the node has past the last one stored, with its receipts. Same
   # scheduler script as `cron`, waiting on `web`'s migrations the same way.
   ingest:
     build: .
@@ -93,7 +93,7 @@ services:
       db:
         condition: service_healthy
     environment: *app-env
-    entrypoint: ["sh", "docker/cron.sh", "ingest_blocks", "60"]
+    entrypoint: ["sh", "docker/cron.sh", "ingest_blocks", "5"]
     restart: unless-stopped
 
 volumes:
