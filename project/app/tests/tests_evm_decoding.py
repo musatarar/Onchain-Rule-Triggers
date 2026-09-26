@@ -14,7 +14,7 @@ from project.app.evm.chains import ChainId
 from project.app.evm.function_signatures import FunctionSignatureCreateSchema, InputCreateSchema
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import Token, TokenTransfer, Transaction
-from project.app.tests.tests_evm_block import block, legacy_transaction
+from project.app.tests.tests_evm_block import BLOCK_HASH, block, legacy_transaction
 from scripts.decode_transactions import decode_transactions as decode_script
 from scripts.load_blocks import load_blocks
 
@@ -86,6 +86,7 @@ class DecodeTransactionsTests(TestCase):
         transfer = TokenTransfer.objects.get()
         self.assertEqual(transfer.token, Token.objects.get(contract__address=USDT))
         self.assertEqual(transfer.transaction_hash, tx_hash)
+        self.assertEqual((transfer.block_number, transfer.block_hash), (0x112A880, BLOCK_HASH))
         self.assertEqual(transfer.from_address, SENDER)
         self.assertEqual(transfer.to_address, RECIPIENT)
         self.assertEqual(transfer.raw_value, Decimal(1_500_000))

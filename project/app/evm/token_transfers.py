@@ -2,7 +2,7 @@
 
 from django.db import models
 
-from project.app.evm.constants import UINT256_DIGITS
+from project.app.evm.constants import HASH_LENGTH, UINT256_DIGITS
 from project.app.evm.tokens import Token
 
 
@@ -16,6 +16,10 @@ class TokenTransfer(models.Model):
     """
 
     transaction_hash = models.CharField(max_length=66)  # "0x" and 32 bytes of hex
+    # The block the transaction is in. None on rows stored before these were
+    # kept, and a hash of None also when the transaction was stored without one.
+    block_number = models.BigIntegerField(null=True, blank=True)
+    block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     # None for a transfer read from a transaction's calldata: which log it
     # emitted is known only once the transfer is checked against the receipt.
     log_index = models.PositiveIntegerField(null=True, blank=True)
