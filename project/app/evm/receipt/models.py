@@ -2,7 +2,8 @@
 
 Columns follow the JSON-RPC field names in snake_case, stored the way the block
 models store them: quantities as numbers, uint256 ones as 78-digit decimals,
-and hashes, addresses and byte strings as the ``0x`` text they arrived as.
+and hashes and byte strings as the ``0x`` text they arrived as, addresses
+lowercased.
 
 A receipt names its ``chain``, since a node's response never does. A log and a
 topic belong to it through their foreign keys; each also keeps its position in
@@ -17,8 +18,9 @@ from pydantic import BaseModel
 
 from project.app.evm.block.models import _uint256
 from project.app.evm.chains import ChainId
-from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH
+from project.app.evm.constants import HASH_LENGTH
 from project.app.evm.contracts import Contract
+from project.app.evm.fields import AddressField
 
 
 class ReceiptUpdateSchema(BaseModel):
@@ -70,8 +72,8 @@ class Receipt(models.Model):
     block_timestamp = models.DateTimeField(null=True, blank=True)
     gas_used = models.BigIntegerField()
     effective_gas_price = _uint256()
-    from_address = models.CharField(max_length=ADDRESS_LENGTH)
-    to_address = models.CharField(max_length=ADDRESS_LENGTH, null=True, blank=True)
+    from_address = AddressField()
+    to_address = AddressField(null=True, blank=True)
     # A receipt is history: the contract it deployed cannot be deleted out from under it.
     contract = models.ForeignKey(
         Contract,
@@ -123,7 +125,7 @@ class Log(models.Model):
 
     receipt = models.ForeignKey(Receipt, on_delete=models.CASCADE, related_name="logs")
     receipt_index = models.BigIntegerField()
-    address = models.CharField(max_length=ADDRESS_LENGTH, db_index=True)
+    address = AddressField(db_index=True)
     data = models.TextField()
     block_hash = models.CharField(max_length=HASH_LENGTH)
     block_number = models.BigIntegerField()
