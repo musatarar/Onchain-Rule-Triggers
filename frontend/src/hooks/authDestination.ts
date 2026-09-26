@@ -17,7 +17,7 @@ function isSafePath(value: string): boolean {
 }
 
 export function rememberDestination(path: string): void {
-  if (!isSafePath(path) || path === '/signin') return;
+  if (!isSafePath(path) || path === '/signin' || path === '/register') return;
   try {
     sessionStorage.setItem(DESTINATION_KEY, path);
   } catch {

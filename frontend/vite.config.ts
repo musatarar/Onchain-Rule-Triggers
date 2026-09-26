@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 const DJANGO = 'http://127.0.0.1:8000';
 
 // Vite needs an entry index.html, but Django renders the real shell
-// (templates/app/spa_base.html). Drop the built copy so there's exactly one.
+// (templates/app/console_base.html). Drop the built copy so there's exactly one.
 const dropEntryHtml: Plugin = {
   name: 'drop-entry-html',
   enforce: 'post',
@@ -29,7 +29,7 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/index.js',
         chunkFileNames: 'assets/[name].js',
-        // The entry stylesheet is pinned so spa_base.html can {% static %} it
+        // The entry stylesheet is pinned so console_base.html can {% static %} it
         // by a fixed name; any other asset (image/font) keeps a content hash so
         // a second same-extension asset can't silently overwrite index.css.
         assetFileNames: (asset) =>

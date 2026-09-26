@@ -7,8 +7,9 @@ from django.conf import settings
 from django.test import Client, TestCase
 
 SHELLS = {
-    "/signin": "Sign in · Locked In",
-    "/auth/consume": "Signing you in · Locked In",
+    "/signin": "Sign in · Phosphor",
+    "/register": "Create an account · Phosphor",
+    "/auth/consume": "Signing you in · Phosphor",
     "/journal/": "Match journal · Phosphor",
     "/circuits/": "Circuits · Phosphor",
     "/circuits/new/": "New circuit · Phosphor",
@@ -39,7 +40,7 @@ class PageShellTests(TestCase):
     def test_every_react_route_has_a_shell(self):
         main = Path(settings.BASE_DIR, "frontend", "src", "main.tsx").read_text()
         routes = re.findall(r'<Route path="([^"]+)"', main)
-        self.assertEqual(len(routes), 6)
+        self.assertEqual(len(routes), 7)
         for route in routes:
             with self.subTest(route=route):
                 self.assertEqual(Client().get(route.replace(":id", "8")).status_code, 200)

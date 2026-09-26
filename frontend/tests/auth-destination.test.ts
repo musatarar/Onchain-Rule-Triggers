@@ -35,10 +35,13 @@ test('the default destination is /journal/', () => {
   assert.equal(takeDestination(), '/journal/');
 });
 
-test('/signin is never remembered as a destination', () => {
-  // Otherwise a 401 raised while already on the sign-in screen would loop.
-  rememberDestination('/signin');
-  assert.equal(takeDestination(), '/journal/');
+test('/signin and /register are never remembered as a destination', () => {
+  // Otherwise a 401 raised while already on a sign-in screen would loop.
+  for (const path of ['/signin', '/register']) {
+    store.clear();
+    rememberDestination(path);
+    assert.equal(takeDestination(), '/journal/');
+  }
 });
 
 test('off-origin destinations are refused', () => {
