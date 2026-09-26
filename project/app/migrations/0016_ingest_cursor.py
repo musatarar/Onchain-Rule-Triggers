@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0011_evm_receipts"),
+        ("app", "0015_token_transfer_block"),
     ]
 
     operations = [

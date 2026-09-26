@@ -23,7 +23,6 @@ from project.app.evm.block import models as block_models
 from project.app.evm.block import services
 from project.app.evm.chains import ChainId
 from project.app.models import Block, IngestCursor, Receipt, Transaction, Withdrawal
-from project.app.tests.tests_evm_receipt import receipt
 from scripts.load_blocks import load_blocks
 
 BLOCK_HASH = "0x95b198e154acbfc64109dfd22d8224fe927fd8dfdedfae01587674482ba4baf3"
@@ -442,6 +441,9 @@ def numbered_block(number):
 
 
 def numbered_receipts(number):
+    # tests_evm_receipt imports this module, so its fixture cannot be imported at the top.
+    from project.app.tests.tests_evm_receipt import receipt
+
     return [
         receipt(
             transactionHash=transaction_hash(number),
