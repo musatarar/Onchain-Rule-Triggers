@@ -123,6 +123,32 @@ class StoreReceiptsTests(TestCase):
         )
         self.assertEqual(list(second.topics.values_list("data", flat=True)), [TRANSFER_TOPIC])
 
+    def test_checksummed_addresses_are_stored_lowercased(self):
+        services.store_receipts(
+            [
+                swap_receipt(
+                    **{
+                        "from": "0x2252F216f4A494a87025123425181Ca1bb754fB8",
+                        "to": "0x0000000Aa232009084Bd71A5797d089AA4Edfad4",
+                        "logs": [log(address="0x66761Fa41377003622aEE3c7675Fc7b5c1C2FaC5")],
+                    }
+                )
+            ],
+            ChainId.ETHEREUM,
+        )
+
+        self.assertEqual(
+            Receipt.objects.values_list("from_address", "to_address").get(),
+            (
+                "0x2252f216f4a494a87025123425181ca1bb754fb8",
+                "0x0000000aa232009084bd71a5797d089aa4edfad4",
+            ),
+        )
+        self.assertEqual(
+            Log.objects.values_list("address", flat=True).get(),
+            "0x66761fa41377003622aee3c7675fc7b5c1c2fac5",
+        )
+
     def test_a_log_without_topics_or_block_timestamp_stores_without_them(self):
         anonymous = log(topics=[])
         del anonymous["blockTimestamp"]
