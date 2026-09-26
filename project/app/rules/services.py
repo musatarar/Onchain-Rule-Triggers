@@ -321,26 +321,29 @@ def _match(rule, block, row, now):
 def _record(matches):
     """Insert ``matches``, each as :data:`_MATCH_COLUMNS`, as ``MatchedRule`` rows.
 
-    On Postgres they are streamed with one ``COPY``, which skips building a
-    model and a parameter per value: most of what ``bulk_create`` spends on a
-    block's thousands of matches. Anywhere else they go through ``bulk_create``.
+    On Postgres through psycopg2 they are streamed with one ``COPY``, which
+    skips building a model and a parameter per value: most of what
+    ``bulk_create`` spends on a block's thousands of matches. Anywhere else,
+    psycopg 3 included (it spells ``COPY`` differently), they go through
+    ``bulk_create``.
     """
     if not matches:
         return
-    if connection.vendor != "postgresql":
-        MatchedRule.objects.bulk_create(
-            MatchedRule(**dict(zip(_MATCH_COLUMNS, match, strict=True))) for match in matches
-        )
-        return
-    # COPY's text format: a tab between values, \N for null. No value here holds
-    # a tab, newline or backslash: they are ids, 0x hashes and a timestamp.
-    rows = io.StringIO(
-        "".join(
-            "\t".join("\\N" if value is None else str(value) for value in match) + "\n"
-            for match in matches
-        )
-    )
-    quote = connection.ops.quote_name
-    columns = ", ".join(quote(column) for column in _MATCH_COLUMNS)
     with connection.cursor() as cursor:
-        cursor.copy_expert(f"COPY {quote(MatchedRule._meta.db_table)} ({columns}) FROM STDIN", rows)
+        copy = getattr(cursor, "copy_expert", None) if connection.vendor == "postgresql" else None
+        if copy is not None:
+            # COPY's text format: a tab between values, \N for null. No value here holds
+            # a tab, newline or backslash: they are ids, 0x hashes and a timestamp.
+            rows = io.StringIO(
+                "".join(
+                    "\t".join("\\N" if value is None else str(value) for value in match) + "\n"
+                    for match in matches
+                )
+            )
+            quote = connection.ops.quote_name
+            columns = ", ".join(quote(column) for column in _MATCH_COLUMNS)
+            copy(f"COPY {quote(MatchedRule._meta.db_table)} ({columns}) FROM STDIN", rows)
+            return
+    MatchedRule.objects.bulk_create(
+        MatchedRule(**dict(zip(_MATCH_COLUMNS, match, strict=True))) for match in matches
+    )

@@ -213,10 +213,10 @@ class MatchedRule(models.Model):
     ``rules.services.evaluate_blocks``, which evaluates each block once.
     """
 
-    # Evaluation writes thousands of these a block, and every index is paid on
-    # each: only the one reads need is kept, (rule, block), which also finds a
-    # rule's matches when it is deleted. Nothing deletes a block, transaction
-    # or withdrawal, so their keys go unindexed; one that did would scan.
+    # Evaluation can write thousands of these a block, and every index is paid on
+    # each, so the keys are indexed in Meta rather than by the fields: that
+    # skips the pattern-matching twin Postgres builds for each hash key, and
+    # (rule, block) serves the rule key as well.
     rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="matches", db_index=False)
     block = models.ForeignKey(
         Block, on_delete=models.CASCADE, related_name="rule_matches", db_index=False
@@ -243,6 +243,19 @@ class MatchedRule(models.Model):
         ordering = ["id"]
         indexes = [
             models.Index(fields=["rule", "block"], name="matchedrule_rule_block_idx"),
+            # Deleting a block, transaction or withdrawal checks its foreign key
+            # against these rows: without an index each check scans them all.
+            models.Index(fields=["block"], name="matchedrule_block_idx"),
+            models.Index(
+                fields=["transaction"],
+                name="matchedrule_transaction_idx",
+                condition=models.Q(transaction__isnull=False),
+            ),
+            models.Index(
+                fields=["withdrawal"],
+                name="matchedrule_withdrawal_idx",
+                condition=models.Q(withdrawal__isnull=False),
+            ),
         ]
 
     def __str__(self):

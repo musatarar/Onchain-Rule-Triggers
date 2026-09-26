@@ -1,8 +1,10 @@
-"""Rule matches keep one index, on (rule, block), in place of one per foreign key.
+"""Rule matches index their keys in Meta, in place of one index per foreign key field.
 
-Evaluation writes thousands of matches a block, and each pays for every index.
-The foreign keys themselves stay; only their indexes, and the pattern-matching
-twins Postgres gets for the hash keys, are dropped.
+Evaluation can write thousands of matches a block, and each pays for every
+index. The foreign keys stay, and so does an index on each of block,
+transaction and withdrawal, which deleting one of those needs; the
+pattern-matching twins Postgres builds for the two hash keys go, and the rule
+key is served by (rule, block).
 """
 
 
@@ -65,6 +67,26 @@ class Migration(migrations.Migration):
             model_name="matchedrule",
             index=models.Index(
                 fields=["rule", "block"], name="matchedrule_rule_block_idx"
+            ),
+        ),
+        migrations.AddIndex(
+            model_name="matchedrule",
+            index=models.Index(fields=["block"], name="matchedrule_block_idx"),
+        ),
+        migrations.AddIndex(
+            model_name="matchedrule",
+            index=models.Index(
+                condition=models.Q(("transaction__isnull", False)),
+                fields=["transaction"],
+                name="matchedrule_transaction_idx",
+            ),
+        ),
+        migrations.AddIndex(
+            model_name="matchedrule",
+            index=models.Index(
+                condition=models.Q(("withdrawal__isnull", False)),
+                fields=["withdrawal"],
+                name="matchedrule_withdrawal_idx",
             ),
         ),
     ]
