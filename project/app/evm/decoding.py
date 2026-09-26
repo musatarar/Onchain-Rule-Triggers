@@ -77,7 +77,7 @@ def _transfer(tx, calls):
     words = _words(tx.input[_SELECTOR_LENGTH:], count)
     if words is None:
         return None
-    from_address = tx.from_address.lower() if from_input is None else _address(words[from_input])
+    from_address = tx.from_address if from_input is None else _address(words[from_input])
     to_address = _address(words[to_input])
     if from_address is None or to_address is None:
         return None
@@ -112,6 +112,10 @@ def _store(batch, transfers):
             rows.append(
                 TokenTransfer(
                     transaction_hash=tx.hash,
+                    chain=tx.chain,
+                    block_number=tx.block_number,
+                    block_hash=tx.block_hash,
+                    block_timestamp=tx.block_timestamp,
                     token=tokens[(tx.chain, tx.to_address.lower())],
                     from_address=from_address,
                     to_address=to_address,

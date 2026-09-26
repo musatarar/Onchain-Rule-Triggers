@@ -165,17 +165,24 @@ class StoreBlocksTests(TestCase):
         )
         self.assertEqual(Withdrawal.objects.get().block_hash, BLOCK_HASH)
 
+    def test_stores_the_blocks_timestamp_on_its_withdrawals(self):
+        services.store_blocks([block()], ChainId.ETHEREUM)
+
+        self.assertEqual(Withdrawal.objects.get().block_timestamp, Block.objects.get().timestamp)
+
     def test_storing_a_block_again_fills_a_block_hash_stored_before_it_existed(self):
         services.store_blocks([block()], ChainId.ETHEREUM)
         Transaction.objects.update(block_hash=None)
-        Withdrawal.objects.update(block_hash=None)
+        Withdrawal.objects.update(block_hash=None, block_timestamp=None)
 
         services.store_blocks([block()], ChainId.ETHEREUM)
 
         self.assertEqual(
             set(Transaction.objects.values_list("block_hash", flat=True)), {BLOCK_HASH}
         )
-        self.assertEqual(Withdrawal.objects.get().block_hash, BLOCK_HASH)
+        withdrawal = Withdrawal.objects.get()
+        self.assertEqual(withdrawal.block_hash, BLOCK_HASH)
+        self.assertEqual(withdrawal.block_timestamp, Block.objects.get().timestamp)
 
     def test_a_dynamic_fee_transaction_keeps_its_fee_caps(self):
         services.store_blocks([block()], ChainId.ETHEREUM)
@@ -292,6 +299,44 @@ class StoreBlocksTests(TestCase):
             list(Withdrawal.objects.values_list("chain", "amount")),
             [(ChainId.ETHEREUM, 15_404_368), (ChainId.GNOSIS, 1)],
         )
+
+    def test_every_address_is_stored_lowercased(self):
+        # A checksummed address mixes case; one account is still one value.
+        services.store_blocks(
+            [
+                block(
+                    miner="0xDAFEA492D9c6733ae3d56b7Ed1ADB60692c98Bc5",
+                    transactions=[
+                        legacy_transaction(
+                            **{
+                                "from": "0xDa1E4d768aEaF05f343d9bE5F7E9b91e5aD72805",
+                                "to": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+                            }
+                        )
+                    ],
+                    withdrawals=[withdrawal(address="0xD7A0B38496064412A8D6B1F77BC30ADA93E7B7A5")],
+                )
+            ],
+            ChainId.ETHEREUM,
+        )
+
+        self.assertEqual(Block.objects.get().miner, "0xdafea492d9c6733ae3d56b7ed1adb60692c98bc5")
+        stored = Transaction.objects.get()
+        self.assertEqual(stored.from_address, "0xda1e4d768aeaf05f343d9be5f7e9b91e5ad72805")
+        self.assertEqual(stored.to_address, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d")
+        self.assertEqual(
+            Withdrawal.objects.get().address, "0xd7a0b38496064412a8d6b1f77bc30ada93e7b7a5"
+        )
+
+    def test_a_contract_creation_stays_without_a_recipient_when_lowercased(self):
+        services.store_blocks(
+            [block(transactions=[legacy_transaction(**{"from": "0xDA1E" + "0" * 36, "to": None})])],
+            ChainId.ETHEREUM,
+        )
+
+        stored = Transaction.objects.get()
+        self.assertEqual(stored.from_address, "0xda1e" + "0" * 36)
+        self.assertIsNone(stored.to_address)
 
     @unittest.skipUnless(
         connection.vendor == "postgresql", "SQLite keeps 15 significant digits of a decimal"

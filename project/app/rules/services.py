@@ -2,7 +2,7 @@
 
 Owner-scoped reads and the single validated write path for rules: every write
 runs ``full_clean()`` for the rule's own fields and checks its conditions here,
-so the pairing and vocabulary rules hold whatever calls in. A rule's conditions
+so the vocabulary rules hold whatever calls in. A rule's conditions
 are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`.
 
@@ -12,6 +12,7 @@ exceptions.
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Exists, OuterRef
 
 from project.app.models.lead import Shape
 from project.app.rules import utils
@@ -30,8 +31,24 @@ def rules_for(owner):
 
 
 def enabled_rules_for(owner):
-    """What the engine evaluates."""
+    """Every enabled rule, lead and on-chain alike."""
     return rules_for(owner).filter(enabled=True)
+
+
+def enabled_lead_rules_for(owner):
+    """What the lead engine evaluates: every enabled rule that reads no on-chain source.
+
+    An on-chain rule is judged against blocks, so the query leaves it out
+    rather than fetching its tree to drop it. A rule with no tree reads no
+    source at all and stays in, so the engine records it as unevaluable
+    instead of passing over it unseen.
+    """
+    onchain_leaf = Condition.objects.filter(
+        rule=OuterRef("pk"),
+        type=Condition.TYPE_COMPARISON,
+        source__in=utils.ONCHAIN_SOURCES,
+    )
+    return enabled_rules_for(owner).filter(~Exists(onchain_leaf))
 
 
 def rule_for(owner, pk):
@@ -45,12 +62,13 @@ def rules_refused_by(owner, shape):
 
     A rule is validated against the shape of the moment it was written, so a
     later shape has to answer for the rules already written against it: this is
-    what a shape write reads before it lands.
+    what a shape write reads before it lands. An on-chain rule names nothing a
+    shape declares, so no shape can strand it.
     """
     refused = []
     for rule in rules_for(owner):
         payload = rule.conditions_payload()
-        if not payload:
+        if not payload or utils.reads_chain(rule.sources()):
             continue
         try:
             utils.validate_conditions(payload, shape)
@@ -68,18 +86,20 @@ NO_SHAPE = (
     "Declare what a lead and an event are before writing conditions: "
     "without a shape there is no vocabulary to name."
 )
-NEEDS_CONDITIONS = "A deterministic rule needs a conditions payload."
+NEEDS_CONDITIONS = "A rule needs a conditions payload."
 
 
 def _save(instance, fields):
     """Apply ``fields``, check the rule and its conditions, and save both at once.
 
     ``fields["conditions"]``, when given, is a v1 payload that replaces the
-    rule's tree; ``{}`` leaves the rule with none. Left out, the stored tree
-    stays, and is checked again like every other field this write keeps.
+    rule's tree. Left out, the stored tree stays, and is checked again like
+    every other field this write keeps.
 
     Raises ``django.core.exceptions.ValidationError`` — the model's own
-    verdict on its fields, and the conditions' against the owner's shape.
+    verdict on its fields, and the conditions' against their vocabulary.
+    Thresholds on on-chain addresses and calldata are stored lowercased, as
+    the values they compare against are.
     """
     fields = dict(fields)
     replacing = "conditions" in fields
@@ -93,7 +113,7 @@ def _save(instance, fields):
             if replacing:
                 Condition.objects.filter(rule=instance).delete()
                 _forget_tree(instance)
-                utils.build_tree(instance, payload)
+                utils.build_tree(instance, utils.lowercase_thresholds(payload))
     except IntegrityError as exc:
         # full_clean checks uniqueness and the check constraints with SELECTs,
         # so a concurrent writer can still win the race and leave the database
@@ -122,15 +142,15 @@ def _check(rule, payload):
 
 
 def _check_conditions(rule, payload):
-    """The conditions' half of the kind <-> payload pairing, and their
-    vocabulary: the owner's shape is the only thing a payload may name."""
+    """Every rule needs conditions. On-chain conditions name the fixed on-chain
+    vocabulary; any others name the owner's shape, which they then need."""
     if not payload:
-        if rule.kind == Rule.KIND_DETERMINISTIC:
-            raise ValidationError({"conditions": NEEDS_CONDITIONS})
-        return
-    shape = Shape.objects.filter(owner_id=rule.owner_id).first()
-    if shape is None:
-        raise ValidationError({"conditions": NO_SHAPE})
+        raise ValidationError({"conditions": NEEDS_CONDITIONS})
+    shape = None
+    if not utils.reads_chain(utils.payload_sources(payload)):
+        shape = Shape.objects.filter(owner_id=rule.owner_id).first()
+        if shape is None:
+            raise ValidationError({"conditions": NO_SHAPE})
     try:
         utils.validate_conditions(payload, shape)
     except ValidationError as exc:

@@ -17,10 +17,6 @@ x-app-env: &app-env
   CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-  # Actions engine: a dry run skips the provider entirely, so every inference
-  # candidate comes back unevaluable and the tick costs nothing. Blank reads as
-  # the settings.py default, which is a dry run -- set exactly "False" to spend.
-  ACTIONS_LLM_DRY_RUN: ${ACTIONS_LLM_DRY_RUN:-}
   # Magic-link sign-in. The API is authenticated, so set
   # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
   # -- there is no signup flow, the allowlist is the whole gate. Delivery

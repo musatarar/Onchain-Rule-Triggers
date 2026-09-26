@@ -2,7 +2,9 @@
 
 from django.db import models
 
-from project.app.evm.constants import UINT256_DIGITS
+from project.app.evm.chains import ChainId
+from project.app.evm.constants import HASH_LENGTH, UINT256_DIGITS
+from project.app.evm.fields import AddressField
 from project.app.evm.tokens import Token
 
 
@@ -13,16 +15,26 @@ class TokenTransfer(models.Model):
     carries the chain, so the three together name exactly one row. A transfer
     read from calldata has no log index yet, so the constraint cannot hold it
     to one row: the transaction's ``decode_status`` does, by decoding it once.
+    Addresses are stored lowercased, as blocks, transactions and tokens store
+    theirs.
     """
 
     transaction_hash = models.CharField(max_length=66)  # "0x" and 32 bytes of hex
+    # The chain and block the transaction is in, and the block's time, copied
+    # from it so a block's transfers are found without joining through the
+    # token. None on rows stored before these were kept, and a hash of None
+    # also when the transaction was stored without one.
+    chain = models.IntegerField(choices=ChainId.choices, null=True, blank=True)
+    block_number = models.BigIntegerField(null=True, blank=True)
+    block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
+    block_timestamp = models.DateTimeField(null=True, blank=True)
     # None for a transfer read from a transaction's calldata: which log it
     # emitted is known only once the transfer is checked against the receipt.
     log_index = models.PositiveIntegerField(null=True, blank=True)
     # A transfer is history: its token cannot be deleted out from under it.
     token = models.ForeignKey(Token, on_delete=models.PROTECT, related_name="transfers")
-    from_address = models.CharField(max_length=42)
-    to_address = models.CharField(max_length=42)
+    from_address = AddressField()
+    to_address = AddressField()
     # The amount for ERC-20 and ERC-1155, the token id for ERC-721; undivided by decimals.
     raw_value = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
     # True once decoded as a known token's Transfer event; False when only the
@@ -35,6 +47,12 @@ class TokenTransfer(models.Model):
                 fields=["token", "transaction_hash", "log_index"],
                 name="token_transfer_log_unique",
             ),
+        ]
+        indexes = [
+            # A block's transfers are read by its transactions' hashes, and the
+            # unique constraint's index leads with the token.
+            models.Index(fields=["transaction_hash"], name="token_transfer_tx_hash_idx"),
+            models.Index(fields=["chain", "block_number"], name="token_transfer_chain_block_idx"),
         ]
 
     def __str__(self):
