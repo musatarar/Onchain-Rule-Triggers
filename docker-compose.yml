@@ -27,6 +27,10 @@ x-app-env: &app-env
   LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
   LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
   LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
+  # The Ethereum node the pipeline service polls -- see .env.example. Blank
+  # reads as unset: web never calls it, and the pipeline stops on its first
+  # tick with an error naming the variable.
+  EVM_RPC_URL: ${EVM_RPC_URL:-}
 
 services:
   db:
@@ -57,6 +61,32 @@ services:
     # project/settings.py is for running outside Docker). No LLM provider key is
     # needed: nothing the server runs calls a provider.
     environment: *app-env
+    # Healthy once the entrypoint's migrate has applied every migration, so a
+    # service that waits for it never races the migrate.
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "migrate", "--check"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # The live pipeline: each tick stores the node's new blocks (from its head on;
+  # there is no backfill), decodes their transactions and records what the
+  # enabled rules match, for the console at http://127.0.0.1:8000 to show.
+  # `docker compose up` leaves it out. With LOGIN_ALLOWED_EMAILS and
+  # EVM_RPC_URL set in .env,
+  #   docker compose run --rm --build pipeline --demo-rules
+  # starts db and web, gives every allowed address the demo rules, and polls
+  # until Ctrl-C; web keeps serving until `docker compose down`. Name one owner
+  # with `--demo-rules you@example.com`, leave the flag out to poll without the
+  # demo rules, and add run_pipeline's options after it, e.g. `--interval 12`.
+  pipeline:
+    build: .
+    depends_on:
+      web:
+        condition: service_healthy
+    environment: *app-env
+    entrypoint: ["sh", "docker/pipeline.sh"]
+    profiles: ["pipeline"]
 
 volumes:
   postgres_data:
