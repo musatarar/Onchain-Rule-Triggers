@@ -55,7 +55,8 @@ def _leaf(leaf, lead, shape, fields, today):
         raise ConditionError(f"Unknown field {field!r} on source {source!r}.")
     threshold = leaf.get("threshold")
     if source == utils.SOURCE_NOTES and field_type == utils.TEXT:
-        threshold = _lowered(threshold)
+        # Notes text is read lowercased (see _value), so it is matched in that case.
+        threshold = utils.lowered(threshold)
     return _compare(
         _value(source, field, lead, shape, today),
         leaf.get("operator"),
@@ -84,15 +85,6 @@ def _value(source, field, lead, shape, today):
     # In the vocabulary, but nothing computes it yet -- the event columns need
     # an "any event where..." semantic first.
     raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")
-
-
-def _lowered(threshold):
-    """A notes-text threshold in the case its stored value is folded to."""
-    if isinstance(threshold, str):
-        return threshold.lower()
-    if isinstance(threshold, list):
-        return [item.lower() if isinstance(item, str) else item for item in threshold]
-    return threshold
 
 
 def _blank(value):

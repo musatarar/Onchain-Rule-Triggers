@@ -2,5 +2,5 @@
 
 Kept import-light so the models load without pulling in the planner; import
 from the submodules directly (``project.app.actions.models``, ``.evaluate``,
-``.inference``, ``.services``).
+``.services``).
 """

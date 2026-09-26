@@ -19,7 +19,8 @@ class TokenCreateSchema(BaseModel):
     @field_validator("address")
     @classmethod
     def _lowercase(cls, address):
-        """One contract is one row however its address was written."""
+        """As the column stores it: ``save_tokens`` keys a batch by chain and
+        address before anything is stored, so one contract is one key."""
         return address.lower()
 
 
