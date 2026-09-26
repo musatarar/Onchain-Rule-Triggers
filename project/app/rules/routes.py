@@ -1,4 +1,4 @@
-"""Rules-catalog API: CRUD over the signed-in user's rules.
+"""Rules-catalog API: CRUD over the signed-in user's rules, and the engine status.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
@@ -128,9 +128,24 @@ class RuleDetailView(_CatalogView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class EngineStatusView(APIView):
+    """GET /api/engine/status/ — the console header's window and engine line.
+
+    The stored window is the same for everyone; the rule and match counts are
+    the signed-in user's own.
+    """
+
+    # The catalog's scope: a scope of its own would need a rate in settings.
+    throttle_scope = "rules_catalog"
+
+    def get(self, request, *args, **kwargs):
+        return Response(services.engine_status(request.user))
+
+
 # Appended to the `api/` urlpatterns as flat patterns (not include()d): the
 # auth suite audits every pattern's permission classes and expects callbacks.
 urlpatterns = [
     path("rules/", RuleListCreateView.as_view(), name="rules-list"),
     path("rules/<int:pk>/", RuleDetailView.as_view(), name="rules-detail"),
+    path("engine/status/", EngineStatusView.as_view(), name="engine-status"),
 ]

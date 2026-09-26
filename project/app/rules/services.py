@@ -6,7 +6,8 @@ so the vocabulary rules hold whatever calls in. A rule's conditions
 are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
-row they match as a ``MatchedRule``.
+row they match as a ``MatchedRule``; the engine status reports the stored
+window with each owner's own rule and match counts.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
@@ -16,9 +17,11 @@ import dataclasses
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Count, Max, Min, Q
 from django.utils import timezone
 
 from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.chains import ChainId
 from project.app.rules import onchain, utils
 from project.app.rules.models import Condition, MatchedRule, Rule
 
@@ -42,6 +45,20 @@ def rule_for(owner, pk):
     """One owned rule, or ``None`` — someone else's id is indistinguishable
     from a missing one, so callers cannot probe another user's catalog."""
     return rules_for(owner).filter(pk=pk).first()
+
+
+def matches_for(owner):
+    """The owner's recorded matches the console shows: its enabled rules' matches of a transaction.
+
+    The console's journal row is a transaction, so a withdrawal rule's matches
+    and a block-only rule's stay recorded but are neither counted nor shown.
+    Nor are a disabled rule's, as the console shows what its armed circuits
+    matched; enabling the rule again brings them back. Every match count the
+    console shows reads this, so they all agree.
+    """
+    return MatchedRule.objects.filter(
+        rule__owner=owner, rule__enabled=True, transaction__isnull=False
+    )
 
 
 # --------------------------------------------------------------------------
@@ -215,3 +232,45 @@ def _match(rule, block, row):
     if isinstance(row, Withdrawal):
         return MatchedRule(rule=rule, block=block, withdrawal=row)
     return MatchedRule(rule=rule, block=block)  # a block-only rule: the block itself matched
+
+
+# --------------------------------------------------------------------------
+# engine status — the stored window, with one owner's rules and matches
+# --------------------------------------------------------------------------
+
+
+def engine_status(owner):
+    """What the console's header shows ``owner``: the blocks stored, and its rules and matches.
+
+    ``chains`` has one entry per chain with a block stored, in chain order: the
+    first and last block numbers stored and the last block's timestamp, the
+    same for every owner. ``rules`` counts the owner's rules and the enabled
+    ones among them, and ``match_count`` the matches :func:`matches_for`
+    answers. Three queries, however much is stored.
+    """
+    # A block's timestamp is always later than its parent's, so the latest
+    # stored is the last block's. Reading the last block's own through a
+    # subquery would run it once per stored block, since Django groups by it.
+    windows = (
+        Block.objects.values("chain")
+        .annotate(
+            first_block=Min("number"), last_block=Max("number"), last_block_at=Max("timestamp")
+        )
+        .order_by("chain")
+    )
+    return {
+        "chains": [
+            {
+                "chain": window["chain"],
+                "name": ChainId(window["chain"]).label,
+                "first_block": window["first_block"],
+                "last_block": window["last_block"],
+                "last_block_at": window["last_block_at"],
+            }
+            for window in windows
+        ],
+        "rules": rules_for(owner).aggregate(
+            total=Count("pk"), enabled=Count("pk", filter=Q(enabled=True))
+        ),
+        "match_count": matches_for(owner).count(),
+    }
