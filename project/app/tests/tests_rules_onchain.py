@@ -6,6 +6,7 @@ of rule answers with, and that the block's rows are read once however many
 transactions it carries.
 """
 
+import datetime
 import unittest
 from decimal import Decimal
 
@@ -13,7 +14,6 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
 
-from project.app.actions.evaluate import ConditionError
 from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
 from project.app.evm.block.models import DecodeStatus
@@ -30,6 +30,7 @@ from project.app.models import (
 )
 from project.app.rules import onchain
 from project.app.rules import services as rules_services
+from project.app.rules.onchain import ConditionError
 from project.app.rules.utils import _all_of, _any_of, _cond
 from project.app.tests.tests_evm_block import (
     DYNAMIC_FEE_HASH,
@@ -386,6 +387,64 @@ class ExactQuantityTests(SimpleTestCase):
         rows = {"transaction": Transaction(value=Decimal(10**18))}
 
         self.assertTrue(onchain._leaf(self._leaf("==", 1e18), rows))
+
+
+class OperatorTests(SimpleTestCase):
+    """Every operator as the evaluator applies it to one bound row, and what it refuses."""
+
+    def _leaf(self, source, field, operator, threshold=None):
+        return Condition(
+            type=Condition.TYPE_COMPARISON,
+            source=source,
+            field_name=field,
+            operator=operator,
+            value=threshold,
+        )
+
+    def test_each_number_operator(self):
+        rows = {"transaction": Transaction(value=Decimal(10))}
+        cases = [
+            ("==", 10, True),
+            ("!=", 10, False),
+            (">", 9, True),
+            (">=", 10, True),
+            ("<", 10, False),
+            ("<=", 10, True),
+            ("in", [1, 10], True),
+        ]
+        for operator, threshold, expected in cases:
+            with self.subTest(operator=operator):
+                leaf = self._leaf("transaction", "value", operator, threshold)
+                self.assertIs(onchain._leaf(leaf, rows), expected)
+
+    def test_contains_ignores_case_and_a_blank_value_holds_only_absent(self):
+        rows = {"transaction": Transaction(input="0xa9059cbb00", to_address=None)}
+
+        self.assertTrue(
+            onchain._leaf(self._leaf("transaction", "input", "contains", "A9059CBB"), rows)
+        )
+        self.assertTrue(onchain._leaf(self._leaf("transaction", "to_address", "absent"), rows))
+        self.assertFalse(onchain._leaf(self._leaf("transaction", "to_address", "exists"), rows))
+        self.assertFalse(onchain._leaf(self._leaf("transaction", "to_address", "!=", ALICE), rows))
+
+    def test_a_date_threshold_is_read_as_an_iso_date(self):
+        rows = {"block": Block(timestamp=datetime.datetime(2023, 8, 26, 12, tzinfo=datetime.UTC))}
+
+        self.assertTrue(onchain._leaf(self._leaf("block", "timestamp", "<=", "2023-08-26"), rows))
+        self.assertFalse(onchain._leaf(self._leaf("block", "timestamp", "<", "2023-08-26"), rows))
+
+    def test_what_the_evaluator_cannot_read_is_refused(self):
+        rows = {"transaction": Transaction(value=Decimal(1))}
+        leaf = self._leaf("transaction", "value", "==", 1)
+
+        with self.assertRaisesMessage(ConditionError, "Unknown operator '~='"):
+            onchain._leaf(self._leaf("transaction", "value", "~=", 1), rows)
+        with self.assertRaisesMessage(ConditionError, "Unknown field 'gas'"):
+            onchain._leaf(self._leaf("transaction", "gas", "==", 1), rows)
+        with self.assertRaisesMessage(ConditionError, "Unknown group type 'XOR'"):
+            onchain._holds(Condition(pk=1, type="XOR"), {1: [leaf]}, rows)
+        with self.assertRaisesMessage(ConditionError, "no conditions has no verdict"):
+            onchain._holds(Condition(pk=2, type=Condition.TYPE_AND), {}, rows)
 
 
 class StoredQuantityTests(OnchainTestCase):

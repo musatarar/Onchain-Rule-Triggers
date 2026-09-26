@@ -1,6 +1,4 @@
-# Every process that runs the app reads the same environment, so `web` and
-# `cron` share one block: a knob added for one is never quietly missing from
-# the other.
+# The app's environment, in one block so a knob is set in one place.
 x-app-env: &app-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY -- copy .env.example to .env}
   DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
@@ -60,23 +58,6 @@ services:
     # key too for the copy step -- without one the server still starts and
     # serves the seeded demo data.
     environment: *app-env
-
-  # The actions engine's scheduler, alongside the server rather than inside it:
-  # same image and environment, its own process, so a tick that hangs cannot
-  # take the web server with it. `web` owns migrations and seeding; this waits
-  # for them rather than racing (docker/cron.sh).
-  cron:
-    build: .
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      <<: *app-env
-      # Seconds between ticks; read by docker/cron.sh, not by Django, so its
-      # default lives in that script rather than in settings.py.
-      ACTIONS_CRON_INTERVAL_SECONDS: ${ACTIONS_CRON_INTERVAL_SECONDS:-}
-    entrypoint: ["sh", "docker/cron.sh"]
-    restart: unless-stopped
 
 volumes:
   postgres_data:

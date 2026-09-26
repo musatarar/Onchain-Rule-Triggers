@@ -1,7 +1,6 @@
 from django.contrib import admin
 
 from project.app.models import (
-    ActionJob,
     Event,
     Lead,
     Rule,
@@ -36,10 +35,3 @@ class RuleAdmin(admin.ModelAdmin):
     list_display = ("name", "owner", "enabled", "updated_at")
     list_filter = ("enabled",)
     search_fields = ("name", "owner__username")
-
-
-@admin.register(ActionJob)
-class ActionJobAdmin(admin.ModelAdmin):
-    list_display = ("id", "lead", "status", "attempts", "created_at")
-    list_filter = ("status",)
-    search_fields = ("lead__id",)
