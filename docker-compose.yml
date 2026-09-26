@@ -19,7 +19,9 @@ x-app-env: &app-env
   # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
   # -- there is no signup flow, the allowlist is the whole gate. Delivery
   # defaults to `console`: the link is printed to this container's log,
-  # which is the demo path. No SMTP is involved.
+  # which is the demo path. No SMTP is involved. Set it to `email` and fill
+  # EMAIL_HOST_PASSWORD (a Resend API key) and DEFAULT_FROM_EMAIL to send
+  # real emails through Resend's SMTP relay.
   LOGIN_ALLOWED_EMAILS: ${LOGIN_ALLOWED_EMAILS:-}
   LOGIN_LINK_DELIVERY: ${LOGIN_LINK_DELIVERY:-console}
   LOGIN_LINK_BASE_URL: ${LOGIN_LINK_BASE_URL:-http://127.0.0.1:8000}
@@ -27,6 +29,12 @@ x-app-env: &app-env
   LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
   LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
   LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
+  EMAIL_HOST: ${EMAIL_HOST:-}
+  EMAIL_PORT: ${EMAIL_PORT:-}
+  EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+  EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+  EMAIL_TIMEOUT: ${EMAIL_TIMEOUT:-}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-}
 
 services:
   db:

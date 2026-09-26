@@ -210,6 +210,23 @@ LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
 LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
 LOGIN_RESEND_COOLDOWN_SECONDS = _env_int("LOGIN_RESEND_COOLDOWN_SECONDS", 30)
 
+# Outgoing email (used when LOGIN_LINK_DELIVERY=email). Defaults target Resend's
+# SMTP relay, where the username is literally "resend" and the password is an
+# API key; any other SMTP provider works by overriding EMAIL_HOST and friends.
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "").strip() or "smtp.resend.com"
+EMAIL_PORT = _env_int("EMAIL_PORT", 587)
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "").strip() or "resend"
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "").strip()
+EMAIL_USE_TLS = True
+EMAIL_TIMEOUT = _env_int("EMAIL_TIMEOUT", 10)  # seconds; the sign-in request waits on it
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "").strip()
+if LOGIN_LINK_DELIVERY == "email" and not (EMAIL_HOST_PASSWORD and DEFAULT_FROM_EMAIL):
+    raise ImproperlyConfigured(
+        "LOGIN_LINK_DELIVERY=email needs EMAIL_HOST_PASSWORD (your Resend API key) and "
+        "DEFAULT_FROM_EMAIL (an address on a domain verified in Resend)."
+    )
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "project.app.authentication.SessionAuthenticationWith401",
