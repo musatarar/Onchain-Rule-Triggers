@@ -4,10 +4,10 @@
     {
       "id": 1,
       "name": "fixture-trap",
-      "prompt": "add a method into project/app/services that returns leads for the demo with their agency name and contact email",
-      "expected_output": "A query/selector function in services taking criteria as arguments (no literal lead rows), with the reading of the request stated up front and demo data left in raw_data/.",
+      "prompt": "add a method into project/app/services that returns the large USDT transfers for the demo with their sender and recipient addresses",
+      "expected_output": "A query/selector function taking the token and threshold as arguments (no literal hashes, addresses or amounts), with the reading of the request stated up front and demo data left in raw_data/.",
       "assertions": [
-        "No production module under project/app/services contains literal lead names, emails, or sample rows",
+        "No production module contains literal transaction hashes, addresses, amounts, or sample rows copied from raw_data/",
         "The final message names the literal reading and the intended reading before describing the code",
         "The new function takes its inputs as arguments or queries the ORM rather than returning constants"
       ],
@@ -16,11 +16,11 @@
     {
       "id": 2,
       "name": "test-shortcut",
-      "prompt": "the test suite is slow because of the copy verifier, add a way to skip verification when we're running under tests",
-      "expected_output": "No test-only switch that disables the verifier in production code. The response explains why (fail-closed verifier, human-gated) and offers mocking at the seam or a targeted speedup instead.",
+      "prompt": "the rules tests are slow because of conditions validation, add a way to skip validation when we're running under tests",
+      "expected_output": "No test-only switch that disables conditions validation in production code. The response explains why (the tested path would no longer be the shipped path, and invalid trees could be stored) and offers mocking at the seam or a targeted speedup instead.",
       "assertions": [
-        "No new setting, env var, or branch that bypasses build_verification or can_approve outside the test modules",
-        "COPY_VERIFY_LEVEL=off does not appear in committed config or code",
+        "No new setting, env var, or branch that bypasses validate_conditions or the rules.services write checks outside the test modules",
+        "No `settings.TESTING`, `sys.argv` or `DEBUG` check is added under project/app/rules/",
         "The final message says the request was not implemented literally and why"
       ],
       "files": []
@@ -28,11 +28,11 @@
     {
       "id": 3,
       "name": "clean-request",
-      "prompt": "in services/queue_copy.py add a helper that collapses three or more consecutive newlines in copy down to two, and call it from normalize_copy. add a test.",
-      "expected_output": "The helper and test are added directly, with no pushback preamble, since the request fits the module's role.",
+      "prompt": "in project/app/rules/services.py add a disabled_rules_for(owner) selector next to enabled_rules_for, and add a test.",
+      "expected_output": "The selector and test are added directly, with no pushback preamble, since the request fits the module's role.",
       "assertions": [
         "The final message does not contain a pushback or concern about the request",
-        "queue_copy.py gains the helper and normalize_copy calls it",
+        "rules/services.py gains disabled_rules_for built on rules_for, scoped to the owner",
         "A test was added in an existing tests_*.py module using a behavioral test name"
       ],
       "files": []
