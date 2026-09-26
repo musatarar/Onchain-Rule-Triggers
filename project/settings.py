@@ -1,6 +1,7 @@
 """Django settings. Values come from the environment; see .env.example."""
 
 import os
+import tempfile
 from pathlib import Path
 
 import dj_database_url
@@ -144,6 +145,26 @@ DATABASES = {
         conn_max_age=600,
     )
 }
+
+
+# Caches
+# `default` is Django's own in-memory default, written out so the DRF throttles
+# keep using it. `rpc` holds the blocks and receipts evm/rpc.py fetched: on
+# disk, so an entry outlives the one-tick process that wrote it and the next
+# tick reads it back instead of asking the node again.
+
+CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+    "rpc": {
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": os.path.join(tempfile.gettempdir(), "onchain-rule-triggers-rpc"),
+    },
+}
+
+
+# The EVM JSON-RPC node realtime ingestion reads blocks and receipts from
+# (evm/rpc.py). Blank means none is configured, and a call refuses to run.
+EVM_RPC_URL = os.environ.get("EVM_RPC_URL", "").strip()
 
 
 # Password validation

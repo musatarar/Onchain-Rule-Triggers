@@ -1,9 +1,14 @@
 #!/usr/bin/env sh
-# The actions engine's scheduler: one `run_action_jobs` tick every
-# ACTIONS_CRON_INTERVAL_SECONDS, forever. There is no system cron in the image;
-# this loop is the whole of it, and it shares the web image so there is one build.
+# A scheduler: one `manage.py $1` tick every $2 seconds, forever. With no
+# arguments it is the actions engine's, one `run_action_jobs` tick every
+# ACTIONS_CRON_INTERVAL_SECONDS. There is no system cron in the image; this loop
+# is the whole of it, and it shares the web image so there is one build.
+#
+#   sh docker/cron.sh                       # the compose `cron` service
+#   sh docker/cron.sh ingest_blocks 60      # the compose `ingest` service
 
-INTERVAL="${ACTIONS_CRON_INTERVAL_SECONDS:-300}"
+COMMAND="${1:-run_action_jobs}"
+INTERVAL="${2:-${ACTIONS_CRON_INTERVAL_SECONDS:-300}}"
 
 # ~2 minutes of polling: a cold start still migrating gets through, a real
 # fault does not wait for it forever.
@@ -26,15 +31,15 @@ attempt=0
 until REASON="$(python manage.py migrate --check 2>&1)"; do
     attempt=$((attempt + 1))
     if [ "$attempt" -eq 1 ]; then
-        echo "actions cron: waiting for the web container to apply migrations"
-        echo "actions cron: checking $TARGET"
+        echo "$COMMAND cron: waiting for the web container to apply migrations"
+        echo "$COMMAND cron: checking $TARGET"
         if [ -n "$REASON" ]; then
             echo "$REASON"
         fi
     fi
     if [ "$attempt" -ge "$SCHEMA_ATTEMPTS" ]; then
-        echo "actions cron: no usable schema after $attempt attempts, giving up"
-        echo "actions cron: checked $TARGET"
+        echo "$COMMAND cron: no usable schema after $attempt attempts, giving up"
+        echo "$COMMAND cron: checked $TARGET"
         if [ -n "$REASON" ]; then
             echo "$REASON"
         fi
@@ -43,10 +48,11 @@ until REASON="$(python manage.py migrate --check 2>&1)"; do
     sleep 2
 done
 
-echo "actions cron: a tick every ${INTERVAL}s"
+echo "$COMMAND cron: a tick every ${INTERVAL}s"
 while true; do
-    # A failed tick must not end the scheduler: the next one retries, and the
-    # engine already records per-job failures on the jobs themselves.
-    python manage.py run_action_jobs || echo "actions cron: tick failed, retrying next interval"
+    # A failed tick must not end the scheduler: the next one retries. The
+    # actions engine records per-job failures on the jobs themselves, and
+    # ingestion resumes from the last block it stored.
+    python manage.py "$COMMAND" || echo "$COMMAND cron: tick failed, retrying next interval"
     sleep "$INTERVAL"
 done

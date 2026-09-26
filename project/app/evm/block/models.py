@@ -231,3 +231,18 @@ class Withdrawal(models.Model):
 
     def __str__(self):
         return f"withdrawal {self.index}"
+
+
+class IngestCursor(models.Model):
+    """How far realtime ingestion has got on one chain.
+
+    ``last_indexed_block`` is the newest block stored with its receipts; the
+    next tick starts at the one after it. It moves in the same transaction as
+    the block it names is stored, so it never runs ahead of what is stored.
+    """
+
+    chain = models.IntegerField(choices=ChainId.choices, unique=True)
+    last_indexed_block = models.BigIntegerField()
+
+    def __str__(self):
+        return f"{self.get_chain_display()} indexed to block {self.last_indexed_block}"

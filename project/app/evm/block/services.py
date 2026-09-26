@@ -1,13 +1,15 @@
-"""Storing blocks as a JSON-RPC node returns them, transactions and withdrawals included."""
+"""Storing blocks as a JSON-RPC node returns them, transactions and withdrawals included, and ingesting new ones."""
 
 import datetime
 
 from django.db import transaction as db_transaction
 
+from project.app.evm import rpc
 from project.app.evm.block.models import (
     Block,
     BlockCreateSchema,
     BlockUpdateSchema,
+    IngestCursor,
     Transaction,
     TransactionCreateSchema,
     TransactionUpdateSchema,
@@ -55,6 +57,35 @@ def store_blocks(blocks, chain):
             ["chain", "index"],
         )
     return len(parsed)
+
+
+def ingest_new_blocks():
+    """Store every block the node has past the last one ingested, with its receipts; answer how many.
+
+    The chain is the one the node reports. With no cursor for it yet, only the
+    node's head is stored: there is no backfill. Each block is stored with its
+    receipts and the cursor moved to it in one transaction, so a failure
+    partway leaves the cursor on the last block fully stored and the next call
+    resumes after it.
+    """
+    # receipt.services imports this module, so it cannot be imported at the top.
+    from project.app.evm.receipt.services import store_receipts
+
+    chain = ChainId(rpc.chain_id())  # an id outside the catalogued chains is a ValueError
+    head = rpc.latest_block_number()
+    cursor = IngestCursor.objects.filter(chain=chain).first()
+    start = head if cursor is None else cursor.last_indexed_block + 1
+    for number in range(start, head + 1):
+        # Fetched before the transaction opens, so no node call holds it open.
+        block = rpc.block_by_number(chain, number)
+        receipts = rpc.block_receipts(chain, number)
+        with db_transaction.atomic():
+            store_blocks([block], chain)
+            store_receipts(receipts, chain)
+            IngestCursor.objects.update_or_create(
+                chain=chain, defaults={"last_indexed_block": number}
+            )
+    return max(head + 1 - start, 0)
 
 
 def _parsed(raw, chain):

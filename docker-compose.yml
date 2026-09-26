@@ -1,5 +1,5 @@
-# Every process that runs the app reads the same environment, so `web` and
-# `cron` share one block: a knob added for one is never quietly missing from
+# Every process that runs the app reads the same environment, so `web`,
+# `cron` and `ingest` share one block: a knob added for one is never quietly missing from
 # the other.
 x-app-env: &app-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY -- copy .env.example to .env}
@@ -33,6 +33,8 @@ x-app-env: &app-env
   LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
   LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
   LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
+  # The EVM node `ingest` reads new blocks and receipts from -- see .env.example.
+  EVM_RPC_URL: ${EVM_RPC_URL:-}
 
 services:
   db:
@@ -80,6 +82,18 @@ services:
       # default lives in that script rather than in settings.py.
       ACTIONS_CRON_INTERVAL_SECONDS: ${ACTIONS_CRON_INTERVAL_SECONDS:-}
     entrypoint: ["sh", "docker/cron.sh"]
+    restart: unless-stopped
+
+  # Realtime block ingestion: one `ingest_blocks` tick a minute, storing every
+  # block the node has past the last one stored, with its receipts. Same
+  # scheduler script as `cron`, waiting on `web`'s migrations the same way.
+  ingest:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-env
+    entrypoint: ["sh", "docker/cron.sh", "ingest_blocks", "60"]
     restart: unless-stopped
 
 volumes:
