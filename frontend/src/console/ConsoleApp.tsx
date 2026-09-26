@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { logout } from '../api/endpoints';
 import { useSession } from '../auth/session.tsx';
+import { useBoot } from './Boot.tsx';
 import { CircuitsSheet } from './circuits/CircuitsSheet.tsx';
 import { ComposerSheet } from './composer/ComposerSheet.tsx';
 import { groupDigits } from './derive/format.ts';
@@ -133,11 +134,14 @@ function Shell() {
     return () => document.removeEventListener('keydown', onKey);
   }, [onJournal, journalKeys, journalSearch, navigate]);
 
+  const boot = useBoot();
+
   return (
     <div className="phosphor">
       <div className="dev">
         <div className="screen">
-          <div className="scr-in">
+          <div className={boot.className} style={boot.style}>
+            {boot.overlay}
             <header className="sh">
               <div className="logo">
                 <Mark />
