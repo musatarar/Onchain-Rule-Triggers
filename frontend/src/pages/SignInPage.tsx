@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { requestLoginLink } from '../api/endpoints';
+import { loginWithPassword, requestLoginLink } from '../api/endpoints';
 import type { AuthRequestLinkResult } from '../api/types';
 import { AuthShell } from '../components/AuthShell';
 import { Badge, Button, Input } from '../components/ui';
+import { takeDestination } from '../hooks/authDestination';
+import { useFieldAttributes } from './fieldAttributes';
 
-/** `expired` is entered only from ConsumePage after the backend rejects a token. */
-type State = 'enter' | 'sent' | 'expired';
+/**
+ * `password` is the default. `enter` → `sent` is the email-link flow, kept as
+ * the secondary option until email is supported officially. `expired` is
+ * entered only from ConsumePage after the backend rejects a token.
+ */
+type State = 'password' | 'enter' | 'sent' | 'expired';
 
 export interface SignInPageProps {
-  initialState?: 'enter' | 'expired';
+  initialState?: 'password' | 'expired';
   /** `expired_token` or `invalid_token`. */
   expiredCode?: string;
 }
@@ -27,11 +34,98 @@ function looksLikeEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-/** 01 — Enter. One field, one button, no alternatives. */
+/** 00 — Username and password: the default way in. */
+function PasswordState({ onUseLink }: { onUseLink: () => void }) {
+  const navigate = useNavigate();
+  const formRef = useRef<HTMLFormElement>(null);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [pending, setPending] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  useFieldAttributes(formRef, {
+    'signin-username': { autocomplete: 'username', name: 'username', autocapitalize: 'none' },
+    'signin-password': { autocomplete: 'current-password', name: 'password' },
+  });
+
+  const submit = async () => {
+    if (pending) return;
+    if (!username.trim() || !password) {
+      setFormError('Enter your username and password.');
+      return;
+    }
+    setFormError('');
+    setPending(true);
+    try {
+      await loginWithPassword({ username: username.trim(), password });
+      navigate(takeDestination(), { replace: true });
+    } catch (error) {
+      // The server's own sentence: one message for a wrong username or password.
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : 'Something went wrong. Check your connection and try again.',
+      );
+      setPending(false);
+    }
+  };
+
+  return (
+    <>
+      <h1 className="auth-title">Sign in</h1>
+      <p className="auth-lede">
+        New here? <Link to="/register">Create an account</Link>.
+      </p>
+
+      <form
+        className="auth-form"
+        noValidate
+        ref={formRef}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <Input
+          label="Username"
+          id="signin-username"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          autoFocus
+        />
+        <Input
+          label="Password"
+          id="signin-password"
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+        />
+
+        {formError && (
+          <p className="auth-alert" role="alert">
+            {formError}
+          </p>
+        )}
+
+        <div className="auth-actions">
+          <Button variant="primary" type="submit" loading={pending}>
+            {pending ? 'Signing in…' : 'Sign in'}
+          </Button>
+          <Button variant="ghost" onClick={onUseLink}>
+            Email me a link instead
+          </Button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+/** 01 — Enter. One field, one button, and the way back to the password form. */
 function EnterState({
   email,
   onEmailChange,
   onSubmit,
+  onUsePassword,
   pending,
   fieldError,
   formError,
@@ -39,21 +133,16 @@ function EnterState({
   email: string;
   onEmailChange: (value: string) => void;
   onSubmit: () => void;
+  onUsePassword: () => void;
   pending: boolean;
   fieldError: string;
   formError: string;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
 
-  // The Input primitive's props are frozen and carry no `autoComplete`/`name`,
-  // so set them on the DOM node — where the browser reads them anyway.
-  useEffect(() => {
-    const field = formRef.current?.querySelector('input');
-    if (!field) return;
-    field.setAttribute('autocomplete', 'email');
-    field.setAttribute('name', 'email');
-    field.setAttribute('inputmode', 'email');
-  }, []);
+  useFieldAttributes(formRef, {
+    'signin-email': { autocomplete: 'email', name: 'email', inputmode: 'email' },
+  });
 
   return (
     <>
@@ -92,6 +181,9 @@ function EnterState({
           {/* loading implies disabled, so no double submit. */}
           <Button variant="primary" type="submit" loading={pending}>
             {pending ? 'Sending…' : 'Email me a link'}
+          </Button>
+          <Button variant="ghost" onClick={onUsePassword}>
+            Use a username and password
           </Button>
         </div>
       </form>
@@ -189,7 +281,7 @@ function ExpiredState({ code, onRestart }: { code: string; onRestart: () => void
   );
 }
 
-export function SignInPage({ initialState = 'enter', expiredCode = '' }: SignInPageProps) {
+export function SignInPage({ initialState = 'password', expiredCode = '' }: SignInPageProps) {
   const [state, setState] = useState<State>(initialState);
   const [email, setEmail] = useState('');
   const [result, setResult] = useState<AuthRequestLinkResult | null>(null);
@@ -277,6 +369,14 @@ export function SignInPage({ initialState = 'enter', expiredCode = '' }: SignInP
     );
   }
 
+  if (state === 'password') {
+    return (
+      <AuthShell title="Sign in">
+        <PasswordState onUseLink={restart} />
+      </AuthShell>
+    );
+  }
+
   return (
     <AuthShell title="Sign in">
       <EnterState
@@ -289,6 +389,7 @@ export function SignInPage({ initialState = 'enter', expiredCode = '' }: SignInP
           if (pending) return;
           void send(email);
         }}
+        onUsePassword={() => setState('password')}
         pending={pending}
         fieldError={fieldError}
         formError={formError}
