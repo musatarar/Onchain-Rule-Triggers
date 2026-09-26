@@ -4,8 +4,10 @@ Columns follow the JSON-RPC field names in snake_case. Quantities arrive as hex
 and are stored as numbers: a count or index that fits 64 bits is a
 ``BigIntegerField``, and anything typed uint256 on chain (wei amounts, fees,
 difficulty) is a 78-digit ``DecimalField``, which Postgres holds exactly and
-SQLite rounds to 15 significant digits. Hashes, addresses and byte strings stay
-as the ``0x`` text they arrived as.
+SQLite rounds to 15 significant digits. Hashes and byte strings stay as the
+``0x`` text they arrived as; addresses are stored lowercased, so one account is
+one value however its address was written (a checksummed address mixes case):
+their :class:`~project.app.evm.fields.AddressField` columns fold every write.
 
 Every row names its ``chain``, since a node's response never does. A
 transaction or withdrawal carries its block's hash and number rather than a
@@ -19,7 +21,8 @@ from django.db import models
 from pydantic import BaseModel
 
 from project.app.evm.chains import ChainId
-from project.app.evm.constants import ADDRESS_LENGTH, HASH_LENGTH, UINT256_DIGITS
+from project.app.evm.constants import HASH_LENGTH, UINT256_DIGITS
+from project.app.evm.fields import AddressField
 
 
 def _uint256(**options):
@@ -68,7 +71,7 @@ class Block(models.Model):
     chain = models.IntegerField(choices=ChainId.choices)  # 1
     parent_hash = models.CharField(max_length=HASH_LENGTH)
     sha3_uncles = models.CharField(max_length=HASH_LENGTH)
-    miner = models.CharField(max_length=ADDRESS_LENGTH)
+    miner = AddressField()
     state_root = models.CharField(max_length=HASH_LENGTH)
     transactions_root = models.CharField(max_length=HASH_LENGTH)
     receipts_root = models.CharField(max_length=HASH_LENGTH)
@@ -156,8 +159,8 @@ class Transaction(models.Model):
     type = models.BigIntegerField()
     chain_id = models.BigIntegerField(null=True, blank=True)
     nonce = models.BigIntegerField()
-    from_address = models.CharField(max_length=ADDRESS_LENGTH, db_index=True)
-    to_address = models.CharField(max_length=ADDRESS_LENGTH, null=True, blank=True, db_index=True)
+    from_address = AddressField(db_index=True)
+    to_address = AddressField(null=True, blank=True, db_index=True)
     value = _uint256()
     gas = models.BigIntegerField()
     gas_price = _uint256()
@@ -215,7 +218,7 @@ class Withdrawal(models.Model):
     block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     block_number = models.BigIntegerField()
     validator_index = models.BigIntegerField()
-    address = models.CharField(max_length=ADDRESS_LENGTH)
+    address = AddressField()
     amount = models.BigIntegerField()
 
     class Meta:

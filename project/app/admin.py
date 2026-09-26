@@ -33,8 +33,8 @@ class EventAdmin(admin.ModelAdmin):
 
 @admin.register(Rule)
 class RuleAdmin(admin.ModelAdmin):
-    list_display = ("name", "owner", "kind", "enabled", "updated_at")
-    list_filter = ("kind", "enabled")
+    list_display = ("name", "owner", "enabled", "updated_at")
+    list_filter = ("enabled",)
     search_fields = ("name", "owner__username")
 
 

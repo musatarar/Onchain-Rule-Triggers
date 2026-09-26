@@ -1,11 +1,10 @@
 """The actions engine's cron entry point: fill the queue, then drain it.
 
 One tick queues every lead that has no open job and runs up to --limit of them
-through the deterministic and inference passes. Safe to run concurrently: jobs
-are claimed with a conditional UPDATE, so two ticks never process the same one.
+through the deterministic pass. Safe to run concurrently: jobs are claimed with
+a conditional UPDATE, so two ticks never process the same one.
 """
 
-from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from project.app.actions import services
@@ -15,8 +14,8 @@ from project.app.actions.models import ActionJob
 class Command(BaseCommand):
     help = (
         "Run queued action jobs: pull the rules of the user whose book the "
-        "lead is in, run the deterministic ones, then the (stubbed) inference "
-        "pass, and record the action the weight tally chose."
+        "lead is in, evaluate them against the lead, and record the rules that "
+        "matched."
     )
 
     def add_arguments(self, parser):
@@ -33,9 +32,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        if settings.ACTIONS_LLM_DRY_RUN:
-            self.stdout.write("ACTIONS_LLM_DRY_RUN is set: no provider call this tick")
-
         if not options["no_enqueue"]:
             queued = services.enqueue_pending_leads()
             self.stdout.write(f"queued {len(queued)} lead(s)")
