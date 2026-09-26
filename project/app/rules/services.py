@@ -4,17 +4,23 @@ Owner-scoped reads and the single validated write path for rules: every write
 runs ``full_clean()`` for the rule's own fields and checks its conditions here,
 so the vocabulary rules hold whatever calls in. A rule's conditions
 are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
-payload of :mod:`project.app.rules.utils`.
+payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
+enabled rules against the stored blocks not evaluated yet, and records each
+row they match as a ``MatchedRule``.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
 """
 
+import dataclasses
+
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
-from project.app.rules import utils
-from project.app.rules.models import Condition, Rule
+from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.rules import onchain, utils
+from project.app.rules.models import Condition, MatchedRule, Rule
 
 # --------------------------------------------------------------------------
 # reads — every queryset is scoped to one owner
@@ -124,3 +130,84 @@ def update_rule(rule, fields):
 
 def delete_rule(rule):
     rule.delete()
+
+
+# --------------------------------------------------------------------------
+# evaluation — every owner's enabled rules, against the blocks not evaluated yet
+# --------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class Evaluation:
+    """What one :func:`evaluate_blocks` run did."""
+
+    blocks: int = 0  # blocks evaluated
+    matches: int = 0  # rows recorded as matches
+    undecoded: int = 0  # blocks left for a later run: a rule reads transfers not all stored
+    # Each rule the evaluator refused on a block, with its first refusal.
+    refused: dict = dataclasses.field(default_factory=dict)
+
+
+def evaluate_blocks():
+    """Evaluate every enabled rule against each block not evaluated yet; answer an :class:`Evaluation`.
+
+    Every owner's enabled rules are read once, with their trees, and the blocks
+    are taken by chain and number. Each block is evaluated in one transaction
+    that records its matches and marks it evaluated, so a run that fails partway
+    keeps the blocks it finished, and a re-run evaluates only the rest. The mark
+    is a conditional UPDATE, so a block two runs reach at once is evaluated by
+    one of them.
+
+    A rule the evaluator refuses (:class:`~project.app.rules.onchain.ConditionError`)
+    matches nothing there and holds up no other rule. A block that a rule reads
+    token transfers of before decoding has finished with it
+    (:class:`~project.app.rules.onchain.NotDecodedError`) is left unevaluated,
+    with nothing recorded, for a run after decoding. A rule written or enabled
+    after a block was evaluated is not evaluated against that block.
+    """
+    rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
+    run = Evaluation()
+    blocks = Block.objects.filter(evaluated_at__isnull=True).order_by("chain", "number", "hash")
+    for block in blocks:
+        try:
+            recorded = _evaluate(block, rules, run.refused)
+        except onchain.NotDecodedError:
+            run.undecoded += 1
+            continue
+        if recorded is not None:
+            run.blocks += 1
+            run.matches += recorded
+    return run
+
+
+def _evaluate(block, rules, refused):
+    """Record the rows of ``block`` each of ``rules`` matches, and mark it evaluated.
+
+    Answers how many matches were recorded, or ``None`` when another run marked
+    the block first. A ``NotDecodedError`` rolls the mark back with the matches.
+    """
+    with transaction.atomic():
+        claimed = Block.objects.filter(hash=block.hash, evaluated_at__isnull=True).update(
+            evaluated_at=timezone.now()
+        )
+        if not claimed:
+            return None
+        matches = []
+        for rule in rules:
+            try:
+                rows = onchain.matches_in_block(rule, block)
+            except onchain.ConditionError as exc:
+                refused.setdefault(rule, exc)
+                continue
+            matches.extend(_match(rule, block, row) for row in rows)
+        MatchedRule.objects.bulk_create(matches)
+    return len(matches)
+
+
+def _match(rule, block, row):
+    """A row ``matches_in_block`` answered for ``rule`` in ``block``, as a match."""
+    if isinstance(row, Transaction):
+        return MatchedRule(rule=rule, block=block, transaction=row)
+    if isinstance(row, Withdrawal):
+        return MatchedRule(rule=rule, block=block, withdrawal=row)
+    return MatchedRule(rule=rule, block=block)  # a block-only rule: the block itself matched
