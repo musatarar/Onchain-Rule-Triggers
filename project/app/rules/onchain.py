@@ -1,7 +1,8 @@
 """On-chain rules against one stored block: which of its rows satisfy a rule.
 
-A rule's tree is walked as stored (``AND`` is all of its children, ``OR`` any
-of them), not through the v1 payload. One evaluation binds at most one row per
+A rule's tree is read as stored (``AND`` is all of its children, ``OR`` any
+of them), not through the v1 payload, and compiled once into a function of the
+rows it reads (:func:`_compile`). One evaluation binds at most one row per
 source, so every comparison in it reads the same block, the same transaction
 and the same token transfer:
 
@@ -106,16 +107,17 @@ def matches_in_block(rule, block, rows=None):
     :class:`ConditionError` for a rule that has no tree or names something
     this evaluator cannot read, and :class:`NotDecodedError` for a rule
     reading token transfers before decoding has finished with the block.
+
+    It tries the rule against every row, where :class:`RuleIndex` tries it
+    only against the rows it could match; the two judge a row alike.
     """
     rows = rows or BlockRows(block)
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
-    root, children = utils.root_and_children(nodes)
-    if root is None:
-        raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
+    predicate = _compiled(rule, nodes)[2]
 
     def holds(**bound):
-        return _holds(root, children, {utils.SOURCE_BLOCK: block, **bound})
+        return predicate({utils.SOURCE_BLOCK: block, **bound})
 
     if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
         transfers = rows.transfers if utils.SOURCE_TOKEN_TRANSFER in sources else {}
@@ -137,38 +139,39 @@ def matches_in_block(rule, block, rows=None):
 class RuleIndex:
     """Many rules, ready to evaluate against block after block, filed by the values they need.
 
-    A rule whose tree can only hold when a text field equals one of a few
-    values (an ``==`` or ``in`` leaf ANDed into the tree, or an ``OR`` of them
-    on one field) is filed under each of those values, and tried only against
-    a row carrying one. A rule with no such field whose tree can only hold
-    when a number field is past a threshold (a ``>``, ``>=``, ``<`` or ``<=``
-    leaf ANDed into the tree) is filed by that threshold, and tried only
-    against a row on the right side of it. Any other rule is tried against
-    every row. A rule skipped this way is one its tree would have refused, so
-    :func:`matches_for_rules` answers what :func:`matches_in_block` would for
-    each rule, having walked far fewer trees.
+    A rule whose tree can only hold when text fields equal one of a few
+    values (an ``==`` or ``in`` leaf ANDed into the tree, or an ``OR`` of
+    them, on one field or several) is filed under each of those values, and
+    tried only against a row carrying one. Of several such fields ANDed
+    together, it is filed by the one whose values the fewest rules are filed
+    under already, so a rule naming both a popular token and its own wallet
+    is filed under the wallet. A rule with no such field whose tree can only
+    hold when a number field is past a threshold (a ``>``, ``>=``, ``<`` or
+    ``<=`` leaf ANDed into the tree) is filed by that threshold, and tried
+    only against a row on the right side of it. Any other rule is tried
+    against every row. A rule skipped this way is one its tree would have
+    refused, so :func:`matches_for_rules` answers what :func:`matches_in_block`
+    would for each rule, having tried far fewer.
 
     Each tree is compiled once, when the rule is indexed, into a function of
     the rows bound by source (:func:`_compile`), so trying a rule against a
-    row is a call rather than a walk of its nodes. A rule the evaluator would
-    refuse on walking its tree (no tree, an empty or unknown group, an unknown
-    field or operator) is refused then, into :attr:`refused`.
+    row is a call rather than a walk of its nodes. A rule the evaluator cannot
+    judge (no tree, an empty or unknown group, an unknown field or operator)
+    is refused then, into :attr:`refused`.
 
     The index changes a rule at a time: :meth:`put` indexes a rule in place of
     the version of it already indexed, and :meth:`discard` takes one out, each
-    touching only that rule's filings. A rule keeps its position while it is
-    indexed, and a discarded rule's position goes to the next one put.
+    touching only that rule's filings. A rule keeps its place in :attr:`rules`
+    while it is indexed.
     """
 
-    def __init__(self, rules=()):
-        self.refused = {}  # rule -> the ConditionError refusing it
-        self._rules = []  # the rule at each position; None at a free one
-        self._predicates = []  # each position's compiled tree
-        self._positions = {}  # rule id -> its position
-        self._refused_ids = {}  # rule id -> the refused rule
-        self._free = []  # positions a discarded rule left
-        self._filings = {}  # position -> how _file filed it, for _unfile
-        self._transfer_readers = set()  # positions of rules comparing token transfers
+    def __init__(self, rules=(), trees=None):
+        """Index ``rules``; ``trees`` maps a rule's id to its tree's nodes, read from each rule when not given."""
+        self._rules = {}  # rule id -> the rule, in the order they were first put
+        self._predicates = {}  # rule id -> its compiled tree
+        self._refused = {}  # rule id -> (the rule, the ConditionError refusing it)
+        self._filings = {}  # rule id -> how _file filed it, for _unfile
+        self._transfer_readers = set()  # ids of the rules comparing token transfers
         # Per source whose rows the rules are tried against, one at a time:
         self._everywhere = {source: {} for source in _ROW_SOURCES}  # tried against every row
         self._equal = {source: {} for source in _ROW_SOURCES}  # (source, field, value) -> rules
@@ -177,7 +180,7 @@ class RuleIndex:
         # Filed in bulk, each range sorted once at the end rather than on every insert.
         self._bulk = True
         for rule in rules:
-            self.put(rule)
+            self.put(rule, None if trees is None else trees.get(rule.pk, ()))
         for ranges in self._ranges.values():
             for filed in ranges.values():
                 filed.sort()
@@ -185,116 +188,120 @@ class RuleIndex:
 
     @property
     def rules(self):
-        """Every rule indexed and not refused, in the order of their positions."""
-        return [rule for rule in self._rules if rule is not None]
+        """Every rule indexed and not refused, in the order they were first put."""
+        return list(self._rules.values())
+
+    @property
+    def refused(self):
+        """Each rule refused, with the :class:`ConditionError` refusing it."""
+        return dict(self._refused.values())
 
     @property
     def reads_transfers(self):
         """Whether a transaction rule compares token transfers."""
         return bool(self._transfer_readers)
 
-    def rule_at(self, position):
-        return self._rules[position]
+    def rule(self, rule_id):
+        """The rule indexed with id ``rule_id``."""
+        return self._rules[rule_id]
 
-    def put(self, rule):
-        """Index ``rule``, with its tree as it now reads, in place of any version of it indexed."""
-        position = self._positions.get(rule.pk)
-        if position is not None:
-            self._unfile(position)
-        self._drop_refusal(rule.pk)
-        nodes = list(rule.all_conditions.all())
-        root, children = utils.root_and_children(nodes)
+    def put(self, rule, nodes=None):
+        """Index ``rule`` in place of any version of it indexed, with its tree as ``nodes``
+        (``Condition`` rows, or anything with their fields), or as it now reads when not given.
+
+        The tree is compiled before anything indexed changes, so one that fails
+        to compile leaves the index as it was.
+        """
+        nodes = list(rule.all_conditions.all()) if nodes is None else list(nodes)
         try:
-            if root is None:
-                raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
-            predicate = _compile(root, children)
+            root, children, predicate = _compiled(rule, nodes)
         except ConditionError as exc:
-            if position is not None:
-                self._release(rule.pk, position)
-            self.refused[rule] = exc
-            self._refused_ids[rule.pk] = rule
+            self.discard(rule.pk)
+            self._refused[rule.pk] = (rule, exc)
             return
-        if position is None:
-            position = self._free.pop() if self._free else len(self._rules)
-            if position == len(self._rules):
-                self._rules.append(None)
-                self._predicates.append(None)
-            self._positions[rule.pk] = position
-        self._rules[position] = rule
-        self._predicates[position] = predicate
+        self._refused.pop(rule.pk, None)
+        if rule.pk in self._filings:
+            self._unfile(rule.pk)
+        self._rules[rule.pk] = rule
+        self._predicates[rule.pk] = predicate
         sources = utils.tree_sources(nodes)
         if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
-            self._file(position, utils.SOURCE_TRANSACTION, root, children)
+            self._file(rule.pk, utils.SOURCE_TRANSACTION, root, children)
             if utils.SOURCE_TOKEN_TRANSFER in sources:
-                self._transfer_readers.add(position)
+                self._transfer_readers.add(rule.pk)
         elif utils.SOURCE_WITHDRAWAL in sources:
-            self._file(position, utils.SOURCE_WITHDRAWAL, root, children)
+            self._file(rule.pk, utils.SOURCE_WITHDRAWAL, root, children)
         else:
-            self._filings[position] = ("everywhere", utils.SOURCE_BLOCK)
-            self._everywhere[utils.SOURCE_BLOCK][position] = None
+            self._filings[rule.pk] = ("everywhere", utils.SOURCE_BLOCK)
+            self._everywhere[utils.SOURCE_BLOCK][rule.pk] = None
 
     def discard(self, rule_id):
         """Take the rule with id ``rule_id`` out of the index, refused or not; nothing if it is not in."""
-        self._drop_refusal(rule_id)
-        position = self._positions.get(rule_id)
-        if position is not None:
-            self._unfile(position)
-            self._release(rule_id, position)
+        self._refused.pop(rule_id, None)
+        if rule_id in self._filings:
+            self._unfile(rule_id)
+            del self._rules[rule_id], self._predicates[rule_id]
 
-    def _drop_refusal(self, rule_id):
-        rule = self._refused_ids.pop(rule_id, None)
-        if rule is not None:
-            self.refused.pop(rule, None)
-        return rule
-
-    def _release(self, rule_id, position):
-        del self._positions[rule_id]
-        self._rules[position] = None
-        self._predicates[position] = None
-        self._free.append(position)
-
-    def _file(self, position, rows_source, root, children):
-        key = _key(root, children)
-        if key is not None:
-            source, field, values = key
-            equal = self._equal[rows_source]
-            for value in values:
-                equal.setdefault((source, field, value), {})[position] = None
-                self._equal_fields[rows_source][source, field] += 1
-            self._filings[position] = ("equal", rows_source, source, field, values)
+    def _file(self, rule_id, rows_source, root, children):
+        keys = _key(root, children, self._crowding(rows_source))
+        if keys is not None:
+            equal, fields = self._equal[rows_source], self._equal_fields[rows_source]
+            for source, field, values in keys:
+                for value in values:
+                    equal.setdefault((source, field, value), {})[rule_id] = None
+                    fields[source, field] += 1
+            self._filings[rule_id] = ("equal", rows_source, keys)
             return
         bound = _range_key(root, children)
         if bound is not None:
             source, field, lower, threshold = bound
             filed = self._ranges[rows_source].setdefault((source, field, lower), _Range())
-            filed.add(threshold, position, sort=not self._bulk)
-            self._filings[position] = ("range", rows_source, (source, field, lower), threshold)
+            filed.add(threshold, rule_id, sort=not self._bulk)
+            self._filings[rule_id] = ("range", rows_source, (source, field, lower), threshold)
             return
-        self._filings[position] = ("everywhere", rows_source)
-        self._everywhere[rows_source][position] = None
+        self._filings[rule_id] = ("everywhere", rows_source)
+        self._everywhere[rows_source][rule_id] = None
 
-    def _unfile(self, position):
-        """Undo what :meth:`_file` did for ``position``."""
-        self._transfer_readers.discard(position)
-        filing = self._filings.pop(position)
+    def _crowding(self, rows_source):
+        """How crowded filing a rule under some keys would be, for :func:`_key` to take the least.
+
+        By how many rules are filed under their values already, then how many
+        values they are, then how many are a transfer's rather than a
+        transaction's field.
+        """
+        equal = self._equal[rows_source]
+
+        def crowding(keys):
+            return (
+                sum(len(equal.get((s, f, value), ())) for s, f, values in keys for value in values),
+                sum(len(values) for _, _, values in keys),
+                sum(source != utils.SOURCE_TRANSACTION for source, _, _ in keys),
+            )
+
+        return crowding
+
+    def _unfile(self, rule_id):
+        """Undo what :meth:`_file` did for ``rule_id``."""
+        self._transfer_readers.discard(rule_id)
+        filing = self._filings.pop(rule_id)
         kind, rows_source = filing[0], filing[1]
         if kind == "everywhere":
-            del self._everywhere[rows_source][position]
+            del self._everywhere[rows_source][rule_id]
         elif kind == "equal":
-            _, _, source, field, values = filing
             equal, fields = self._equal[rows_source], self._equal_fields[rows_source]
-            for value in values:
-                filed = equal[source, field, value]
-                del filed[position]
-                if not filed:
-                    del equal[source, field, value]
-                fields[source, field] -= 1
-                if not fields[source, field]:
-                    del fields[source, field]
+            for source, field, values in filing[2]:
+                for value in values:
+                    filed = equal[source, field, value]
+                    del filed[rule_id]
+                    if not filed:
+                        del equal[source, field, value]
+                    fields[source, field] -= 1
+                    if not fields[source, field]:
+                        del fields[source, field]
         else:
             _, _, key, threshold = filing
             ranges = self._ranges[rows_source]
-            ranges[key].remove(threshold, position)
+            ranges[key].remove(threshold, rule_id)
             if not ranges[key]:
                 del ranges[key]
 
@@ -305,9 +312,10 @@ class RuleIndex:
         )
 
     def candidates(self, rows_source, bound):
-        """The positions of the rules worth trying against the rows ``bound`` by source.
+        """The ids of the rules worth trying against the rows ``bound`` by source.
 
-        A rule is filed by one field of one source, so it is answered at most once.
+        A rule filed under several fields (an ``OR`` across them) is answered
+        once for each of them the rows carry one of its values in.
         """
         found = list(self._everywhere[rows_source])
         equal = self._equal[rows_source]
@@ -322,55 +330,56 @@ class RuleIndex:
                 found.extend(filed.past(value, lower))
         return found
 
-    def holds(self, position, bound):
-        """Whether the rule at ``position`` holds of the rows ``bound`` by source, the block's included."""
-        return self._predicates[position](bound)
+    def holds(self, rule_id, bound):
+        """Whether the rule ``rule_id`` holds of the rows ``bound`` by source, the block's included."""
+        return self._predicates[rule_id](bound)
 
 
 class _Range:
-    """Rules filed by one number field's threshold, kept sorted by it and then by position."""
+    """Rules filed by one number field's threshold, kept sorted by it and then by rule id."""
 
     def __init__(self):
-        self.pairs = []  # (threshold, position)
+        self.pairs = []  # (threshold, rule id)
         self.thresholds = []
-        self.positions = []
+        self.rule_ids = []
 
     def __len__(self):
         return len(self.pairs)
 
-    def add(self, threshold, position, sort=True):
-        """File ``position`` at ``threshold``: in order, or at the end until :meth:`sort` when not ``sort``."""
-        index = bisect.bisect(self.pairs, (threshold, position)) if sort else len(self.pairs)
-        self.pairs.insert(index, (threshold, position))
+    def add(self, threshold, rule_id, sort=True):
+        """File ``rule_id`` at ``threshold``: in order, or at the end until :meth:`sort` when not ``sort``."""
+        index = bisect.bisect(self.pairs, (threshold, rule_id)) if sort else len(self.pairs)
+        self.pairs.insert(index, (threshold, rule_id))
         self.thresholds.insert(index, threshold)
-        self.positions.insert(index, position)
+        self.rule_ids.insert(index, rule_id)
 
-    def remove(self, threshold, position):
-        index = bisect.bisect_left(self.pairs, (threshold, position))
-        del self.pairs[index], self.thresholds[index], self.positions[index]
+    def remove(self, threshold, rule_id):
+        index = bisect.bisect_left(self.pairs, (threshold, rule_id))
+        del self.pairs[index], self.thresholds[index], self.rule_ids[index]
 
     def sort(self):
         self.pairs.sort()
         self.thresholds = [threshold for threshold, _ in self.pairs]
-        self.positions = [position for _, position in self.pairs]
+        self.rule_ids = [rule_id for _, rule_id in self.pairs]
 
     def past(self, value, lower):
         """The rules ``value`` could satisfy: those with a threshold at or below it for a
         lower bound (``>``, ``>=``), at or above it for an upper one (``<``, ``<=``)."""
         if lower:
-            return self.positions[: bisect.bisect_right(self.thresholds, value)]
-        return self.positions[bisect.bisect_left(self.thresholds, value) :]
+            return self.rule_ids[: bisect.bisect_right(self.thresholds, value)]
+        return self.rule_ids[bisect.bisect_left(self.thresholds, value) :]
 
 
 def matches_for_rules(index, block, rows=None):
-    """The rows of ``block`` each rule of ``index`` matches, as :func:`matches_in_block` answers them.
+    """The rows of ``block`` the rules of ``index`` match, as :func:`matches_in_block` answers them.
 
-    Answers each rule of ``index.rules``, in that order, with the rows it
-    matched (``[]`` for none). Raises :class:`NotDecodedError` when a rule
-    reads token transfers before decoding has finished with the block.
+    Answers each rule that matched a row, with the rows it matched in the
+    order the block holds them; a rule that matched none is left out. Raises
+    :class:`NotDecodedError` when a rule reads token transfers before
+    decoding has finished with the block.
     """
     rows = rows or BlockRows(block)
-    matched = [[] for _ in index._rules]
+    matched = {}  # rule id -> the rows it matched
     holds = index.holds
     transfers = rows.transfers if index.reads_transfers else {}
     if index.tries(utils.SOURCE_TRANSACTION):
@@ -383,24 +392,23 @@ def matches_for_rules(index, block, rows=None):
                     utils.SOURCE_TRANSACTION: transaction,
                     utils.SOURCE_TOKEN_TRANSFER: transfer,
                 }
-                for position in index.candidates(utils.SOURCE_TRANSACTION, bound):
-                    if position not in held and holds(position, bound):
-                        held.add(position)
-            for position in held:
-                matched[position].append(transaction)
+                for rule_id in index.candidates(utils.SOURCE_TRANSACTION, bound):
+                    if rule_id not in held and holds(rule_id, bound):
+                        held.add(rule_id)
+            for rule_id in held:
+                matched.setdefault(rule_id, []).append(transaction)
     if index.tries(utils.SOURCE_WITHDRAWAL):
         for withdrawal in rows.withdrawals:
             bound = {utils.SOURCE_BLOCK: block, utils.SOURCE_WITHDRAWAL: withdrawal}
-            for position in index.candidates(utils.SOURCE_WITHDRAWAL, bound):
-                if holds(position, bound):
-                    matched[position].append(withdrawal)
+            # A set, as a rule filed under two fields can be answered twice.
+            for rule_id in set(index.candidates(utils.SOURCE_WITHDRAWAL, bound)):
+                if holds(rule_id, bound):
+                    matched.setdefault(rule_id, []).append(withdrawal)
     bound = {utils.SOURCE_BLOCK: block}
-    for position in index.candidates(utils.SOURCE_BLOCK, bound):
-        if holds(position, bound):
-            matched[position].append(block)
-    return {
-        rule: found for rule, found in zip(index._rules, matched, strict=True) if rule is not None
-    }
+    for rule_id in index.candidates(utils.SOURCE_BLOCK, bound):
+        if holds(rule_id, bound):
+            matched.setdefault(rule_id, []).append(block)
+    return {index.rule(rule_id): found for rule_id, found in matched.items()}
 
 
 # The sources whose rows a rule is tried against, one at a time.
@@ -411,11 +419,26 @@ _KEY_SOURCES = (utils.SOURCE_TRANSACTION, utils.SOURCE_TOKEN_TRANSFER, utils.SOU
 _BOUNDS = {">": True, ">=": True, "<": False, "<=": False}
 
 
-def _key(node, children):
-    """``(source, field, values)``: a text field ``node`` holds only when it equals one of ``values``.
+def _compiled(rule, nodes):
+    """``rule``'s tree, from every one of its ``nodes``: ``(root, children, predicate)``.
 
-    ``None`` when there is none. Of several, the one with the fewest values,
-    a transaction's field before a transfer's.
+    Raises :class:`ConditionError` for a tree the evaluator cannot judge.
+    """
+    root, children = utils.root_and_children(nodes)
+    if root is None:
+        raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
+    return root, children, _compile(root, children)
+
+
+def _key(node, children, crowding=None):
+    """``((source, field, values), ...)``: text fields ``node`` holds only when one equals one of its ``values``.
+
+    Each field's ``values`` are a tuple, each value once.
+
+    ``None`` when there are none. Of several ANDed together, the least
+    ``crowding``; with none given, the fewest values, a transaction's fields
+    before a transfer's. An ``OR`` of them is every field its branches name,
+    each with the values any branch names for it.
     """
     if node.type == utils.TREE_TYPE_COMPARISON:
         if utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name) != utils.TEXT:
@@ -423,28 +446,33 @@ def _key(node, children):
         if node.source not in _KEY_SOURCES:
             return None
         if node.operator == "==" and isinstance(node.value, str):
-            values = [node.value]
-        elif node.operator == "in" and isinstance(node.value, list):
-            values = node.value
-        else:
-            return None
-        if not all(isinstance(value, str) for value in values):
-            return None
-        return node.source, node.field_name, frozenset(values)
+            return ((node.source, node.field_name, (node.value,)),)
+        if node.operator == "in" and isinstance(node.value, list):
+            if all(isinstance(value, str) for value in node.value):
+                return ((node.source, node.field_name, tuple(dict.fromkeys(node.value))),)
+        return None
     group = children.get(node.pk) or []
-    keys = [_key(child, children) for child in group]
+    keys = [_key(child, children, crowding) for child in group]
     if node.type == "AND":
         keys = [key for key in keys if key is not None]
-        return min(
-            keys,
-            key=lambda key: (len(key[2]), key[0] != utils.SOURCE_TRANSACTION),
-            default=None,
-        )
+        if len(keys) > 1:
+            return min(keys, key=crowding or _fewest)
+        return keys[0] if keys else None
     if node.type == "OR" and keys and all(keys):
-        if len({(source, field) for source, field, _ in keys}) == 1:
-            source, field, _ = keys[0]
-            return source, field, frozenset().union(*(values for _, _, values in keys))
+        merged = {}  # (source, field) -> its values, each once, in the order named
+        for key in keys:
+            for source, field, values in key:
+                merged.setdefault((source, field), {}).update(dict.fromkeys(values))
+        return tuple((source, field, tuple(values)) for (source, field), values in merged.items())
     return None
+
+
+def _fewest(keys):
+    """Keys by how many values they are, then how many are a transfer's rather than a transaction's field."""
+    return (
+        sum(len(values) for _, _, values in keys),
+        sum(source != utils.SOURCE_TRANSACTION for source, _, _ in keys),
+    )
 
 
 def _range_key(node, children):
@@ -518,10 +546,10 @@ def _transfers_by_hash(block):
 def _compile(node, children):
     """The tree under ``node`` as a function of the rows bound by source, answering whether it holds.
 
-    It answers what :func:`_holds` does for the same rows, with each field's
-    reader, each threshold's ``Decimal`` and each operator looked up once
-    here rather than on every row. Raises :class:`ConditionError` up front for
-    what :func:`_holds` refuses on walking the tree.
+    Each field's reader, each threshold's ``Decimal`` and each operator are
+    looked up once here rather than on every row. Raises
+    :class:`ConditionError` for a tree the evaluator cannot judge: an unknown
+    group type, field or operator, or a group with no conditions.
     """
     if node.type == utils.TREE_TYPE_COMPARISON:
         return _compile_leaf(node)
@@ -564,7 +592,12 @@ _COMPARISONS = {
 
 
 def _compile_leaf(node):
-    """One comparison as a function of the rows bound by source; see :func:`_leaf` and :func:`_compare`."""
+    """One comparison as a function of the rows bound by source, answering whether it holds.
+
+    A blank value (:func:`_blank`) satisfies ``absent`` and no other
+    operator; a number is compared exactly (:func:`_exact`), and a date
+    threshold is read as an ISO date.
+    """
     field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
     if field_type is None:
         raise ConditionError(f"Unknown field {node.field_name!r} on source {node.source!r}.")
@@ -590,7 +623,7 @@ def _compile_leaf(node):
         try:
             items = frozenset(items)
         except TypeError:
-            pass  # an unhashable item: look through the list, as _compare does
+            pass  # an unhashable item: look through the list instead
 
         def within(bound):
             value = read(bound)
@@ -609,8 +642,12 @@ def _compile_leaf(node):
     return compared
 
 
+@functools.cache
 def _reader(source, field, field_type):
-    """A function of the rows bound by source answering ``field`` as :func:`_value` reads it."""
+    """A function of the rows bound by source answering ``field`` as :func:`_value` reads it.
+
+    One per field, shared by every comparison reading it.
+    """
     if source == utils.SOURCE_TOKEN_TRANSFER and field == "token":
 
         def read(bound):
@@ -631,33 +668,6 @@ def _reader(source, field, field_type):
             return None if row is None else get(row)
 
     return read
-
-
-def _holds(node, children, rows):
-    if node.type == utils.TREE_TYPE_COMPARISON:
-        return _leaf(node, rows)
-    check = GROUP_CHECKS.get(node.type)
-    if check is None:
-        raise ConditionError(f"Unknown group type {node.type!r}.")
-    group = children.get(node.pk)
-    if not group:
-        raise ConditionError(f"A {node.type} group with no conditions has no verdict.")
-    return check(_holds(child, children, rows) for child in group)
-
-
-def _leaf(node, rows):
-    field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
-    if field_type is None:
-        raise ConditionError(f"Unknown field {node.field_name!r} on source {node.source!r}.")
-    value = _value(node.source, node.field_name, field_type, rows.get(node.source))
-    threshold = node.value
-    if field_type == utils.NUMBER:
-        threshold = (
-            [_exact(item) for item in threshold]
-            if isinstance(threshold, list)
-            else _exact(threshold)
-        )
-    return _compare(value, node.operator, threshold, field_type)
 
 
 def _value(source, field, field_type, row):
@@ -688,33 +698,6 @@ def _exact(number):
 def _blank(value):
     """Absent for `exists`/`absent`. ``False`` and ``0`` are present values."""
     return value is None or value == ""
-
-
-def _compare(value, operator, threshold, field_type):
-    if operator == "exists":
-        return not _blank(value)
-    if operator == "absent":
-        return _blank(value)
-    if operator == "contains":
-        return _contains(value, threshold)
-    if _blank(value):
-        return False
-    if operator == "in":
-        return value in [_coerce(item, field_type) for item in threshold]
-    threshold = _coerce(threshold, field_type)
-    if operator == "==":
-        return value == threshold
-    if operator == "!=":
-        return value != threshold
-    if operator == ">":
-        return value > threshold
-    if operator == ">=":
-        return value >= threshold
-    if operator == "<":
-        return value < threshold
-    if operator == "<=":
-        return value <= threshold
-    raise ConditionError(f"Unknown operator {operator!r}.")
 
 
 def _contains(value, threshold):

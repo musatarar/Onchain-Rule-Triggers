@@ -281,7 +281,7 @@ class QueryScalingTests(StressTestCase):
             self.assertEqual(index.refused, {})
             for rule in rules:
                 with self.subTest(block=block.number, rule=rule.name):
-                    self.assertEqual(found[rule], onchain.matches_in_block(rule, block))
+                    self.assertEqual(found.get(rule, []), onchain.matches_in_block(rule, block))
 
 
 @unittest.skipUnless(STRESS_USERS, "set STRESS_USERS=10,100,... to run the pipeline stress tests")
