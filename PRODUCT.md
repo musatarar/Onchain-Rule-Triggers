@@ -12,7 +12,7 @@ Crypto operations, treasury and risk people: the person responsible for a fund's
 
 ## Product Purpose
 
-Users write rules about on-chain activity. The system ingests blocks, decodes each transaction into the token transfer its calldata makes, and evaluates every enabled rule against that stored data. The user sees the transactions that matched each rule and writes new rules. Success means the user trusts a match enough to act on it without re-deriving it on a block explorer.
+Users write rules about on-chain activity. The system ingests blocks, decodes each transaction into the token transfers its receipt's logs record, and evaluates every enabled rule against that stored data. The user sees the transactions that matched each rule and writes new rules. Success means the user trusts a match enough to act on it without re-deriving it on a block explorer.
 
 ## Positioning
 
@@ -27,7 +27,8 @@ Rules are evaluated against blocks the system ingests and decodes itself, and ev
 ## Capabilities and Constraints
 
 - Chains: EVM chains by EIP-155 id (Ethereum, Base, Arbitrum One, OP Mainnet, Polygon PoS and the rest of `ChainId`). Sample data is Ethereum mainnet.
-- Decoding today covers `transfer(address,uint256)` and `transferFrom(address,address,uint256)` calldata. Calldata-decoded transfers are stored **unverified**: nothing checks that the call succeeded. A transfer on a contract the token catalog does not recognise has an unknown token.
+- Decoding reads each transaction's receipt: every ERC-20 or ERC-721 `Transfer` event in its logs is a transfer, including tokens moved by a contract the transaction called (swaps, multisig executions), and a reverted transaction makes none. A transfer is **verified** when a token the catalog recognises emitted it; an event from an unknown contract is stored unverified, since any contract can emit one. ERC-1155 `TransferSingle`/`TransferBatch` events are not decoded yet.
+- A transaction stored without its receipt falls back to `transfer(address,uint256)` and `transferFrom(address,address,uint256)` calldata. Those transfers are stored **unverified** and with no log index: nothing checks that the call succeeded. A transfer on a contract the token catalog does not recognise has an unknown token.
 - Token amounts are stored raw (undivided). A token's `decimals` can be unknown; the UI must never guess 18.
 - Transaction decode status: Ingested, Processing, Decoded, Unable to decode.
 - Rules have name, enabled flag, and a condition tree. Rules are not first-match: every rule is evaluated and every rule that matched is recorded.
