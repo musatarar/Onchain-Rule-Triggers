@@ -1,5 +1,7 @@
 """Rules-entity business logic: owner-scoped reads and validated writes."""
 
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -147,6 +149,109 @@ class ConditionsTreeTests(RulesServiceTestCase):
         with self.assertNumQueries(2):
             payloads = [rule.conditions_payload() for rule in services.rules_for(self.user)]
         self.assertEqual(len(payloads), 3)
+
+
+class TagTests(RulesServiceTestCase):
+    """A tag is A–Z, 0–9 and hyphens, up to 12 characters, and one per owner."""
+
+    def _create(self, tag, owner=None):
+        return services.create_rule(
+            owner or self.user, {"name": tag or "untagged", "tag": tag, "conditions": WHALES}
+        )
+
+    def _tag_errors(self, write):
+        with self.assertRaises(ValidationError) as ctx:
+            write()
+        return ctx.exception.message_dict["tag"]
+
+    def test_a_well_formed_tag_is_stored(self):
+        for tag in ("BNB-OUT", "X", "ANY-1M", "A" * 12):
+            self.assertEqual(self._create(tag).tag, tag)
+
+    def test_a_malformed_tag_is_refused(self):
+        for tag in ("bnb-out", "-BNB", "BNB OUT", "BNB_OUT", "A" * 13, "BNB→OUT"):
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    self._tag_errors(lambda tag=tag: self._create(tag)),
+                    ["Tags use A–Z, 0–9 and hyphens, up to 12 characters."],
+                )
+
+    def test_a_tag_the_owner_already_uses_is_refused(self):
+        self._create("BNB-OUT")
+        self.assertEqual(
+            self._tag_errors(lambda: self._create("BNB-OUT")),
+            ["BNB-OUT is already used by another circuit."],
+        )
+        other = self._create("ANY-1M")
+        self.assertEqual(
+            self._tag_errors(lambda: services.update_rule(other, {"tag": "BNB-OUT"})),
+            ["BNB-OUT is already used by another circuit."],
+        )
+
+    def test_a_rule_keeps_its_own_tag_on_update(self):
+        rule = self._create("BNB-OUT")
+        self.assertEqual(services.update_rule(rule, {"name": "Renamed"}).tag, "BNB-OUT")
+
+    def test_two_owners_may_share_a_tag(self):
+        self._create("BNB-OUT")
+        self.assertEqual(self._create("BNB-OUT", owner=self.other).tag, "BNB-OUT")
+
+    def test_untagged_rules_may_repeat(self):
+        self._create("")
+        self.assertEqual(self._create("").tag, "")
+
+    def test_a_tag_taken_in_a_race_reads_as_taken(self):
+        # A concurrent write takes the tag between the check and the INSERT;
+        # the constraint refuses the INSERT.
+        self._create("BNB-OUT")
+        with mock.patch.object(services, "_check_tag"):
+            self.assertEqual(
+                self._tag_errors(lambda: self._create("BNB-OUT")),
+                ["BNB-OUT is already used by another circuit."],
+            )
+
+
+class RevisionTests(RulesServiceTestCase):
+    """A rule's revision bumps when its tree changes, and on nothing else."""
+
+    def _created(self):
+        return services.create_rule(
+            self.user, {"name": "Whales", "tag": "WHALES", "conditions": WHALES}
+        )
+
+    def _revision(self, rule):
+        return Rule.objects.get(pk=rule.pk).revision
+
+    def test_a_new_rule_is_at_revision_1(self):
+        self.assertEqual(self._revision(self._created()), 1)
+
+    def test_a_new_tree_bumps_the_revision(self):
+        rule = self._created()
+        services.update_rule(
+            rule, {"conditions": _all_of(_cond("number", ">=", 5, source="block"))}
+        )
+        self.assertEqual(self._revision(rule), 2)
+        services.update_rule(rule, {"conditions": WHALES})
+        self.assertEqual(self._revision(rule), 3)
+
+    def test_other_fields_leave_the_revision(self):
+        rule = self._created()
+        for fields in ({"tag": "BIG"}, {"glyph": "bolt"}, {"enabled": False}, {"name": "Big"}):
+            services.update_rule(rule, fields)
+        self.assertEqual(self._revision(rule), 1)
+
+    def test_resending_the_same_tree_leaves_the_revision(self):
+        rule = self._created()
+        services.update_rule(rule, {"conditions": WHALES, "glyph": "star"})
+        self.assertEqual(self._revision(rule), 1)
+
+    def test_a_refused_tree_leaves_the_revision(self):
+        rule = self._created()
+        with self.assertRaises(ValidationError):
+            services.update_rule(
+                rule, {"conditions": _all_of(_cond("gas", "==", 21_000, source="transaction"))}
+            )
+        self.assertEqual(self._revision(rule), 1)
 
 
 class LowercaseWriteTests(RulesServiceTestCase):
