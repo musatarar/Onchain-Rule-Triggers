@@ -7,8 +7,9 @@ are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
 row they match as a ``MatchedRule``; the engine status reports the stored
-window with each owner's own rule and match counts, and each rule's stats
-count its matches the same way.
+window with each owner's own rule and match counts, each rule's stats count
+its matches the same way, the journal lists those matches, and a match's
+detail reads one of them with the transaction and transfer it matched.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
@@ -16,7 +17,9 @@ exceptions.
 
 import collections
 import dataclasses
+import functools
 import io
+import operator
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
@@ -26,6 +29,8 @@ from django.utils import timezone
 from project.app.constants import NEEDS_CONDITIONS, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
+from project.app.evm.function_signatures import FunctionSignature
+from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import onchain, utils
 from project.app.rules.models import Condition, MatchedRule, Rule
 
@@ -58,7 +63,7 @@ def matches_for(owner):
     and a block-only rule's stay recorded but are neither counted nor shown.
     Nor are a disabled rule's, as the console shows what its armed circuits
     matched; enabling the rule again brings them back. Every match count the
-    console shows reads this, so they all agree.
+    console shows reads this, and so does its journal, so they all agree.
     """
     return MatchedRule.objects.filter(
         rule__owner=owner, rule__enabled=True, transaction__isnull=False
@@ -465,3 +470,327 @@ def engine_status(owner):
         ),
         "match_count": matches_for(owner).count(),
     }
+
+
+# --------------------------------------------------------------------------
+# the journal — one owner's matches of a transaction, newest first
+# --------------------------------------------------------------------------
+
+# The journal's order, key by key, each as (field, descending): newest first by
+# the matched transaction's block and its index there, as the console lists
+# matches, then by rule. Nothing makes a rule's match of a transaction unique (a
+# reorg can record one twice), so the match's own id breaks the last tie, and
+# every row has a position of its own for a cursor to name.
+JOURNAL_KEYS = (
+    ("transaction__block_number", True),
+    ("transaction__transaction_index", True),
+    ("rule_id", False),
+    ("id", False),
+)
+JOURNAL_ORDER = tuple(f"-{field}" if descending else field for field, descending in JOURNAL_KEYS)
+# The relations the keys read through, fetched with a page's matches, so that
+# :func:`_position` and :func:`journal_rows` read a match's keys from the row
+# the order came from.
+JOURNAL_RELATIONS = tuple(
+    dict.fromkeys(field.rpartition("__")[0] for field, _ in JOURNAL_KEYS if "__" in field)
+)
+
+
+@dataclasses.dataclass
+class JournalPage:
+    """One page of an owner's journal (:func:`journal_page`).
+
+    A position is where a row sits in the journal's order: its values of
+    :data:`JOURNAL_KEYS`, as ``(block number, transaction index, rule id,
+    match id)``.
+    """
+
+    rows: list  # the page's matches, each in the console's ``JournalRow`` shape
+    next: tuple | None  # the last row's position, when more rows follow the page
+    head: tuple | None  # the journal's newest row's position; None when it is empty
+
+
+def journal_page(owner, *, rule=None, older_than=None, newer_than=None, size):
+    """A page of ``owner``'s journal, at most ``size`` rows: the matches :func:`matches_for` answers.
+
+    ``rule``, one of the owner's rules, narrows the journal to its matches, so
+    a disabled rule's is empty. ``older_than`` starts the page after the row at
+    that position, as the console asks for older matches, and ``newer_than``
+    keeps only the rows before the one there, as a poll asks for new ones;
+    given both, the page holds the rows between them. A position is a place in
+    the order rather than a row, so it still reads once its row is gone.
+
+    ``head`` is the position of the journal's newest row whatever the page, so
+    a poll can ask for what came after it. Three queries, whatever ``size``:
+    the head, the page with each match's :data:`JOURNAL_RELATIONS` and rule,
+    and the page's token transfers with their tokens (:func:`journal_rows`).
+    """
+    journal = matches_for(owner)
+    if rule is not None:
+        journal = journal.filter(rule=rule)
+    journal = journal.order_by(*JOURNAL_ORDER)
+    head = journal.values_list(*(field for field, _ in JOURNAL_KEYS)).first()
+    if older_than is not None:
+        journal = journal.filter(_past(older_than, older=True))
+    if newer_than is not None:
+        journal = journal.filter(_past(newer_than, older=False))
+    # One row past the page says whether another page follows.
+    matches = list(journal.select_related(*JOURNAL_RELATIONS, "rule")[: size + 1])
+    page = matches[:size]
+    return JournalPage(
+        rows=journal_rows(page),
+        next=_position(page[-1]) if len(matches) > size else None,
+        head=head,
+    )
+
+
+def _position(match):
+    """Where ``match``, read with its transaction, sits in the journal: its values of :data:`JOURNAL_KEYS`."""
+    transaction = match.transaction
+    return (transaction.block_number, transaction.transaction_index, match.rule_id, match.pk)
+
+
+def _past(position, *, older):
+    """A filter for the journal's rows after ``position`` when ``older``, and before it otherwise.
+
+    The keys run both ways, so no one comparison of tuples says it: a row is
+    past the position when it ties with it on the keys before one and passes
+    it on that one.
+    """
+    clauses = []
+    tied = {}
+    for (field, descending), value in zip(JOURNAL_KEYS, position, strict=True):
+        # After, in the journal: lower on a descending key, higher on an ascending one.
+        lookup = "lt" if descending == older else "gt"
+        clauses.append(Q(**tied, **{f"{field}__{lookup}": value}))
+        tied[field] = value
+    return functools.reduce(operator.or_, clauses)
+
+
+def journal_rows(matches):
+    """``matches``, each read with its transaction and rule, as the console's ``JournalRow``s.
+
+    A row leads with the transaction's token transfer when decoding stored one
+    (:func:`_leading_transfers`), and with the ETH it sent otherwise, as the
+    console's demo data does. One query for the transfers, however many rows.
+    """
+    transfers = _leading_transfers([match.transaction for match in matches])
+    return [_journal_row(match, transfers.get(match.transaction_id)) for match in matches]
+
+
+def _leading_transfers(transactions):
+    """The token transfer each of ``transactions`` leads with, by hash: its first, in log order.
+
+    Decoding stores one per Transfer log for a transaction with its receipt,
+    and at most one, from its calldata, for a transaction without. The first
+    by log index, then id, leads, the order the evaluator reads them in. It
+    need not be the transfer the matched rule's gates held of, since a rule
+    matches when any of its transaction's transfers does. A transaction
+    replayed on another chain keeps its hash, so a transfer is the
+    transaction's only when its token's contract is on the transaction's
+    chain. That is checked here rather than in the query, as
+    ``onchain._transfers_by_hash`` checks it, so the query goes in by the
+    transaction-hash index.
+    """
+    chains = {transaction.hash: transaction.chain for transaction in transactions}
+    transfers = (
+        TokenTransfer.objects.filter(transaction_hash__in=list(chains))
+        .select_related("token__contract")
+        .order_by("log_index", "id")
+    )
+    leading = {}
+    for transfer in transfers:
+        if transfer.token.contract.chain == chains[transfer.transaction_hash]:
+            leading.setdefault(transfer.transaction_hash, transfer)
+    return leading
+
+
+def _journal_row(match, transfer):
+    """One match as the console's ``JournalRow``; ``transfer`` is its transaction's leading one, or None."""
+    transaction = match.transaction
+    rule = match.rule
+    return {
+        "id": match.pk,
+        "rule": _rule_ref(rule),
+        "rule_revision": rule.revision,
+        "matched_at": match.created_at,
+        "transaction": {
+            "chain": transaction.chain,
+            "hash": transaction.hash,
+            "block_number": transaction.block_number,
+            "transaction_index": transaction.transaction_index,
+            "block_timestamp": transaction.block_timestamp,
+        },
+        "headline": _headline(transaction, transfer),
+        "flags": {
+            # A placeholder token, which the catalog does not recognise, has no
+            # coingecko id. The demo data tests for a missing symbol instead;
+            # the coingecko id is what marks a token the catalog loaded.
+            "token_unrecognised": transfer is not None and not transfer.token.coingecko_id,
+            "decimals_unknown": transfer is not None and transfer.token.decimals is None,
+            "verified": transfer is not None and transfer.verified,
+        },
+    }
+
+
+def _headline(transaction, transfer):
+    """What a journal row leads with: ``transfer`` when there is one, else the ETH ``transaction`` sent.
+
+    No address has a label yet, so neither side does, and the console shows
+    the addresses short.
+    """
+    if transfer is None:
+        return {
+            "kind": "native",
+            "from_address": transaction.from_address,
+            "to_address": transaction.to_address,  # None for a contract creation
+            "from_label": None,
+            "to_label": None,
+            "amount": _amount(transaction.value, utils.ETH_DECIMALS),
+            "token": None,
+        }
+    return {
+        "kind": "token_transfer",
+        "from_address": transfer.from_address,
+        "to_address": transfer.to_address,
+        "from_label": None,
+        "to_label": None,
+        "amount": _amount(transfer.raw_value, transfer.token.decimals),
+        "token": _token_ref(transfer.token),
+    }
+
+
+def _rule_ref(rule):
+    """``rule`` as the console names a rule beside a match: its ``RuleRef``."""
+    return {"id": rule.pk, "name": rule.name, "tag": rule.tag, "glyph": rule.glyph}
+
+
+def _token_ref(token):
+    """``token``, read with its contract, as the console's ``TokenRef``."""
+    return {
+        "chain": token.contract.chain,
+        "address": token.contract.address,
+        # Blank when the catalog gives none; unknown is null in the contract.
+        "symbol": token.symbol or None,
+        "name": token.name,
+        "decimals": token.decimals,
+    }
+
+
+def _amount(raw, decimals):
+    """An amount as the console reads one: every digit of ``raw``, and its value scaled by ``decimals``.
+
+    Unknown decimals (``None``) leave the value unknown too, since a guessed 18
+    would misprice a 6-decimal token. Both are exact decimal strings
+    (:func:`utils.decimal_string`): a uint256 is past what a JSON number holds.
+    """
+    return {
+        "raw": utils.decimal_string(raw),
+        "decimals": decimals,
+        "value": None if decimals is None else utils.decimal_string(raw, decimals),
+    }
+
+
+# --------------------------------------------------------------------------
+# a match's detail — its journal row, with the transaction and transfer it matched
+# --------------------------------------------------------------------------
+
+# "0x" and the four bytes naming the function a transaction calls.
+SELECTOR_LENGTH = 10
+
+
+def match_detail(owner, pk):
+    """``owner``'s match ``pk`` as the console's ``MatchDetail``; ``None`` when their journal lists no such match.
+
+    The match's journal row (:func:`journal_rows`) with the transaction's own
+    fields, the transfer the row leads with, and the owner's other rules that
+    matched the same transaction. ``condition`` is the rule's tree as it is
+    now, since no copy of it is stored when a match is recorded, and ``trace``
+    is ``None``, since the evaluator records no gate's outcome: the console
+    shows such a match without its circuit. Someone else's match reads as
+    ``None``, as do the matches the journal leaves out (:func:`matches_for`).
+    Five queries at most: the match with its transaction and rule, the rule's
+    tree, the transaction's transfers, the functions its selector names in the
+    signature catalog, and the other matches.
+    """
+    match = matches_for(owner).filter(pk=pk).select_related("transaction", "rule").first()
+    if match is None:
+        return None
+    transaction = match.transaction
+    transfer = _leading_transfers([transaction]).get(transaction.hash)
+    selector = _selector(transaction.input)
+    row = _journal_row(match, transfer)
+    return {
+        **row,
+        "condition": match.rule.console_condition(),
+        "trace": None,
+        "transaction": {
+            **row["transaction"],
+            "from_address": transaction.from_address,
+            "to_address": transaction.to_address,  # None for a contract creation
+            "value": utils.decimal_string(transaction.value),
+            "input_selector": selector,
+            "method": _method(selector),
+            "decode_status": transaction.decode_status,
+        },
+        "transfer": None if transfer is None else _transfer_detail(transfer),
+        "also_matched": _also_matched(owner, match),
+    }
+
+
+def _selector(calldata):
+    """The selector ``calldata`` opens with, lowercased; ``None`` when it has none, as a plain ETH transfer's ``0x`` has none."""
+    selector = calldata[:SELECTOR_LENGTH].lower()
+    return selector if len(selector) == SELECTOR_LENGTH else None
+
+
+def _method(selector):
+    """The name of the function ``selector`` calls, from the signature catalog; ``None`` when it names none.
+
+    A selector is four bytes of a hash, so the catalog can hold several
+    functions for one. Their name is answered only when they all share it:
+    picking one of several could name a function the transaction never called.
+    """
+    if selector is None:
+        return None
+    names = set(
+        FunctionSignature.objects.filter(hex_signature=selector).values_list("name", flat=True)
+    )
+    return names.pop() if len(names) == 1 else None
+
+
+def _transfer_detail(transfer):
+    """A transaction's leading ``transfer`` as the console's match detail shows it.
+
+    A transfer decoding read from calldata names no log, so its ``source`` is
+    ``calldata`` while its ``log_index`` is empty; one read from a receipt's
+    Transfer log would carry the log's index.
+    """
+    return {
+        "token": _token_ref(transfer.token),
+        "from_address": transfer.from_address,
+        "to_address": transfer.to_address,
+        "raw_value": utils.decimal_string(transfer.raw_value),
+        "log_index": transfer.log_index,
+        "source": "calldata" if transfer.log_index is None else "log",
+        "verified": transfer.verified,
+    }
+
+
+def _also_matched(owner, match):
+    """The owner's other rules that matched ``match``'s transaction, each with its match, by rule id.
+
+    A rule that matched the transaction twice, as a reorg that stores it again
+    can make one, is listed once, with its first match, and ``match``'s own
+    rule not at all.
+    """
+    others = {}
+    for other in (
+        matches_for(owner)
+        .filter(transaction_id=match.transaction_id)
+        .exclude(rule_id=match.rule_id)
+        .select_related("rule")
+        .order_by("rule_id", "id")
+    ):
+        others.setdefault(other.rule_id, other)
+    return [{"match_id": other.pk, "rule": _rule_ref(other.rule)} for other in others.values()]
