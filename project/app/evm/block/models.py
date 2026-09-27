@@ -101,7 +101,7 @@ class Block(models.Model):
 
 
 class DecodeStatus(models.TextChoices):
-    """How far decoding has got with one transaction's calldata."""
+    """How far decoding has got with one transaction's receipt, or its calldata when it has none."""
 
     INGESTED = "INGESTED", "Ingested"  # stored from its block, not decoded yet
     PROCESSING = "PROCESSING", "Processing"  # claimed by a decode run
