@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { MatchDetail } from '../api/types.ts';
+import type { GateTrace, MatchDetail } from '../api/types.ts';
 import { CircuitSvg, useBoxWidth, usePlayback, useScene } from '../circuit/Circuit.tsx';
 import { Ident } from '../circuit/Glyph.tsx';
 import { type Describer, gateSentence } from '../derive/describe.ts';
@@ -35,7 +35,7 @@ function labelsOf(detail: MatchDetail): Map<string, string> {
   const { headline } = detail;
   if (headline.from_label) labels.set(headline.from_address, headline.from_label);
   if (headline.to_label && headline.to_address) labels.set(headline.to_address, headline.to_label);
-  for (const gate of Object.values(detail.trace)) {
+  for (const gate of Object.values(detail.trace ?? {})) {
     const seen = gate.observed;
     if (seen?.kind === 'address' && seen.address && seen.label) labels.set(seen.address, seen.label);
   }
@@ -46,6 +46,7 @@ const TAG_CLASS = { 'CARRIED POWER': 'tag pw', 'NO DATA': 'tag abn', BLOCKED: 't
 
 function Inspector({
   detail,
+  trace,
   scene,
   inspect,
   pinned,
@@ -55,6 +56,8 @@ function Inspector({
   onUnpin,
 }: {
   detail: MatchDetail;
+  /** The match's trace: only a match with one has a circuit to inspect. */
+  trace: Record<number, GateTrace>;
   scene: Scene;
   inspect: Inspect;
   pinned: boolean;
@@ -72,9 +75,9 @@ function Inspector({
   const gate = inspect === 'coil' ? undefined : gates.find((g) => g.node.id === inspect);
   if (gate) {
     const power = scene.power.gates.find((g) => g.node === gate.node)!;
-    const insight = explain(gate.node, detail.trace[inspect as number], detail, describer);
+    const insight = explain(gate.node, trace[inspect as number], detail, describer);
     const tag = gateTag(power);
-    const wiring = wiringText(detail.condition, gate.node, detail.trace);
+    const wiring = wiringText(detail.condition, gate.node, trace);
     return (
       <div className={`sect insp${pinned ? ' pinned' : ''}`} aria-live="polite">
         <h3>
@@ -125,7 +128,7 @@ function Inspector({
       <button type="button" className="chainbtn" onClick={() => g.node.id !== null && onInspect(g.node.id)}>
         <span className="gn">G{g.number}</span>
         {gateSentence(g.text)}
-        <span className="val">{observedText(g.node.id === null ? undefined : detail.trace[g.node.id])}</span>
+        <span className="val">{observedText(g.node.id === null ? undefined : trace[g.node.id])}</span>
       </button>
     </li>
   );
@@ -181,9 +184,11 @@ export function TraceView({
   onCopy: (text: string) => void;
 }) {
   const [ref, width] = useBoxWidth<HTMLDivElement>();
-  const scene = useScene(detail.condition, detail.trace, width, describer);
+  const { transaction: tx, transfer, rule, trace } = detail;
+  // Without a trace there is no circuit to draw: drawn anyway, it would read as
+  // a coil power never reached, on a match that was recorded.
+  const scene = useScene(trace ? detail.condition : null, trace, width, describer);
   const { playing, key } = usePlayback(playKey, scene, width);
-  const { transaction: tx, transfer, rule } = detail;
   const labels = labelsOf(detail);
   const labelOf = (address: string | null) => (address ? labels.get(address) ?? null : null);
   const token = transfer?.token;
@@ -199,49 +204,64 @@ export function TraceView({
           {utcDateTime(tx.block_timestamp)}
         </div>
       </div>
-      <div className="rungbox trace-box" ref={ref}>
-        {scene && (
-          <CircuitSvg
-            key={key}
-            scene={scene}
-            tag={rule.tag}
-            glyph={rule.glyph}
-            big
-            playing={playing}
-            mode="inspect"
-            selected={inspect}
-            onPick={onInspect}
-            label={`Circuit ${rule.tag} for this transaction. The lit path shows the gates that carried power. Select a gate to inspect it.`}
-            boxWidth={width}
-          />
-        )}
-      </div>
-      <div className="legend">
-        <span>
-          <i className="sw" />
-          Carried power
-        </span>
-        <span>
-          <i className="sw off" />
-          Blocked
-        </span>
-        <span>
-          <i className="sw q" />
-          No data
-        </span>
-        <span className="lg-hint">Select a gate or the coil to inspect it</span>
-      </div>
-      {scene && (
-        <Inspector
-          detail={detail}
-          scene={scene}
-          inspect={inspect}
-          pinned={pinned}
-          playing={playing}
-          describer={describer}
-          onInspect={onInspect}
-          onUnpin={onUnpin}
-        />
+      {trace ? (
+        <>
+          <div className="rungbox trace-box" ref={ref}>
+            {scene && (
+              <CircuitSvg
+                key={key}
+                scene={scene}
+                tag={rule.tag}
+                glyph={rule.glyph}
+                big
+                playing={playing}
+                mode="inspect"
+                selected={inspect}
+                onPick={onInspect}
+                label={`Circuit ${rule.tag} for this transaction. The lit path shows the gates that carried power. Select a gate to inspect it.`}
+                boxWidth={width}
+              />
+            )}
+          </div>
+          <div className="legend">
+            <span>
+              <i className="sw" />
+              Carried power
+            </span>
+            <span>
+              <i className="sw off" />
+              Blocked
+            </span>
+            <span>
+              <i className="sw q" />
+              No data
+            </span>
+            <span className="lg-hint">Select a gate or the coil to inspect it</span>
+          </div>
+          {scene && (
+            <Inspector
+              detail={detail}
+              trace={trace}
+              scene={scene}
+              inspect={inspect}
+              pinned={pinned}
+              playing={playing}
+              describer={describer}
+              onInspect={onInspect}
+              onUnpin={onUnpin}
+            />
+          )}
+        </>
+      ) : (
+        <div className="sect">
+          <div className="note">
+            <Icon name="info" />
+            <span>
+              <b>No trace for this match.</b> The engine doesn't record which gates carried power yet, so the circuit
+              isn't drawn.
+            </span>
+          </div>
+        </div>
       )}
       {detail.also_matched.length > 0 && (
         <div className="sect">
