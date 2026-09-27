@@ -34,7 +34,8 @@ const OPERATOR_TEXT: Record<Operator, string> = {
 
 export function operatorText(type: FieldType, operator: Operator): string {
   if ((type === 'amount' || type === 'native_amount') && operator === 'eq') return '=';
-  return OPERATOR_TEXT[operator];
+  // An engine operator the console has no word for yet (`contains`, `exists`, `absent`) reads as itself.
+  return OPERATOR_TEXT[operator] ?? operator;
 }
 
 export function valueText(node: Comparison, describer: Describer): string {

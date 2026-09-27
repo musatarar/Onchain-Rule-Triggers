@@ -128,7 +128,7 @@ function Inspector({
       <button type="button" className="chainbtn" onClick={() => g.node.id !== null && onInspect(g.node.id)}>
         <span className="gn">G{g.number}</span>
         {gateSentence(g.text)}
-        <span className="val">{observedText(g.node.id === null ? undefined : trace[g.node.id])}</span>
+        <span className="val">{observedText(g.node.id === null ? undefined : trace[g.node.id], g.node)}</span>
       </button>
     </li>
   );
@@ -257,8 +257,8 @@ export function TraceView({
           <div className="note">
             <Icon name="info" />
             <span>
-              <b>No trace for this match.</b> The engine doesn't record which gates carried power yet, so the circuit
-              isn't drawn.
+              <b>No trace for this match.</b> It was recorded before the engine kept traces, or by another version of the
+              engine, so the circuit isn't drawn.
             </span>
           </div>
         </div>

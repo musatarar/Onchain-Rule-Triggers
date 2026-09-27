@@ -374,6 +374,7 @@ export class DemoConsoleApi implements ConsoleApi {
     return clone({
       ...row,
       condition: hit.snapshot,
+      evaluator_version: 1,
       trace: hit.trace,
       transaction: {
         ...row.transaction,

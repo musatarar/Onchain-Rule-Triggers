@@ -72,7 +72,8 @@ export type JournalRow = {
 
 export type MatchDetail = JournalRow & {
   condition: ConditionNode;                // snapshot of the tree AS EVALUATED, not the live rule
-  trace: Record<number, GateTrace> | null; // keyed by node id in `condition`, every node present; null when none was recorded
+  evaluator_version: number | null;        // the engine version that evaluated it; null for a match recorded before traces were
+  trace: Record<number, GateTrace> | null; // keyed by node id in `condition`, every node present; null when recorded before traces were, or under another evaluator version
   transaction: JournalRow["transaction"] & {
     from_address: string; to_address: string | null; value: Uint;
     input_selector: string | null; method: string | null;               // signature text when catalogued

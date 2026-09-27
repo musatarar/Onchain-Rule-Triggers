@@ -39,19 +39,50 @@ that came prefetched. Evaluating many rules against one block, pass them one
 :class:`BlockRows`: each kind of row is read the first time a rule needs it
 and shared by every rule after, so the queries a block costs do not grow with
 the number of rules.
+
+A match's trace is replayed rather than kept: :func:`bindings_in_block` says
+which transfer each matched transaction was bound with, and
+:func:`trace_tree` walks a tree against what that binding read
+(:class:`Bound`), recording every node's verdict and what each comparison
+read. It reads and compares as the evaluator does, so its verdicts are the
+evaluator's for as long as :data:`EVALUATOR_VERSION` stands.
 """
 
+import dataclasses
 import datetime
 import functools
 
-from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
+from project.app.evm.block.models import Block, DecodeStatus, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import utils
+
+# Bumped by any change that can alter a verdict (``held``): the tree
+# vocabulary, or what a comparison means. A rule revision records the version
+# it was evaluated under, and a match is replayed only by that version.
+EVALUATOR_VERSION = 1
 
 GROUP_CHECKS = {"AND": all, "OR": any}
 
 # A transaction decoding has not finished with: its transfers may not be stored yet.
 UNDECODED = (DecodeStatus.INGESTED, DecodeStatus.PROCESSING)
+
+# Why a comparison did not hold when it had nothing to read: no transfer was bound.
+NO_TRANSFER = "no_transfer"
+
+# What each field reads, as the console's ``GateTrace.observed`` kinds name it.
+# A block's number and time, and a withdrawal's amount, have no kind.
+OBSERVED_KINDS = {
+    (utils.SOURCE_BLOCK, "miner"): "address",
+    (utils.SOURCE_TRANSACTION, "from_address"): "address",
+    (utils.SOURCE_TRANSACTION, "to_address"): "address",
+    (utils.SOURCE_TRANSACTION, "value"): "native_amount",
+    (utils.SOURCE_TRANSACTION, "input"): "method",
+    (utils.SOURCE_WITHDRAWAL, "address"): "address",
+    (utils.SOURCE_TOKEN_TRANSFER, "token"): "token",
+    (utils.SOURCE_TOKEN_TRANSFER, "from_address"): "address",
+    (utils.SOURCE_TOKEN_TRANSFER, "to_address"): "address",
+    (utils.SOURCE_TOKEN_TRANSFER, "raw_value"): "amount",
+}
 
 
 class ConditionError(Exception):
@@ -90,6 +121,23 @@ class BlockRows:
         return _transfers_by_hash(self.block)
 
 
+@dataclasses.dataclass(frozen=True)
+class Bound:
+    """What one binding reads (:func:`trace_tree`): a block, one of its
+    transactions, and the token transfer bound with it, ``None`` when none was.
+
+    What the catalogs supply is read off it, never the catalogs: the
+    transfer's ``token`` carries its address and decimals, and ``method`` is
+    the name the signature catalog gave the transaction's selector, ``None``
+    when it gave none.
+    """
+
+    block: Block
+    transaction: Transaction
+    transfer: TokenTransfer | None = None
+    method: str | None = None
+
+
 def matches_in_block(rule, block, rows=None):
     """The rows of ``block`` that satisfy ``rule``, in the order the block holds them.
 
@@ -103,6 +151,20 @@ def matches_in_block(rule, block, rows=None):
     this evaluator cannot read, and :class:`NotDecodedError` for a rule
     reading token transfers before decoding has finished with the block.
     """
+    return [row for row, _ in bindings_in_block(rule, block, rows)]
+
+
+def bindings_in_block(rule, block, rows=None):
+    """:func:`matches_in_block`'s rows, each with the token transfer it matched with.
+
+    Answers ``(row, transfer)`` pairs in the order the block holds the rows.
+    A transaction's transfer is the one of its first binding that held, in
+    log order, so it is a transfer the rule's gates held of; ``None`` when
+    that binding bound none, as for a transaction with no transfer and for
+    every transaction of a rule reading none. A withdrawal and the block bind
+    no transfer. Reads what :func:`matches_in_block` reads, and raises what it
+    raises.
+    """
     rows = rows or BlockRows(block)
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
@@ -115,19 +177,52 @@ def matches_in_block(rule, block, rows=None):
 
     if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
         transfers = rows.transfers if utils.SOURCE_TOKEN_TRANSFER in sources else {}
-        return [
-            transaction
-            for transaction in rows.transactions
-            if any(
-                holds(transaction=transaction, token_transfer=transfer)
-                # No transfer is bound only when there is none to bind, so
-                # `absent` cannot hold of a transaction a transfer was decoded for.
-                for transfer in transfers.get(transaction.hash) or [None]
+        bindings = (
+            next(
+                (
+                    (transaction, transfer)
+                    # No transfer is bound only when there is none to bind, so
+                    # `absent` cannot hold of a transaction a transfer was decoded for.
+                    for transfer in transfers.get(transaction.hash) or [None]
+                    if holds(transaction=transaction, token_transfer=transfer)
+                ),
+                None,
             )
-        ]
+            for transaction in rows.transactions
+        )
+        return [binding for binding in bindings if binding is not None]
     if utils.SOURCE_WITHDRAWAL in sources:
-        return [withdrawal for withdrawal in rows.withdrawals if holds(withdrawal=withdrawal)]
-    return [block] if holds() else []
+        return [
+            (withdrawal, None) for withdrawal in rows.withdrawals if holds(withdrawal=withdrawal)
+        ]
+    return [(block, None)] if holds() else []
+
+
+def trace_tree(nodes, bound):
+    """Walk a tree against :class:`Bound` ``bound`` without short-circuiting; answer ``(held, trace)``.
+
+    ``nodes`` is every node of one tree, as :func:`matches_in_block` reads a
+    rule's (a stored tree's are :func:`utils.condition_nodes`). ``trace`` has
+    an entry for every node, by id: ``{"held": ...}``, and on a comparison
+    what it read, as ``observed`` in the console's ``GateTrace`` kinds (none
+    for a field no kind names). A comparison on a transfer, when ``bound``
+    has none, reads nothing: it has no ``observed``, and when it does not
+    hold, its ``reason`` is ``"no_transfer"``. Each comparison reads and
+    compares as :func:`_leaf` does, so every node's ``held`` is what
+    :func:`_holds` answers for it. Raises :class:`ConditionError` for a tree
+    this evaluator cannot judge.
+    """
+    root, children = utils.root_and_children(nodes)
+    if root is None:
+        raise ConditionError("A tree with no nodes has no verdict.")
+    rows = {
+        utils.SOURCE_BLOCK: bound.block,
+        utils.SOURCE_TRANSACTION: bound.transaction,
+        utils.SOURCE_TOKEN_TRANSFER: bound.transfer,
+    }
+    trace = {}
+    held = _trace(root, children, rows, bound, trace)
+    return held, trace
 
 
 def _in_block(model, block):
@@ -178,20 +273,56 @@ def _transfers_by_hash(block):
 def _holds(node, children, rows):
     if node.type == utils.TREE_TYPE_COMPARISON:
         return _leaf(node, rows)
-    check = GROUP_CHECKS.get(node.type)
-    if check is None:
+    group = _group(node, children)
+    return GROUP_CHECKS[node.type](_holds(child, children, rows) for child in group)
+
+
+def _trace(node, children, rows, bound, trace):
+    """:func:`_holds` of ``node``, with it and every node below it recorded in ``trace``, a group first."""
+    entry = trace[node.pk] = {}
+    if node.type == utils.TREE_TYPE_COMPARISON:
+        field_type, value = _read(node, rows)
+        entry["held"] = _judge(node, field_type, value)
+        row = rows.get(node.source)
+        if row is None:
+            if node.source == utils.SOURCE_TOKEN_TRANSFER and not entry["held"]:
+                entry["reason"] = NO_TRANSFER
+        else:
+            observed = _observed(node, value, row, bound, entry["held"])
+            if observed is not None:
+                entry["observed"] = observed
+    else:
+        # Every child is walked before the group is judged, where all() and
+        # any() would stop at the first child that decides it.
+        held = [_trace(child, children, rows, bound, trace) for child in _group(node, children)]
+        entry["held"] = GROUP_CHECKS[node.type](held)
+    return entry["held"]
+
+
+def _group(node, children):
+    """A group's children, in id order; :class:`ConditionError` for a group this evaluator cannot judge."""
+    if node.type not in GROUP_CHECKS:
         raise ConditionError(f"Unknown group type {node.type!r}.")
     group = children.get(node.pk)
     if not group:
         raise ConditionError(f"A {node.type} group with no conditions has no verdict.")
-    return check(_holds(child, children, rows) for child in group)
+    return group
 
 
 def _leaf(node, rows):
+    return _judge(node, *_read(node, rows))
+
+
+def _read(node, rows):
+    """What a comparison reads of ``rows``: its field's type, and the bound row's value of it."""
     field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
     if field_type is None:
         raise ConditionError(f"Unknown field {node.field_name!r} on source {node.source!r}.")
-    value = _value(node.source, node.field_name, field_type, rows.get(node.source))
+    return field_type, _value(node.source, node.field_name, field_type, rows.get(node.source))
+
+
+def _judge(node, field_type, value):
+    """Whether ``value``, read by :func:`_read`, satisfies the comparison ``node``."""
     threshold = node.value
     if field_type == utils.NUMBER:
         threshold = (
@@ -200,6 +331,36 @@ def _leaf(node, rows):
             else utils.exact_number(threshold)
         )
     return _compare(value, node.operator, threshold, field_type)
+
+
+def _observed(node, value, row, bound, held):
+    """What a comparison read of ``row``, in the console's ``GateTrace.observed`` shape.
+
+    ``value`` is what :func:`_read` read, and ``held`` the comparison's
+    verdict, which for ``in`` says whether the address is on the list. An
+    amount's decimals and a token are the bound transfer's token's, and a
+    method is ``bound``'s. ``None`` for a field no kind names.
+    """
+    kind = OBSERVED_KINDS.get((node.source, node.field_name))
+    if kind == "address":
+        return {
+            "kind": kind,
+            "address": value,
+            "list_hit": held if node.operator == "in" else None,
+        }
+    if kind == "native_amount":
+        return {
+            "kind": kind,
+            "wei": utils.decimal_string(value),
+            "value": utils.decimal_string(value, utils.ETH_DECIMALS),
+        }
+    if kind == "amount":
+        return {"kind": kind, **utils.amount(value, row.token.decimals)}
+    if kind == "token":
+        return {"kind": kind, "token": utils.token_ref(row.token)}
+    if kind == "method":
+        return {"kind": kind, "selector": utils.selector(value), "signature": bound.method}
+    return None
 
 
 def _value(source, field, field_type, row):

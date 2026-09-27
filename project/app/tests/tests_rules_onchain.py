@@ -3,14 +3,19 @@
 Pins the binding (one row per source per evaluation, so every comparison in a
 match reads the same transaction and the same token transfer), what each kind
 of rule answers with, and that the block's rows are read once however many
-transactions it carries.
+transactions it carries; then which transfer a match is bound with
+(``bindings_in_block``), and its trace (``trace_tree``): every node's verdict,
+the evaluator's, and what each comparison read.
 """
 
+import contextlib
 import datetime
+import io
 import unittest
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
 
@@ -18,6 +23,7 @@ from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
 from project.app.evm.block.models import DecodeStatus
 from project.app.evm.chains import ChainId
+from project.app.evm.decoding import decode_transactions
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import (
     Block,
@@ -28,7 +34,7 @@ from project.app.models import (
     Transaction,
     Withdrawal,
 )
-from project.app.rules import onchain
+from project.app.rules import onchain, utils
 from project.app.rules import services as rules_services
 from project.app.rules.onchain import ConditionError
 from project.app.rules.utils import _all_of, _any_of, _cond
@@ -40,6 +46,8 @@ from project.app.tests.tests_evm_block import (
     legacy_transaction,
     withdrawal,
 )
+from scripts.create_demo_rules import create_demo_rules
+from scripts.load_blocks import load_blocks
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
@@ -47,6 +55,9 @@ USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 LEGACY_FROM = "0xda1e4d768aeaf05f343d9be5f7e9b91e5ad72805"
 DYNAMIC_FROM = "0x16d5783a96ab20c9157d7933ac236646b29589a4"
 DYNAMIC_TO = "0xfd14567eaf9ba941cb8c8a94eec14831ca7fd1b4"
+# Uniswap's V2 router, and the selector of the function the legacy transaction calls there.
+LEGACY_TO = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
+LEGACY_SELECTOR = "0x18cbafe5"
 MINER = "0xdafea492d9c6733ae3d56b7ed1adb60692c98bc5"
 WITHDRAWAL_ADDRESS = "0xd7a0b38496064412a8d6b1f77bc30ada93e7b7a5"
 ALICE = "0x" + "a1" * 20
@@ -528,3 +539,265 @@ class QueryCountTests(OnchainTestCase):
             matched = onchain.matches_in_block(reads_transactions, stored, rows)
 
         self.assertEqual(matched, [Transaction.objects.get()])
+
+
+class BindingTests(OnchainTestCase):
+    """``bindings_in_block``: each matched row with the transfer it matched with."""
+
+    def test_a_transaction_is_bound_with_the_first_transfer_the_rule_held_of(self):
+        stored = self._store()
+        usdt = self._token()
+        self._transfer(LEGACY_HASH, self._token(USDC, "USDC"), 0, sender=ALICE, recipient=BOB)
+        held_of = self._transfer(LEGACY_HASH, usdt, 1, sender=ALICE, recipient=BOB)
+        self._transfer(LEGACY_HASH, usdt, 2, sender=CAROL, recipient=BOB)
+        rule = self._rule(_all_of(transfer("token", "==", USDT)))
+
+        legacy = Transaction.objects.get(hash=LEGACY_HASH)
+        # Not the USDC transfer that leads in log order, nor the later USDT one.
+        self.assertEqual(onchain.bindings_in_block(rule, stored), [(legacy, held_of)])
+        self.assertEqual(onchain.matches_in_block(rule, stored), [legacy])
+
+    def test_a_rule_reading_no_transfer_binds_none_as_does_a_transaction_without_one(self):
+        stored = self._store()
+        self._transfer(LEGACY_HASH, self._token(), 0, sender=ALICE, recipient=BOB)
+        dynamic, legacy = (Transaction.objects.get(hash=h) for h in (DYNAMIC_FEE_HASH, LEGACY_HASH))
+
+        by_value = self._rule(_all_of(tx("value", ">=", 0)))
+        without = self._rule(_all_of(transfer("token", "absent")))
+
+        self.assertEqual(
+            onchain.bindings_in_block(by_value, stored), [(dynamic, None), (legacy, None)]
+        )
+        self.assertEqual(onchain.bindings_in_block(without, stored), [(dynamic, None)])
+
+    def test_a_withdrawal_and_the_block_bind_no_transfer(self):
+        stored = self._store()
+        withdrawn = self._rule(_all_of(_cond("amount", ">=", 0, source="withdrawal")))
+        built = self._rule(_all_of(_cond("miner", "==", MINER, source="block")))
+
+        self.assertEqual(
+            onchain.bindings_in_block(withdrawn, stored), [(Withdrawal.objects.get(), None)]
+        )
+        self.assertEqual(onchain.bindings_in_block(built, stored), [(stored, None)])
+
+
+class TraceTreeTests(OnchainTestCase):
+    """``trace_tree``: every node's verdict, the evaluator's, and what each comparison read."""
+
+    def _catalogued(self, address=USDT, name="Tether", symbol="USDT", decimals=6):
+        return evm_services.save_token(
+            TokenCreateSchema(
+                chain=ChainId.ETHEREUM,
+                address=address,
+                name=name,
+                coingecko_id=name.lower(),
+                symbol=symbol,
+                decimals=decimals,
+            )
+        )
+
+    def _trace(self, conditions, bound):
+        """``conditions`` stored as a rule, traced against ``bound``: its verdict, its
+        trace, and its node ids in the order the payload names them."""
+        nodes = list(self._rule(conditions).all_conditions.all())
+        held, trace = onchain.trace_tree(nodes, bound)
+        return held, trace, sorted(node.pk for node in nodes)
+
+    def test_each_comparison_records_what_it_read_in_the_consoles_kinds(self):
+        stored = self._store(block(transactions=[legacy_transaction(value=hex(10**18))]))
+        moved = self._transfer(
+            LEGACY_HASH, self._catalogued(), 3, sender=ALICE, recipient=BOB, raw_value=397_092_712
+        )
+        bound = onchain.Bound(stored, Transaction.objects.get(), moved, "swapExactTokensForETH")
+
+        held, trace, (root, *leaves) = self._trace(
+            _all_of(
+                tx("from_address", "==", LEGACY_FROM),
+                tx("to_address", "in", [ALICE, LEGACY_TO]),
+                tx("value", ">=", 10**18),
+                tx("input", "contains", LEGACY_SELECTOR),
+                transfer("token", "==", USDT),
+                transfer("raw_value", ">=", 250_000_000),
+                transfer("to_address", "in", [ALICE, CAROL]),
+                _cond("miner", "==", MINER, source="block"),
+                _cond("number", "==", 18_000_000, source="block"),
+            ),
+            bound,
+        )
+
+        tether = {"chain": 1, "address": USDT, "symbol": "USDT", "name": "Tether", "decimals": 6}
+        self.assertIs(held, False)
+        self.assertEqual(
+            trace,
+            {
+                root: {"held": False},
+                leaves[0]: {
+                    "held": True,
+                    "observed": {"kind": "address", "address": LEGACY_FROM, "list_hit": None},
+                },
+                leaves[1]: {
+                    "held": True,
+                    "observed": {"kind": "address", "address": LEGACY_TO, "list_hit": True},
+                },
+                leaves[2]: {
+                    "held": True,
+                    "observed": {"kind": "native_amount", "wei": str(10**18), "value": "1"},
+                },
+                leaves[3]: {
+                    "held": True,
+                    "observed": {
+                        "kind": "method",
+                        "selector": LEGACY_SELECTOR,
+                        "signature": "swapExactTokensForETH",
+                    },
+                },
+                leaves[4]: {"held": True, "observed": {"kind": "token", "token": tether}},
+                leaves[5]: {
+                    "held": True,
+                    "observed": {
+                        "kind": "amount",
+                        "raw": "397092712",
+                        "decimals": 6,
+                        "value": "397.092712",
+                    },
+                },
+                # Bob is on no list: the gate that failed the root, and the ones after it still walked.
+                leaves[6]: {
+                    "held": False,
+                    "observed": {"kind": "address", "address": BOB, "list_hit": False},
+                },
+                leaves[7]: {
+                    "held": True,
+                    "observed": {"kind": "address", "address": MINER, "list_hit": None},
+                },
+                # A block's number has no kind of its own.
+                leaves[8]: {"held": True},
+            },
+        )
+
+    def test_an_amount_reads_the_decimals_the_bound_token_has_and_none_when_it_has_none(self):
+        stored = self._store()
+        unknown = self._catalogued(decimals=None)
+        moved = self._transfer(LEGACY_HASH, unknown, 0, sender=ALICE, recipient=BOB, raw_value=5)
+        legacy = Transaction.objects.get(hash=LEGACY_HASH)
+
+        _, trace, (_, leaf) = self._trace(
+            _all_of(transfer("raw_value", ">", 1)), onchain.Bound(stored, legacy, moved)
+        )
+
+        # Unknown decimals leave the value unknown, and the raw comparison still holds.
+        self.assertEqual(
+            trace[leaf],
+            {
+                "held": True,
+                "observed": {"kind": "amount", "raw": "5", "decimals": None, "value": None},
+            },
+        )
+
+    def test_a_comparison_on_a_transfer_none_was_bound_with_reads_no_transfer(self):
+        stored = self._store()
+        dynamic = Transaction.objects.get(hash=DYNAMIC_FEE_HASH)
+
+        held, trace, (root, sent, amount, token, no_token) = self._trace(
+            {
+                "version": 1,
+                "operator": "any_of",
+                "conditions": [
+                    tx("from_address", "==", DYNAMIC_FROM),
+                    transfer("raw_value", ">=", 1),
+                    transfer("token", "exists"),
+                    transfer("token", "absent"),
+                ],
+            },
+            onchain.Bound(stored, dynamic),
+        )
+
+        self.assertIs(held, True)
+        self.assertEqual(
+            trace,
+            {
+                root: {"held": True},
+                # The first branch decides the OR, and every other is walked all the same.
+                sent: {
+                    "held": True,
+                    "observed": {"kind": "address", "address": DYNAMIC_FROM, "list_hit": None},
+                },
+                amount: {"held": False, "reason": "no_transfer"},
+                token: {"held": False, "reason": "no_transfer"},
+                # `absent` holds of no transfer, so nothing is missing.
+                no_token: {"held": True},
+            },
+        )
+
+    def test_every_verdict_is_the_evaluators_on_the_sample_blocks_and_demo_rules(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            load_blocks()
+            create_demo_rules("watcher", "watcher")
+        call_command("load_function_signatures", stdout=io.StringIO())
+        decode_transactions()
+        # The demo rules a transaction's match traces: every one reading transactions or transfers.
+        rules = [
+            rule
+            for rule in Rule.objects.prefetch_related("all_conditions")
+            if not utils.tree_sources(rule.all_conditions.all()).isdisjoint(
+                utils.TRANSACTION_SOURCES
+            )
+        ]
+        compared = set()
+        verdicts = set()
+
+        for stored in Block.objects.all():
+            rows = onchain.BlockRows(stored)
+            for rule in rules:
+                nodes = list(rule.all_conditions.all())
+                _, children = utils.root_and_children(nodes)
+                for transaction in rows.transactions:
+                    for moved in rows.transfers.get(transaction.hash) or [None]:
+                        held, trace = onchain.trace_tree(
+                            nodes, onchain.Bound(stored, transaction, moved)
+                        )
+                        bound = {
+                            "block": stored,
+                            "transaction": transaction,
+                            "token_transfer": moved,
+                        }
+                        self.assertEqual(
+                            {pk: entry["held"] for pk, entry in trace.items()},
+                            {node.pk: onchain._holds(node, children, bound) for node in nodes},
+                        )
+                        compared.add((rule.pk, transaction.hash))
+                        verdicts.add(held)
+
+        # Each of the five rules against each of the 613 transactions, both verdicts among them.
+        self.assertEqual((len(rules), len(compared), verdicts), (5, 5 * 613, {True, False}))
+
+    def test_a_tree_read_back_from_the_consoles_shape_renders_and_is_judged_as_its_rows(self):
+        stored = self._store(block(transactions=[legacy_transaction(value=hex(10**18))]))
+        moved = self._transfer(LEGACY_HASH, self._catalogued(), None, sender=ALICE, recipient=BOB)
+        rule = self._rule(
+            _all_of(
+                tx("value", ">=", 1e18),
+                tx("value", "in", [10**18, 2]),
+                # Every digit of a uint256 survives, in ETH and back to wei.
+                tx("value", "<", 2**255 + 1),
+                tx("to_address", "exists"),
+                tx("input", "contains", LEGACY_SELECTOR),
+                transfer("token", "==", USDT),
+                transfer("token", "in", [USDC, USDT]),
+                transfer("raw_value", "!=", 2**255 + 1),
+                _cond("timestamp", ">=", "2023-08-26", source="block"),
+                _any_of(
+                    _cond("number", "<", 1, source="block"), transfer("from_address", "absent")
+                ),
+            )
+        )
+        condition = rule.console_condition()
+        bound = onchain.Bound(stored, Transaction.objects.get(), moved)
+
+        read_back = utils.condition_nodes(condition)
+
+        self.assertEqual(utils.render_condition(read_back), condition)
+        self.assertEqual(
+            onchain.trace_tree(read_back, bound),
+            onchain.trace_tree(list(rule.all_conditions.all()), bound),
+        )

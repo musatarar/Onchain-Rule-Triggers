@@ -8,7 +8,7 @@ import { test } from 'node:test';
 
 import { DemoConsoleApi } from '../src/console/api/demo/DemoConsoleApi.ts';
 import vocabulary from '../src/console/api/demo/fixtures/vocabulary.json' with { type: 'json' };
-import type { MatchDetail, TokenRef, Vocabulary } from '../src/console/api/types.ts';
+import type { ConditionNode, GateTrace, MatchDetail, Operator, TokenRef, Vocabulary } from '../src/console/api/types.ts';
 import { type Comparison, describeGate, type Describer } from '../src/console/derive/describe.ts';
 import { explain, gateTag, observedText, powerText, wiringText } from '../src/console/derive/explain.ts';
 import { HOLD, layoutCircuit, SPEED } from '../src/console/derive/layout.ts';
@@ -166,4 +166,104 @@ test('the inspector explains a gate from what it observed', async () => {
   assert.equal(wiringText(detail.condition, g1.node, detail.trace), 'Branch 1 of 2 in parallel (ANY). One live branch is enough: 2 of 2 carried power.');
   assert.equal(observedText(detail.trace[g5.node.id!]), '397.09');
   assert.equal(gateTag(g5), 'CARRIED POWER');
+});
+
+// A USDT-10K match as the server sends it: the engine's own fields (raw_value, input, a block's
+// miner and number) and operators (contains), which the console's vocabulary has no entry for.
+const USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7';
+const BEAVERBUILD = '0x95222290dd7278aa3ddd389cc1e1d165cc4bafe5';
+const tether: TokenRef = { chain: 1, address: USDT, symbol: 'USDT', name: 'Tether', decimals: 6 };
+const engineCondition: ConditionNode = {
+  id: 1,
+  type: 'and',
+  children: [
+    { id: 2, type: 'comparison', source: 'token_transfer', field: 'token', operator: 'eq', value: { chain: 1, address: USDT } },
+    { id: 3, type: 'comparison', source: 'token_transfer', field: 'raw_value', operator: 'gte', value: '10000000000' },
+    { id: 4, type: 'comparison', source: 'transaction', field: 'input', operator: 'contains' as Operator, value: '0xa9059cbb' },
+    // A block comparison passes through as the engine stores it.
+    { id: 5, type: 'comparison', source: 'block' as 'transaction', field: 'miner', operator: 'eq', value: BEAVERBUILD },
+    { id: 6, type: 'comparison', source: 'block' as 'transaction', field: 'number', operator: 'gte', value: '18000000' },
+  ],
+};
+const engineTrace: Record<number, GateTrace> = {
+  1: { held: true },
+  2: { held: true, observed: { kind: 'token', token: tether } },
+  3: { held: true, observed: { kind: 'amount', raw: '40326453370', decimals: 6, value: '40326.45337' } },
+  4: { held: true, observed: { kind: 'method', selector: '0xa9059cbb', signature: 'transfer' } },
+  5: { held: true, observed: { kind: 'address', address: BEAVERBUILD, list_hit: null } },
+  6: { held: true },
+};
+const engineDetail: MatchDetail = {
+  id: 52,
+  rule: { id: 1, name: 'USDT transfers of 10,000 USDT or more', tag: 'USDT-10K', glyph: 'diamond' },
+  rule_revision: 1,
+  matched_at: '2026-09-27T17:10:57Z',
+  transaction: {
+    chain: 1,
+    hash: '0xbc007545f4d5e55c0b9cc25eef6b088aabab0ef4a61f2fcaffa8c96ce0d75d54',
+    block_number: 18_000_002,
+    transaction_index: 23,
+    block_timestamp: '2023-08-26T16:21:59Z',
+    from_address: '0x055d9a4dc18687872d95e2324335aaa4fbd29f05',
+    to_address: USDT,
+    value: '0',
+    input_selector: '0xa9059cbb',
+    method: 'transfer',
+    decode_status: 'DECODED',
+  },
+  headline: {
+    kind: 'token_transfer',
+    from_address: '0x055d9a4dc18687872d95e2324335aaa4fbd29f05',
+    to_address: '0xb3d1b3934e0e2ae324399235b21774e36d368331',
+    from_label: null,
+    to_label: null,
+    amount: { raw: '40326453370', decimals: 6, value: '40326.45337' },
+    token: tether,
+  },
+  flags: { token_unrecognised: false, decimals_unknown: false, verified: false },
+  condition: engineCondition,
+  evaluator_version: 1,
+  trace: engineTrace,
+  transfer: {
+    token: tether,
+    from_address: '0x055d9a4dc18687872d95e2324335aaa4fbd29f05',
+    to_address: '0xb3d1b3934e0e2ae324399235b21774e36d368331',
+    raw_value: '40326453370',
+    log_index: null,
+    source: 'calldata',
+    verified: false,
+  },
+  also_matched: [],
+};
+
+test("the inspector explains the engine's own gates from what they observed", () => {
+  const power = powerPath(engineCondition, engineTrace);
+  assert.equal(power.energised, true);
+  const [, raw, input, miner, number] = power.gates;
+  const read = (gate: typeof raw) => explain(gate.node, engineTrace[gate.node.id!], engineDetail, describer);
+
+  // raw_value compares the undivided amount, so that is what it reads and draws.
+  assert.deepEqual(read(raw), {
+    reads: 'token_transfer.raw_value',
+    steps: ['raw_value = 40,326,453,370', 'token.decimals = 6 (USDT)', 'amount = 40,326.45337'],
+    test: '40,326,453,370 ≥ 10,000,000,000',
+    note: '',
+  });
+  assert.equal(observedText(engineTrace[3], raw.node), '40,326,453,370');
+  assert.equal(observedText(engineTrace[3]), '40,326.45', 'without its gate, an amount reads in whole tokens');
+  assert.deepEqual(read(input), {
+    reads: 'transaction.input selector → signature catalog',
+    steps: ['selector = 0xa9059cbb', 'signature = transfer'],
+    test: 'transfer contains 0xa9059cbb',
+    note: '',
+  });
+  assert.equal(read(miner).reads, 'block.miner');
+  assert.deepEqual(read(miner).steps, [`miner = ${BEAVERBUILD}`]);
+  // A block's number is compared, but the trace keeps no reading of it.
+  assert.deepEqual(read(number), {
+    reads: 'block.number',
+    steps: ['not recorded in the trace'],
+    test: '≥ 18,000,000',
+    note: '',
+  });
 });

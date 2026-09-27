@@ -6,10 +6,12 @@ so the vocabulary rules hold whatever calls in. A rule's conditions
 are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
-row they match as a ``MatchedRule``; the engine status reports the stored
-window with each owner's own rule and match counts, each rule's stats count
-its matches the same way, the journal lists those matches, and a match's
-detail reads one of them with the transaction and transfer it matched.
+row they match as a ``MatchedRule``, a transaction's with the rule's tree as
+it matched (``RuleRevision``) and what it read (``MatchFacts``); the engine
+status reports the stored window with each owner's own rule and match counts,
+each rule's stats count its matches the same way, the journal lists those
+matches, and a match's detail reads one of them with the transaction and
+transfer it matched, and its trace replayed from what it read.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
@@ -27,10 +29,12 @@ from django.utils import timezone
 from project.app.constants import NEEDS_CONDITIONS, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
+from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_transfers import TokenTransfer
+from project.app.evm.tokens import Token
 from project.app.rules import onchain, utils
-from project.app.rules.models import Condition, MatchedRule, Rule
+from project.app.rules.models import Condition, MatchedRule, MatchFacts, Rule, RuleRevision
 
 # --------------------------------------------------------------------------
 # reads — every queryset is scoped to one owner
@@ -248,13 +252,20 @@ def evaluate_blocks():
     (:class:`~project.app.rules.onchain.NotDecodedError`) is left unevaluated,
     with nothing recorded, for a run after decoding. A rule written or enabled
     after a block was evaluated is not evaluated against that block.
+
+    A transaction's match names its rule's revision under this evaluator's
+    version (``RuleRevision``), recorded unless it is already, and read once
+    per rule per run; and the facts of the binding it matched with
+    (``MatchFacts``), which every rule matching that binding shares.
     """
     rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
     run = Evaluation()
+    # Each rule's revision, by rule id, once a block has recorded it in this run.
+    revisions = {}
     blocks = Block.objects.filter(evaluated_at__isnull=True).order_by("chain", "number", "hash")
     for block in blocks:
         try:
-            recorded = _evaluate(block, rules, run.refused)
+            recorded = _evaluate(block, rules, run.refused, revisions)
         except onchain.NotDecodedError:
             run.undecoded += 1
             continue
@@ -264,11 +275,13 @@ def evaluate_blocks():
     return run
 
 
-def _evaluate(block, rules, refused):
+def _evaluate(block, rules, refused, revisions):
     """Record the rows of ``block`` each of ``rules`` matches, and mark it evaluated.
 
     Answers how many matches were recorded, or ``None`` when another run marked
     the block first. A ``NotDecodedError`` rolls the mark back with the matches.
+    ``revisions`` holds the rules' revisions the run has recorded, by rule id,
+    and gains the ones this block records.
     """
     with transaction.atomic():
         claimed = Block.objects.filter(hash=block.hash, evaluated_at__isnull=True).update(
@@ -276,27 +289,185 @@ def _evaluate(block, rules, refused):
         )
         if not claimed:
             return None
-        matches = []
+        matched = []
         # Read once and shared, so the block costs the same queries however many rules there are.
         block_rows = onchain.BlockRows(block)
         for rule in rules:
             try:
-                rows = onchain.matches_in_block(rule, block, block_rows)
+                bindings = onchain.bindings_in_block(rule, block, block_rows)
             except onchain.ConditionError as exc:
                 refused.setdefault(rule, exc)
                 continue
-            matches.extend(_match(rule, block, row) for row in rows)
+            matched.extend((rule, row, transfer) for row, transfer in bindings)
+        # Recorded once every rule is evaluated, so a block left for decoding
+        # has recorded no revision for the run to name after the rollback.
+        traced = [(rule, row, transfer) for rule, row, transfer in matched if _traced(row)]
+        facts = _facts(block, [(row, transfer) for _, row, transfer in traced])
+        _record_revisions([rule for rule, _, _ in traced], revisions)
+        matches = [
+            _match(rule, block, row, transfer, facts, revisions) for rule, row, transfer in matched
+        ]
         MatchedRule.objects.bulk_create(matches)
     return len(matches)
 
 
-def _match(rule, block, row):
-    """A row ``matches_in_block`` answered for ``rule`` in ``block``, as a match."""
-    if isinstance(row, Transaction):
-        return MatchedRule(rule=rule, block=block, transaction=row)
+def _traced(row):
+    """Whether a match of ``row`` keeps what it read: a transaction's does."""
+    return isinstance(row, Transaction)
+
+
+def _match(rule, block, row, transfer, facts, revisions):
+    """A row ``bindings_in_block`` answered for ``rule`` in ``block``, bound with ``transfer``, as a match.
+
+    A transaction's names its rule's revision and the facts of its binding,
+    from ``revisions`` and ``facts`` as :func:`_evaluate` recorded them.
+    """
+    if _traced(row):
+        return MatchedRule(
+            rule=rule,
+            block=block,
+            transaction=row,
+            rule_revision=revisions[rule.pk],
+            facts=facts[row.hash, _transfer_key(transfer)],
+        )
     if isinstance(row, Withdrawal):
         return MatchedRule(rule=rule, block=block, withdrawal=row)
     return MatchedRule(rule=rule, block=block)  # a block-only rule: the block itself matched
+
+
+def _record_revisions(rules, revisions):
+    """Record each of ``rules``' revision under this evaluator's version, unless it is already.
+
+    ``revisions`` is what the run has recorded, by rule id: a rule in it is
+    read no further, and each of the rest is added. A query for the ones
+    stored, and when some are not, one to store them and one to read them
+    back, however many rules. Another run can store a revision at the same
+    moment, for a block of its own, so a revision stored meanwhile is kept,
+    not refused.
+    """
+    missing = {rule.pk: rule for rule in rules if rule.pk not in revisions}
+    if not missing:
+        return
+    version = onchain.EVALUATOR_VERSION
+
+    def stored():
+        return {
+            revision.rule_id: revision
+            for revision in RuleRevision.objects.filter(
+                rule__in=list(missing), evaluator_version=version
+            )
+            if revision.revision == missing[revision.rule_id].revision
+        }
+
+    found = stored()
+    if len(found) < len(missing):
+        RuleRevision.objects.bulk_create(
+            [
+                RuleRevision(
+                    rule=rule,
+                    revision=rule.revision,
+                    evaluator_version=version,
+                    condition=rule.console_condition(),
+                )
+                for pk, rule in missing.items()
+                if pk not in found
+            ],
+            ignore_conflicts=True,
+        )
+        found = stored()
+    revisions.update(found)
+
+
+def _facts(block, bindings):
+    """The ``MatchFacts`` of each ``(transaction, transfer)`` binding in ``block``, by transaction hash and transfer key.
+
+    Each binding's are recorded unless they are already, as they are when a
+    block is evaluated again. Three queries at most, however many bindings:
+    the signature catalog's names for their selectors, the facts stored, and
+    the facts read back; none without a binding.
+    """
+    if not bindings:
+        return {}
+    keyed = {
+        (transaction.hash, _transfer_key(transfer)): (transaction, transfer)
+        for transaction, transfer in bindings
+    }
+    methods = _methods(utils.selector(transaction.input) for transaction, _ in keyed.values())
+    MatchFacts.objects.bulk_create(
+        [
+            _binding_facts(block, transaction, transfer, methods)
+            for transaction, transfer in keyed.values()
+        ],
+        ignore_conflicts=True,
+    )
+    stored = MatchFacts.objects.filter(
+        chain=block.chain,
+        block_hash=block.hash,
+        transaction_hash__in={transaction_hash for transaction_hash, _ in keyed},
+    )
+    return {(facts.transaction_hash, facts.transfer_key): facts for facts in stored}
+
+
+def _binding_facts(block, transaction, transfer, methods):
+    """What ``transaction`` in ``block``, bound with ``transfer`` (or none), read, as unsaved ``MatchFacts``.
+
+    Copied from the rows as bound, with the name ``methods`` gives the
+    transaction's selector and the transfer's token's decimals as they are now.
+    """
+    facts = MatchFacts(
+        chain=block.chain,
+        block_hash=block.hash,
+        block_number=block.number,
+        block_timestamp=block.timestamp,
+        miner=block.miner,
+        transaction_hash=transaction.hash,
+        transaction_index=transaction.transaction_index,
+        from_address=transaction.from_address,
+        to_address=transaction.to_address,
+        value=transaction.value,
+        input=transaction.input,
+        method=methods.get(utils.selector(transaction.input)),
+        decode_status=transaction.decode_status,
+        transfer_key=_transfer_key(transfer),
+    )
+    if transfer is not None:
+        facts.token_address = transfer.token.contract.address
+        facts.transfer_from = transfer.from_address
+        facts.transfer_to = transfer.to_address
+        facts.raw_value = transfer.raw_value
+        facts.log_index = transfer.log_index
+        facts.decimals = transfer.token.decimals
+        facts.verified = transfer.verified
+    return facts
+
+
+def _transfer_key(transfer):
+    """The ``MatchFacts.transfer_key`` of a binding bound with ``transfer``, or with none."""
+    if transfer is None:
+        return MatchFacts.NO_TRANSFER_KEY
+    if transfer.log_index is None:
+        return MatchFacts.CALLDATA_TRANSFER_KEY
+    return transfer.log_index
+
+
+def _methods(selectors):
+    """The name of the function each of ``selectors`` calls, from the signature catalog, by selector.
+
+    A selector is four bytes of a hash, so the catalog can hold several
+    functions for one. Their name is answered only when they all share it:
+    picking one of several could name a function the transaction never
+    called. A selector the catalog names none for, or several, is left out,
+    as is ``None``. One query, or none without a selector.
+    """
+    selectors = {selector for selector in selectors if selector is not None}
+    if not selectors:
+        return {}
+    names = {}
+    for selector, name in FunctionSignature.objects.filter(hex_signature__in=selectors).values_list(
+        "hex_signature", "name"
+    ):
+        names.setdefault(selector, set()).add(name)
+    return {selector: named.pop() for selector, named in names.items() if len(named) == 1}
 
 
 # --------------------------------------------------------------------------
@@ -515,7 +686,7 @@ def _headline(transaction, transfer):
             "to_address": transaction.to_address,  # None for a contract creation
             "from_label": None,
             "to_label": None,
-            "amount": _amount(transaction.value, utils.ETH_DECIMALS),
+            "amount": utils.amount(transaction.value, utils.ETH_DECIMALS),
             "token": None,
         }
     return {
@@ -524,8 +695,8 @@ def _headline(transaction, transfer):
         "to_address": transfer.to_address,
         "from_label": None,
         "to_label": None,
-        "amount": _amount(transfer.raw_value, transfer.token.decimals),
-        "token": _token_ref(transfer.token),
+        "amount": utils.amount(transfer.raw_value, transfer.token.decimals),
+        "token": utils.token_ref(transfer.token),
     }
 
 
@@ -534,109 +705,168 @@ def _rule_ref(rule):
     return {"id": rule.pk, "name": rule.name, "tag": rule.tag, "glyph": rule.glyph}
 
 
-def _token_ref(token):
-    """``token``, read with its contract, as the console's ``TokenRef``."""
-    return {
-        "chain": token.contract.chain,
-        "address": token.contract.address,
-        # Blank when the catalog gives none; unknown is null in the contract.
-        "symbol": token.symbol or None,
-        "name": token.name,
-        "decimals": token.decimals,
-    }
-
-
-def _amount(raw, decimals):
-    """An amount as the console reads one: every digit of ``raw``, and its value scaled by ``decimals``.
-
-    Unknown decimals (``None``) leave the value unknown too, since a guessed 18
-    would misprice a 6-decimal token. Both are exact decimal strings
-    (:func:`utils.decimal_string`): a uint256 is past what a JSON number holds.
-    """
-    return {
-        "raw": utils.decimal_string(raw),
-        "decimals": decimals,
-        "value": None if decimals is None else utils.decimal_string(raw, decimals),
-    }
-
-
 # --------------------------------------------------------------------------
-# a match's detail — its journal row, with the transaction and transfer it matched
+# a match's detail — its journal row, with what it matched and its trace
 # --------------------------------------------------------------------------
-
-# "0x" and the four bytes naming the function a transaction calls.
-SELECTOR_LENGTH = 10
 
 
 def match_detail(owner, pk):
     """``owner``'s match ``pk`` as the console's ``MatchDetail``; ``None`` when their journal lists no such match.
 
-    The match's journal row (:func:`journal_rows`) with the transaction's own
-    fields, the transfer the row leads with, and the owner's other rules that
-    matched the same transaction. ``condition`` is the rule's tree as it is
-    now, since no copy of it is stored when a match is recorded, and ``trace``
-    is ``None``, since the evaluator records no gate's outcome: the console
-    shows such a match without its circuit. Someone else's match reads as
-    ``None``, as do the matches the journal leaves out (:func:`matches_for`).
-    Five queries at most: the match with its transaction and rule, the rule's
-    tree, the transaction's transfers, the functions its selector names in the
-    signature catalog, and the other matches.
+    The match's journal row (:func:`journal_rows`) with the transaction and
+    transfer it matched, its rule's tree, its trace, and the owner's other
+    rules that matched the same transaction. A match recorded with what it
+    read (its ``RuleRevision`` and ``MatchFacts``) reads as it was evaluated
+    (:func:`_as_evaluated`); one recorded before they were kept reads as its
+    rows and its rule read now, without a trace (:func:`_as_it_reads_now`).
+    Someone else's match reads as ``None``, as do the matches the journal
+    leaves out (:func:`matches_for`). Five queries at most: the match with
+    its transaction, rule, revision and facts, the transaction's transfers,
+    then the facts' token in the catalog, or the rule's tree and the
+    functions its selector names in the signature catalog for an older
+    match, and the other matches.
     """
-    match = matches_for(owner).filter(pk=pk).select_related("transaction", "rule").first()
+    match = (
+        matches_for(owner)
+        .filter(pk=pk)
+        .select_related("transaction", "rule", "rule_revision", "facts")
+        .first()
+    )
     if match is None:
         return None
     transaction = match.transaction
     transfer = _leading_transfers([transaction]).get(transaction.hash)
-    selector = _selector(transaction.input)
-    row = _journal_row(match, transfer)
+    recorded = match.facts is not None and match.rule_revision is not None
     return {
-        **row,
-        "condition": match.rule.console_condition(),
-        "trace": None,
-        "transaction": {
-            **row["transaction"],
-            "from_address": transaction.from_address,
-            "to_address": transaction.to_address,  # None for a contract creation
-            "value": utils.decimal_string(transaction.value),
-            "input_selector": selector,
-            "method": _method(selector),
-            "decode_status": transaction.decode_status,
-        },
-        "transfer": None if transfer is None else _transfer_detail(transfer),
+        **_journal_row(match, transfer),
+        **(_as_evaluated(match) if recorded else _as_it_reads_now(match, transfer)),
         "also_matched": _also_matched(owner, match),
     }
 
 
-def _selector(calldata):
-    """The selector ``calldata`` opens with, lowercased; ``None`` when it has none, as a plain ETH transfer's ``0x`` has none."""
-    selector = calldata[:SELECTOR_LENGTH].lower()
-    return selector if len(selector) == SELECTOR_LENGTH else None
+def _as_evaluated(match):
+    """The parts of a match's detail it recorded: its revision's tree, and what it read, with the trace replayed from them.
 
-
-def _method(selector):
-    """The name of the function ``selector`` calls, from the signature catalog; ``None`` when it names none.
-
-    A selector is four bytes of a hash, so the catalog can hold several
-    functions for one. Their name is answered only when they all share it:
-    picking one of several could name a function the transaction never called.
+    ``rule_revision`` is the revision it matched, whatever the rule's is now.
+    The transaction and transfer are the ones it read (:func:`_bound`), so
+    the transfer is the one its gates held of, not the transaction's first.
+    The trace is replayed only by the evaluator version that recorded the
+    revision, since another could read the tree differently; under any other,
+    ``trace`` is ``None``.
     """
-    if selector is None:
-        return None
-    names = set(
-        FunctionSignature.objects.filter(hex_signature=selector).values_list("name", flat=True)
+    revision = match.rule_revision
+    bound = _bound(match.facts)
+    trace = None
+    if revision.evaluator_version == onchain.EVALUATOR_VERSION:
+        _, trace = onchain.trace_tree(utils.condition_nodes(revision.condition), bound)
+    return {
+        "rule_revision": revision.revision,
+        "condition": revision.condition,
+        "evaluator_version": revision.evaluator_version,
+        "trace": trace,
+        "transaction": _transaction_detail(bound.transaction, bound.method),
+        "transfer": None if bound.transfer is None else _transfer_detail(bound.transfer),
+    }
+
+
+def _as_it_reads_now(match, transfer):
+    """The parts of the detail of a match recorded before what it read was kept.
+
+    ``condition`` is the rule's tree as it is now, and there is no trace or
+    evaluator version to speak of: the console shows such a match without its
+    circuit. The transaction's fields are its row's, and the transfer is
+    ``transfer``, the one the journal row leads with.
+    """
+    transaction = match.transaction
+    selector = utils.selector(transaction.input)
+    return {
+        "condition": match.rule.console_condition(),
+        "evaluator_version": None,
+        "trace": None,
+        "transaction": _transaction_detail(transaction, _methods([selector]).get(selector)),
+        "transfer": None if transfer is None else _transfer_detail(transfer),
+    }
+
+
+def _bound(facts):
+    """The block, transaction and transfer ``facts`` recorded, as the evaluator reads them (``onchain.Bound``).
+
+    Built in memory from the columns, so they read as evaluated: the
+    transfer's token has its decimals as evaluated, and the method its name
+    as evaluated. The token's symbol and name are the catalog's, found by its
+    address, as they read now: one query, when a transfer was bound.
+    """
+    block = Block(
+        hash=facts.block_hash,
+        chain=facts.chain,
+        number=facts.block_number,
+        timestamp=facts.block_timestamp,
+        miner=facts.miner,
     )
-    return names.pop() if len(names) == 1 else None
+    transaction = Transaction(
+        hash=facts.transaction_hash,
+        chain=facts.chain,
+        block_hash=facts.block_hash,
+        block_number=facts.block_number,
+        block_timestamp=facts.block_timestamp,
+        transaction_index=facts.transaction_index,
+        from_address=facts.from_address,
+        to_address=facts.to_address,
+        value=facts.value,
+        input=facts.input,
+        decode_status=facts.decode_status,
+    )
+    transfer = None
+    if facts.token_address is not None:
+        catalogued = Token.objects.filter(
+            contract__chain=facts.chain, contract__address=facts.token_address
+        ).first()
+        token = Token(
+            contract=Contract(chain=facts.chain, address=facts.token_address),
+            name=catalogued.name if catalogued else None,
+            symbol=catalogued.symbol if catalogued else "",
+            decimals=facts.decimals,
+        )
+        transfer = TokenTransfer(
+            transaction_hash=facts.transaction_hash,
+            log_index=facts.log_index,
+            token=token,
+            from_address=facts.transfer_from,
+            to_address=facts.transfer_to,
+            raw_value=facts.raw_value,
+            verified=facts.verified,
+        )
+    return onchain.Bound(
+        block=block, transaction=transaction, transfer=transfer, method=facts.method
+    )
+
+
+def _transaction_detail(transaction, method):
+    """``transaction`` as the console's match detail shows it; ``method`` is the name the catalog gave its selector."""
+    return {
+        "chain": transaction.chain,
+        "hash": transaction.hash,
+        "block_number": transaction.block_number,
+        "transaction_index": transaction.transaction_index,
+        "block_timestamp": transaction.block_timestamp,
+        "from_address": transaction.from_address,
+        "to_address": transaction.to_address,  # None for a contract creation
+        "value": utils.decimal_string(transaction.value),
+        "input_selector": utils.selector(transaction.input),
+        "method": method,
+        "decode_status": transaction.decode_status,
+    }
 
 
 def _transfer_detail(transfer):
-    """A transaction's leading ``transfer`` as the console's match detail shows it.
+    """A match's ``transfer`` as the console's match detail shows it.
 
     A transfer decoding read from calldata names no log, so its ``source`` is
     ``calldata`` while its ``log_index`` is empty; one read from a receipt's
     Transfer log would carry the log's index.
     """
     return {
-        "token": _token_ref(transfer.token),
+        "token": utils.token_ref(transfer.token),
         "from_address": transfer.from_address,
         "to_address": transfer.to_address,
         "raw_value": utils.decimal_string(transfer.raw_value),

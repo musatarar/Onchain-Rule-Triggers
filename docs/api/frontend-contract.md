@@ -171,7 +171,8 @@ The trace pane. One call drives the power-on animation, the lit path and every g
 ```ts
 type MatchDetail = JournalRow & {
   condition: ConditionNode;                // snapshot of the tree AS EVALUATED, not the live rule
-  trace: Record<number, GateTrace> | null; // keyed by node id in `condition`, every node present; null when none was recorded
+  evaluator_version: number | null;        // the engine version that evaluated it; null for a match recorded before traces were
+  trace: Record<number, GateTrace> | null; // keyed by node id in `condition`, every node present; null when recorded before traces were, or under another evaluator version
   transaction: JournalRow["transaction"] & {
     from_address: string; to_address: string | null; value: Uint;
     input_selector: string | null; method: string | null;               // signature text when catalogued
@@ -201,7 +202,15 @@ The FE derives everything else from the snapshot and the `held` values: the powe
 ```json
 { "held": true, "observed": { "kind": "amount", "raw": "397092712", "decimals": 6, "value": "397.092712" } }
 ```
-Until the evaluator records a trace per match, the server answers `"trace": null`, with the rule's tree as it reads now in `condition`. The pane then shows the match's transaction and transfer without the circuit, and Replay is off.
+The trace is replayed from what the match recorded: its rule's tree at the revision it matched (`rule_revision`), and what the evaluator read then (the transaction, the transfer its gates held of, the token's decimals and the method's name). So editing the rule, or a change to the token or signature catalog, leaves an old match's `rule_revision`, `condition`, `trace`, `transaction` and `transfer` as they were evaluated. The headline and flags it shares with its journal row still read the transaction's first transfer and the catalogs as they are now, until the journal reads what matches read (#66).
+
+`trace` is `null` in two cases:
+- a match recorded before traces were: `evaluator_version` is `null`, and `condition` is the rule's tree as it reads now;
+- a match recorded under an evaluator version other than the current one: `condition` is still its recorded tree, but the current engine could read it differently, so it doesn't replay it.
+
+With no trace, the pane shows the match's transaction and transfer without the circuit, and Replay is off.
+
+Until #44 brings the console's vocabulary to the engine, a real tree names the engine's own fields and operators. Their `observed` kinds: `raw_value` reads an `amount`, compared undivided; `input` reads a `method`; a block's `miner` reads an `address`. A block's `number` and `timestamp` record no `observed`.
 
 ### `GET /api/tokens/?q=<text>&chain=<id>`
 The token picker in the gate editor. Paginated `TokenRef[]`, matched on symbol, name or address prefix.

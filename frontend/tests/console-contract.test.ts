@@ -108,6 +108,7 @@ test('every journal row and match detail is contract-shaped, with a trace for ev
     assertRow(row);
     const detail: MatchDetail = await api.matchDetail(row.id);
     assert.equal(detail.id, row.id);
+    assert.equal(detail.evaluator_version, 1, 'the demo evaluates every match as the engine version that traces it');
     assertCondition(detail.condition);
     const trace = detail.trace;
     assert.ok(trace, 'the demo records a trace for every match');

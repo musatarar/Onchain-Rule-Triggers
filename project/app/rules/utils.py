@@ -14,9 +14,15 @@ checked against the same fields.
 The Phosphor console reads a rule's tree in its own ``ConditionNode`` shape
 (``docs/api/frontend-contract.md``), which :func:`render_condition` renders
 from the same rows. It only reads that shape: trees are written as v1
-payloads until #44 validates and stores the console's.
+payloads until #44 validates and stores the console's. A rule revision keeps
+its tree in that shape, and :func:`condition_nodes` reads one back as the
+nodes it was rendered from, for the evaluator to replay. What a comparison
+read is shown in the console's shapes too: a token as its ``TokenRef``
+(:func:`token_ref`), an amount with its decimals (:func:`amount`), and
+calldata by its selector (:func:`selector`).
 """
 
+import dataclasses
 import datetime
 from decimal import Decimal
 
@@ -287,12 +293,128 @@ def _console_text(node, threshold):
 
     A uint256 is past what a JSON number holds, so every number is a decimal
     string. A transaction's ``value`` is in ETH, as the console's "ETH value"
-    field reads it; every other number keeps its stored unit.
+    field reads it; every other number keeps its stored unit. A ``Decimal``
+    is a number too, as :func:`condition_nodes` reads one back.
     """
-    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float, Decimal)):
         return threshold
     in_eth = (node.source, node.field_name) == (SOURCE_TRANSACTION, "value")
     return decimal_string(threshold, ETH_DECIMALS if in_eth else 0)
+
+
+# The ``Condition.type`` and the v1 operator each console name reads back as
+# (:func:`condition_nodes`).
+TREE_TYPE_BY_CONSOLE = {name: tree_type for tree_type, name in CONSOLE_GROUP_TYPES.items()}
+OPERATOR_BY_CONSOLE = {name: operator for operator, name in CONSOLE_OPERATORS.items()}
+
+
+@dataclasses.dataclass(frozen=True)
+class TreeNode:
+    """One node of a tree read back from the console's shape (:func:`condition_nodes`).
+
+    It carries the ``Condition`` fields a tree is walked and rendered by, so
+    the evaluator and :func:`render_condition` read it as they read a row.
+    """
+
+    pk: int
+    parent_id: int | None
+    type: str
+    source: str = ""
+    field_name: str = ""
+    operator: str = ""
+    value: object = None
+
+
+def condition_nodes(condition):
+    """A tree :func:`render_condition` rendered, back as the nodes it was rendered from.
+
+    Each node keeps its id and its parent's. A group gets its
+    ``Condition.type`` back, and a comparison its v1 operator and threshold: a
+    number as the exact ``Decimal`` it was rendered from, a transaction's
+    ``value`` in wei again. So :func:`render_condition` renders the nodes as
+    ``condition``, and the evaluator judges them as it judged the rows.
+    """
+    nodes = []
+    pending = [(condition, None)]
+    while pending:
+        node, parent_id = pending.pop()
+        if node["type"] != "comparison":
+            nodes.append(TreeNode(node["id"], parent_id, TREE_TYPE_BY_CONSOLE[node["type"]]))
+            pending.extend((child, node["id"]) for child in node["children"])
+            continue
+        operator = OPERATOR_BY_CONSOLE.get(node["operator"], node["operator"])
+        nodes.append(
+            TreeNode(
+                node["id"],
+                parent_id,
+                TREE_TYPE_COMPARISON,
+                source=node["source"],
+                field_name=node["field"],
+                operator=operator,
+                value=_stored_threshold(node["source"], node["field"], operator, node["value"]),
+            )
+        )
+    return nodes
+
+
+def _stored_threshold(source, field, operator, value):
+    """A comparison's console value back as the threshold it was rendered from (:func:`_console_value`)."""
+    if operator in NO_THRESHOLD_OPERATORS:
+        return None
+    if operator == "in":
+        return [_stored_text(source, field, item) for item in value["addresses"]]
+    if (source, field) == (SOURCE_TOKEN_TRANSFER, "token") and operator in ("==", "!="):
+        return value["address"]
+    return _stored_text(source, field, value)
+
+
+def _stored_text(source, field, text):
+    """A threshold :func:`_console_text` wrote, back as stored: a number as its ``Decimal``.
+
+    The exponent moves back rather than the number being multiplied, as
+    :func:`decimal_string` moves it, so no digit of a uint256 is rounded.
+    """
+    if ONCHAIN_FIELDS.get(source, {}).get(field) != NUMBER or not isinstance(text, str):
+        return text
+    sign, digits, exponent = Decimal(text).as_tuple()
+    in_eth = (source, field) == (SOURCE_TRANSACTION, "value")
+    return Decimal((sign, digits, exponent + (ETH_DECIMALS if in_eth else 0)))
+
+
+# "0x" and the four bytes naming the function a transaction calls.
+SELECTOR_LENGTH = 10
+
+
+def selector(calldata):
+    """The selector ``calldata`` opens with, lowercased; ``None`` when it has none, as a plain ETH transfer's ``0x`` has none."""
+    opening = calldata[:SELECTOR_LENGTH].lower()
+    return opening if len(opening) == SELECTOR_LENGTH else None
+
+
+def token_ref(token):
+    """``token``, read with its contract, as the console's ``TokenRef``."""
+    return {
+        "chain": token.contract.chain,
+        "address": token.contract.address,
+        # Blank when the catalog gives none; unknown is null in the contract.
+        "symbol": token.symbol or None,
+        "name": token.name,
+        "decimals": token.decimals,
+    }
+
+
+def amount(raw, decimals):
+    """An amount as the console reads one: every digit of ``raw``, and its value scaled by ``decimals``.
+
+    Unknown decimals (``None``) leave the value unknown too, since a guessed 18
+    would misprice a 6-decimal token. Both are exact decimal strings
+    (:func:`decimal_string`): a uint256 is past what a JSON number holds.
+    """
+    return {
+        "raw": decimal_string(raw),
+        "decimals": decimals,
+        "value": None if decimals is None else decimal_string(raw, decimals),
+    }
 
 
 def decimal_string(number, decimals=0):

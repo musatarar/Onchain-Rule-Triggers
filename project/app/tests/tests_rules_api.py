@@ -6,14 +6,18 @@ in the console's shape: its exact JSON, how its tree and thresholds read,
 and which recorded matches its stats count; then the engine status's exact
 JSON, and which recorded matches it counts; then the journal: a row's exact
 JSON, the order and the cursors, and which recorded matches it lists; then
-one match's detail: its exact JSON, the transaction and transfer facts, the
-other rules it names, and which matches it reads.
+one match's detail: its exact JSON, the tree and trace it was evaluated by and
+what it read, the other rules it names, and which matches it reads.
 """
 
+import contextlib
+import io
 import unittest
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
@@ -22,11 +26,12 @@ from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
 from project.app.evm.block.models import DecodeStatus
 from project.app.evm.chains import ChainId
+from project.app.evm.decoding import decode_transactions
 from project.app.evm.function_signatures import FunctionSignatureCreateSchema
 from project.app.evm.tokens import TokenCreateSchema
-from project.app.models import MatchedRule, Rule, TokenTransfer, Transaction
+from project.app.models import Block, MatchedRule, Rule, TokenTransfer, Transaction
+from project.app.rules import onchain, utils
 from project.app.rules import services as rules_services
-from project.app.rules import utils
 from project.app.rules.utils import _all_of, _any_of, _cond
 from project.app.tests.tests_evm_block import (
     DYNAMIC_FEE_HASH,
@@ -35,13 +40,19 @@ from project.app.tests.tests_evm_block import (
     dynamic_fee_transaction,
     legacy_transaction,
 )
-from project.app.tests.tests_rules_evaluation import NEXT_BLOCK_HASH, built_by_the_sample_miner
+from project.app.tests.tests_rules_evaluation import (
+    LATER_HASH,
+    NEXT_BLOCK_HASH,
+    built_by_the_sample_miner,
+)
 from project.app.tests.tests_rules_onchain import (
     ALICE,
     BOB,
     DYNAMIC_FROM,
     DYNAMIC_TO,
     LEGACY_FROM,
+    LEGACY_SELECTOR,
+    LEGACY_TO,
     MINER,
     REORGED_BLOCK_HASH,
     USDC,
@@ -50,14 +61,14 @@ from project.app.tests.tests_rules_onchain import (
     transfer,
     tx,
 )
+from scripts.create_demo_rules import create_demo_rules
+from scripts.load_blocks import load_blocks
 
 RULES_URL = "/api/rules/"
 ENGINE_STATUS_URL = "/api/engine/status/"
 MATCHES_URL = "/api/matches/"
 # A block on a second chain, carrying nothing.
 POLYGON_BLOCK_HASH = "0x" + "b1" * 32
-# A transaction from the sample block's first sender, in the block after it.
-LATER_HASH = "0x" + "d1" * 32
 # The block times of the sample block and the one after it.
 SAMPLE_BLOCK_AT = "2023-08-26T16:21:35Z"
 NEXT_BLOCK_AT = "2023-08-26T16:21:47Z"
@@ -66,10 +77,6 @@ MAX_UINT256 = 2**256 - 1
 ETH_SENT = 12_345_678_900_000_000_000
 # A contract the token catalog does not recognise.
 UNKNOWN_TOKEN = "0x" + "7e" * 20
-# The sample legacy transaction's recipient, Uniswap's V2 router, and the
-# selector of the function it calls there, swapExactTokensForETH.
-LEGACY_TO = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
-LEGACY_SELECTOR = "0x18cbafe5"
 
 
 def _conditions():
@@ -1406,32 +1413,59 @@ class MatchDetailTests(RulesApiTestCase):
     def _rule_ref(self, rule):
         return {"id": rule.pk, "name": rule.name, "tag": rule.tag, "glyph": rule.glyph}
 
-    def test_a_match_is_its_journal_row_with_the_transaction_and_transfer_it_matched(self):
-        self._store(block())
+    def _decoded(self, raw):
+        """``raw`` stored with decoding finished, so a rule reading transfers is judged against it."""
+        self._store(raw)
+        Transaction.objects.filter(block_hash=raw["hash"]).update(
+            decode_status=DecodeStatus.DECODED
+        )
+
+    def test_a_match_is_its_journal_row_with_its_tree_its_trace_and_what_it_read(self):
+        self._decoded(block())
         self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=397_092_712)
         self._signature(1, "swapExactTokensForETH")
-        every = self._every_transaction()
+        tether = self._rule(
+            name="tether",
+            conditions=_all_of(transfer("token", "==", USDT), transfer("raw_value", ">=", 10**8)),
+        )
         from_caller = self._rule(
             name="from the caller", conditions=_all_of(tx("from_address", "==", LEGACY_FROM))
         )
         rules_services.evaluate_blocks()
-        Transaction.objects.filter(hash=LEGACY_HASH).update(decode_status=DecodeStatus.DECODED)
-        moved = MatchedRule.objects.get(rule=every, transaction=LEGACY_HASH)
+        moved = MatchedRule.objects.get(rule=tether)
         caller = MatchedRule.objects.get(rule=from_caller)
 
         response = self.client.get(f"{MATCHES_URL}{moved.pk}/")
 
         self.assertEqual(response.status_code, 200)
-        journal_row = self.client.get(MATCHES_URL, {"rule": every.pk}).json()["results"][0]
-        tether = {"chain": 1, "address": USDT, "symbol": None, "name": "Tether", "decimals": 6}
+        journal_row = self.client.get(MATCHES_URL, {"rule": tether.pk}).json()["results"][0]
+        condition = self.client.get(f"{RULES_URL}{tether.pk}/").json()["condition"]
+        token_gate, amount_gate = condition["children"]
+        tether_ref = {"chain": 1, "address": USDT, "symbol": None, "name": "Tether", "decimals": 6}
         self.assertEqual(
             response.json(),
             {
                 **journal_row,
-                # The tree the rule reads now: no copy is stored with a match.
-                "condition": self.client.get(f"{RULES_URL}{every.pk}/").json()["condition"],
-                # Nothing records which gates held.
-                "trace": None,
+                # The tree it matched by: the rule's, which has not changed since.
+                "condition": condition,
+                "evaluator_version": 1,
+                # Every gate, keyed by node id, with what it read.
+                "trace": {
+                    str(condition["id"]): {"held": True},
+                    str(token_gate["id"]): {
+                        "held": True,
+                        "observed": {"kind": "token", "token": tether_ref},
+                    },
+                    str(amount_gate["id"]): {
+                        "held": True,
+                        "observed": {
+                            "kind": "amount",
+                            "raw": "397092712",
+                            "decimals": 6,
+                            "value": "397.092712",
+                        },
+                    },
+                },
                 "transaction": {
                     "chain": 1,
                     "hash": LEGACY_HASH,
@@ -1446,7 +1480,7 @@ class MatchDetailTests(RulesApiTestCase):
                     "decode_status": "DECODED",
                 },
                 "transfer": {
-                    "token": tether,
+                    "token": tether_ref,
                     "from_address": ALICE,
                     "to_address": BOB,
                     "raw_value": "397092712",
@@ -1461,25 +1495,128 @@ class MatchDetailTests(RulesApiTestCase):
         self.assertEqual(
             (
                 journal_row["id"],
+                journal_row["rule_revision"],
                 journal_row["headline"]["token"],
                 journal_row["headline"]["amount"],
             ),
-            (moved.pk, tether, {"raw": "397092712", "decimals": 6, "value": "397.092712"}),
+            (moved.pk, 1, tether_ref, {"raw": "397092712", "decimals": 6, "value": "397.092712"}),
+        )
+
+    def test_a_usdt_10k_match_on_the_sample_blocks_is_traced_gate_by_gate(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            load_blocks()
+            create_demo_rules("watcher", "watcher")
+        call_command("load_function_signatures", stdout=io.StringIO())
+        call_command("load_tokens", "--limit", "6", stdout=io.StringIO())
+        decode_transactions()
+        rules_services.evaluate_blocks()
+        self.client.force_login(get_user_model().objects.get(username="watcher"))
+        usdt_10k = Rule.objects.get(tag="USDT-10K")
+        first = MatchedRule.objects.filter(rule=usdt_10k).order_by("pk").first()
+
+        detail = self._detail(first.pk)
+
+        condition = detail["condition"]
+        token_gate, amount_gate = condition["children"]
+        tether = {"chain": 1, "address": USDT, "symbol": "USDT", "name": "Tether", "decimals": 6}
+        self.assertEqual(
+            condition, self.client.get(f"{RULES_URL}{usdt_10k.pk}/").json()["condition"]
+        )
+        self.assertEqual(
+            (detail["rule_revision"], detail["evaluator_version"], detail["transaction"]["hash"]),
+            (1, 1, "0xbc007545f4d5e55c0b9cc25eef6b088aabab0ef4a61f2fcaffa8c96ce0d75d54"),
+        )
+        self.assertEqual(
+            detail["trace"],
+            {
+                str(condition["id"]): {"held": True},
+                str(token_gate["id"]): {
+                    "held": True,
+                    "observed": {"kind": "token", "token": tether},
+                },
+                str(amount_gate["id"]): {
+                    "held": True,
+                    "observed": {
+                        "kind": "amount",
+                        "raw": "40326453370",
+                        "decimals": 6,
+                        "value": "40326.45337",
+                    },
+                },
+            },
+        )
+        self.assertEqual(
+            (detail["transfer"]["token"], detail["transfer"]["raw_value"]), (tether, "40326453370")
         )
 
     def test_a_transfer_read_from_a_log_names_the_log(self):
-        self._store(block())
+        self._decoded(block())
         self._transfer(
             LEGACY_HASH, self._token(decimals=6), raw_value=1, log_index=7, verified=True
         )
-        self._every_transaction()
+        self._rule(name="moved", conditions=_all_of(transfer("raw_value", ">=", 1)))
         rules_services.evaluate_blocks()
 
-        transfer = self._detail(MatchedRule.objects.get(transaction=LEGACY_HASH).pk)["transfer"]
+        moved = self._detail(MatchedRule.objects.get(transaction=LEGACY_HASH).pk)["transfer"]
+
+        self.assertEqual((moved["log_index"], moved["source"], moved["verified"]), (7, "log", True))
+
+    @unittest.skipUnless(
+        connection.vendor == "postgresql", "SQLite keeps 15 significant digits of a decimal"
+    )
+    def test_a_uint256_the_match_read_keeps_every_digit_in_its_trace(self):
+        self._decoded(block(transactions=[legacy_transaction(value=hex(MAX_UINT256))]))
+        self._transfer(LEGACY_HASH, self._token(decimals=18), raw_value=MAX_UINT256)
+        rule = self._rule(
+            name="everything",
+            conditions=_all_of(tx("value", ">", 2**255), transfer("raw_value", ">", 2**255)),
+        )
+        rules_services.evaluate_blocks()
+
+        detail = self._detail(MatchedRule.objects.get(rule=rule).pk)
+
+        # Every digit, where Decimal arithmetic would keep 28, in wei and in ETH.
+        scaled = "115792089237316195423570985008687907853269984665640564039457.584007913129639935"
+        sent, moved = (str(leaf["id"]) for leaf in detail["condition"]["children"])
+        self.assertEqual(
+            (detail["trace"][sent], detail["trace"][moved]),
+            (
+                {
+                    "held": True,
+                    "observed": {"kind": "native_amount", "wei": str(MAX_UINT256), "value": scaled},
+                },
+                {
+                    "held": True,
+                    "observed": {
+                        "kind": "amount",
+                        "raw": str(MAX_UINT256),
+                        "decimals": 18,
+                        "value": scaled,
+                    },
+                },
+            ),
+        )
+        self.assertEqual(
+            (detail["transaction"]["value"], detail["transfer"]["raw_value"]),
+            (str(MAX_UINT256), str(MAX_UINT256)),
+        )
+
+    def test_the_transfer_is_the_one_the_rules_gates_held_of_not_the_first(self):
+        self._decoded(block())
+        self._transfer(
+            LEGACY_HASH, self._token(USDC, "USD Coin", decimals=6), raw_value=1, log_index=0
+        )
+        self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=2, log_index=1)
+        tether = self._rule(name="tether", conditions=_all_of(transfer("token", "==", USDT)))
+        rules_services.evaluate_blocks()
+
+        detail = self._detail(MatchedRule.objects.get(rule=tether).pk)
 
         self.assertEqual(
-            (transfer["log_index"], transfer["source"], transfer["verified"]), (7, "log", True)
+            (detail["transfer"]["token"]["address"], detail["transfer"]["log_index"]), (USDT, 1)
         )
+        # The journal row it extends still leads with the transaction's first transfer.
+        self.assertEqual(detail["headline"]["token"]["address"], USDC)
 
     def test_a_match_with_no_transfer_has_none_and_a_selector_the_catalog_lacks_no_method(self):
         self._store(
@@ -1516,37 +1653,158 @@ class MatchDetailTests(RulesApiTestCase):
             ],
         )
 
-    def test_a_selector_names_its_method_only_when_the_catalog_agrees_on_one(self):
+    def test_a_selector_names_its_method_only_when_the_catalog_agreed_on_one_as_it_matched(self):
         self._store(block())
-        self._every_transaction()
-        rules_services.evaluate_blocks()
-        pk = MatchedRule.objects.get(transaction=LEGACY_HASH).pk
-
-        def method():
-            return self._detail(pk)["transaction"]["method"]
-
         self._signature(1, "swapExactTokensForETH")
         self._signature(2, "swapExactTokensForETH")
-        named = method()
+        self._every_transaction()
+        rules_services.evaluate_blocks()
         # Four bytes of a hash: another function can share the selector.
         self._signature(3, "collidingFunction")
+        self._store(
+            block(
+                hash=NEXT_BLOCK_HASH,
+                number="0x112a881",
+                transactions=[legacy_transaction(hash=LATER_HASH)],
+                withdrawals=[],
+            )
+        )
+        rules_services.evaluate_blocks()
 
-        self.assertEqual((named, method()), ("swapExactTokensForETH", None))
+        def method(transaction_hash):
+            pk = MatchedRule.objects.get(transaction=transaction_hash).pk
+            return self._detail(pk)["transaction"]["method"]
 
-    def test_the_condition_is_the_rules_tree_as_it_reads_now(self):
+        # Each names what the catalog said when it matched.
+        self.assertEqual((method(LEGACY_HASH), method(LATER_HASH)), ("swapExactTokensForETH", None))
+
+    def test_after_its_rule_is_edited_a_match_keeps_the_tree_and_the_trace_it_matched_by(self):
         self._store(block())
         rule = self._every_transaction()
         rules_services.evaluate_blocks()
         pk = MatchedRule.objects.get(transaction=LEGACY_HASH).pk
+        before = self._detail(pk)
+
+        rules_services.update_rule(
+            rule, {"conditions": _all_of(tx("from_address", "==", DYNAMIC_FROM))}
+        )
+
+        after = self._detail(pk)
+        self.assertEqual(
+            (after["rule_revision"], after["condition"], after["trace"]),
+            (1, before["condition"], before["trace"]),
+        )
+        (leaf,) = after["condition"]["children"]
+        self.assertEqual((leaf["field"], leaf["operator"], leaf["value"]), ("value", "gte", "0"))
+        self.assertEqual(
+            after["trace"][str(leaf["id"])],
+            {"held": True, "observed": {"kind": "native_amount", "wei": "0", "value": "0"}},
+        )
+        self.assertEqual(self.client.get(f"{RULES_URL}{rule.pk}/").json()["revision"], 2)
+
+    def test_the_trace_is_what_the_evaluator_read_whatever_the_catalogs_say_since(self):
+        self._decoded(block())
+        token = self._token(decimals=6)
+        self._transfer(LEGACY_HASH, token, raw_value=397_092_712)
+        self._signature(1, "swapExactTokensForETH")
+        rule = self._rule(
+            name="tether swaps",
+            conditions=_all_of(
+                transfer("raw_value", ">=", 1), tx("input", "contains", LEGACY_SELECTOR)
+            ),
+        )
+        rules_services.evaluate_blocks()
+        pk = MatchedRule.objects.get(rule=rule).pk
+        # The trace of the rows as they are when the match is recorded.
+        _, evaluated = onchain.trace_tree(
+            list(rule.all_conditions.all()),
+            onchain.Bound(
+                Block.objects.get(),
+                Transaction.objects.get(hash=LEGACY_HASH),
+                TokenTransfer.objects.select_related("token__contract").get(),
+                "swapExactTokensForETH",
+            ),
+        )
+        before = self._detail(pk)
+
+        token.decimals = 18
+        token.save(update_fields=["decimals"])
+        self._signature(2, "collidingFunction")
+
+        after = self._detail(pk)
+        self.assertEqual(after["trace"], {str(node): entry for node, entry in evaluated.items()})
+        self.assertEqual(
+            (after["trace"], after["transaction"], after["transfer"]),
+            (before["trace"], before["transaction"], before["transfer"]),
+        )
+        amount_gate, method_gate = (str(leaf["id"]) for leaf in after["condition"]["children"])
+        self.assertEqual(
+            (
+                after["trace"][amount_gate]["observed"]["decimals"],
+                after["trace"][method_gate]["observed"]["signature"],
+            ),
+            (6, "swapExactTokensForETH"),
+        )
+        # The journal row it extends reads the catalog as it is now.
+        self.assertEqual(after["headline"]["amount"]["decimals"], 18)
+
+    def test_under_another_evaluator_version_a_match_keeps_its_tree_and_is_not_replayed(self):
+        self._store(block())
+        self._every_transaction()
+        rules_services.evaluate_blocks()
+        pk = MatchedRule.objects.get(transaction=LEGACY_HASH).pk
+        recorded = self._detail(pk)
+
+        with (
+            mock.patch.object(onchain, "EVALUATOR_VERSION", 2),
+            mock.patch.object(onchain, "trace_tree") as replay,
+        ):
+            detail = self._detail(pk)
+
+        replay.assert_not_called()
+        self.assertEqual(
+            (
+                detail["rule_revision"],
+                detail["condition"],
+                detail["evaluator_version"],
+                detail["trace"],
+            ),
+            (1, recorded["condition"], 1, None),
+        )
+
+    def test_a_match_recorded_before_traces_reads_its_rule_and_rows_as_they_are_now(self):
+        self._store(block())
+        self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=1)
+        rule = self._every_transaction()
+        rules_services.evaluate_blocks()
+        # As the evaluator recorded a match before it kept what the match read.
+        MatchedRule.objects.update(rule_revision=None, facts=None)
+        pk = MatchedRule.objects.get(transaction=LEGACY_HASH).pk
         rules_services.update_rule(
             rule, {"conditions": _all_of(tx("from_address", "==", LEGACY_FROM))}
         )
+        self._signature(1, "swapExactTokensForETH")
+        Transaction.objects.filter(hash=LEGACY_HASH).update(decode_status=DecodeStatus.DECODED)
 
-        condition = self._detail(pk)["condition"]
+        detail = self._detail(pk)
 
-        (leaf,) = condition["children"]
         self.assertEqual(
-            (leaf["field"], leaf["operator"], leaf["value"]), ("from_address", "eq", LEGACY_FROM)
+            (
+                detail["rule_revision"],
+                detail["condition"],
+                detail["evaluator_version"],
+                detail["trace"],
+            ),
+            (2, self.client.get(f"{RULES_URL}{rule.pk}/").json()["condition"], None, None),
+        )
+        # The transaction and the transfer its journal row leads with, as they read now.
+        self.assertEqual(
+            (
+                detail["transaction"]["method"],
+                detail["transaction"]["decode_status"],
+                detail["transfer"]["raw_value"],
+            ),
+            ("swapExactTokensForETH", "DECODED", "1"),
         )
 
     def test_also_matched_names_each_of_the_owners_other_rules_that_matched_the_transaction_once(
@@ -1609,7 +1867,25 @@ class MatchDetailTests(RulesApiTestCase):
         self.client.force_login(self.other)
         self.assertEqual(self._detail(hidden[0])["id"], hidden[0])
 
-    def test_a_match_is_five_queries_however_many_rules_matched_its_transaction(self):
+    def test_a_match_is_four_queries_however_many_rules_matched_its_transaction(self):
+        self._decoded(block())
+        self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=1)
+        self._signature(1, "swapExactTokensForETH")
+        moved = self._rule(name="moved", conditions=_all_of(transfer("raw_value", ">=", 1)))
+        for index in range(3):
+            self._rule(name=f"also {index}", conditions=_all_of(tx("value", ">=", 0)))
+        rules_services.evaluate_blocks()
+        pk = MatchedRule.objects.get(rule=moved).pk
+
+        # The match with its transaction, rule, revision and facts, the
+        # transaction's transfers for its journal row, the bound transfer's
+        # token in the catalog, and the other matches with their rules.
+        with self.assertNumQueries(4):
+            detail = rules_services.match_detail(self.user, pk)
+
+        self.assertEqual((len(detail["also_matched"]), len(detail["trace"])), (3, 2))
+
+    def test_a_match_recorded_before_traces_is_five_queries(self):
         self._store(block())
         self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=1)
         self._signature(1, "swapExactTokensForETH")
@@ -1617,6 +1893,7 @@ class MatchDetailTests(RulesApiTestCase):
         for index in range(3):
             self._rule(name=f"also {index}", conditions=_all_of(tx("value", ">=", 0)))
         rules_services.evaluate_blocks()
+        MatchedRule.objects.update(rule_revision=None, facts=None)
         pk = MatchedRule.objects.get(rule=every, transaction=LEGACY_HASH).pk
 
         # The match with its transaction and rule, the rule's tree, the

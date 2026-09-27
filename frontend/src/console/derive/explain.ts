@@ -3,14 +3,21 @@ import { type Comparison, type Describer, describeGate } from './describe.ts';
 import { formatUnits, groupDigits, short } from './format.ts';
 import { type GatePower, parentOf } from './power.ts';
 
+/**
+ * Whether a gate that read an amount compares its raw value, as the engine's `raw_value`
+ * field does, rather than whole tokens, as the console's `amount` field does.
+ */
+const comparesRaw = (node: Comparison): boolean => node.field !== 'amount';
+
 /** What a gate read on this transaction, as drawn under it: "397.09", "Binance 15". */
-export function observedText(gate: GateTrace | undefined): string {
+export function observedText(gate: GateTrace | undefined, node?: Comparison): string {
   if (!gate) return '';
   if (gate.reason === 'no_transfer') return 'no token transfer';
   const seen = gate.observed;
   if (!seen) return '';
   switch (seen.kind) {
     case 'amount':
+      if (node && comparesRaw(node)) return groupDigits(seen.raw);
       return seen.decimals === null ? 'decimals unknown' : formatUnits(seen.raw, seen.decimals);
     case 'native_amount':
       return `${formatUnits(seen.wei, 18, 4)} ETH`;
@@ -55,6 +62,16 @@ export function explain(node: Comparison, gate: GateTrace | undefined, detail: M
       };
     }
     const token: TokenRef = seen?.kind === 'token' ? seen.token : transfer.token;
+    if (seen?.kind === 'amount' && comparesRaw(node)) {
+      const steps = [`${node.field} = ${groupDigits(seen.raw)}`];
+      if (seen.decimals !== null) {
+        steps.push(
+          `token.decimals = ${seen.decimals}${token.symbol ? ` (${token.symbol})` : ''}`,
+          `amount = ${formatUnits(seen.raw, seen.decimals, 6)}`,
+        );
+      }
+      return { reads: `token_transfer.${node.field}`, steps, test: test(groupDigits(seen.raw)), note: '' };
+    }
     if (node.field === 'amount') {
       const raw = seen?.kind === 'amount' ? seen.raw : transfer.raw_value;
       const decimals = seen?.kind === 'amount' ? seen.decimals : token.decimals;
@@ -107,27 +124,40 @@ export function explain(node: Comparison, gate: GateTrace | undefined, detail: M
   }
 
   if (node.field === 'value') {
+    const wei = seen?.kind === 'native_amount' ? seen.wei : tx.value;
     return {
       reads: 'transaction.value ÷ 10^18',
-      steps: [`value = ${groupDigits(tx.value)} wei`, `= ${formatUnits(tx.value, 18, 4)} ETH`],
-      test: test(`${formatUnits(tx.value, 18, 4)} ETH`),
+      steps: [`value = ${groupDigits(wei)} wei`, `= ${formatUnits(wei, 18, 4)} ETH`],
+      test: test(`${formatUnits(wei, 18, 4)} ETH`),
       note: '',
     };
   }
-  if (node.field === 'method') {
+  if (node.field === 'method' || seen?.kind === 'method') {
+    const selector = seen?.kind === 'method' ? seen.selector : tx.input_selector;
+    const signature = seen?.kind === 'method' ? seen.signature : tx.method;
     return {
       reads: 'transaction.input selector → signature catalog',
-      steps: [`selector = ${tx.input_selector ?? 'none (plain transfer)'}`, `signature = ${tx.method ?? 'not in the catalog'}`],
-      test: test(tx.method ?? tx.input_selector ?? 'none'),
+      steps: [`selector = ${selector ?? 'none (plain transfer)'}`, `signature = ${signature ?? 'not in the catalog'}`],
+      test: test(signature ?? selector ?? 'none'),
       note: '',
     };
   }
-  const address = node.field === 'from_address' ? tx.from_address : tx.to_address;
-  const label = seen?.kind === 'address' ? seen.label : null;
+  if (seen?.kind === 'address' || node.field === 'from_address' || node.field === 'to_address') {
+    const address =
+      seen?.kind === 'address' ? seen.address : node.field === 'from_address' ? tx.from_address : tx.to_address;
+    const label = seen?.kind === 'address' ? seen.label : null;
+    return {
+      reads: `${node.source}.${node.field}`,
+      steps: [`${node.field} = ${address ?? 'none (contract creation)'}`, ...listStep(node, address, gate)],
+      test: test(address ? label || short(address) : 'none'),
+      note: '',
+    };
+  }
+  // A field the trace keeps no reading of, such as a block's number.
   return {
-    reads: `transaction.${node.field}`,
-    steps: [`${node.field} = ${address ?? 'none (contract creation)'}`, ...listStep(node, address, gate)],
-    test: test(address ? label || short(address) : 'none'),
+    reads: `${node.source}.${node.field}`,
+    steps: ['not recorded in the trace'],
+    test: text.test,
     note: '',
   };
 }

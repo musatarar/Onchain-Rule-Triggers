@@ -7,7 +7,7 @@ from project.app.evm.receipt.models import Log, Receipt, Topic
 from project.app.evm.token_standards import TokenStandard
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.evm.tokens import Token
-from project.app.rules.models import Condition, MatchedRule, Rule
+from project.app.rules.models import Condition, MatchedRule, MatchFacts, Rule, RuleRevision
 
 from .auth import LoginToken
 
@@ -21,8 +21,10 @@ __all__ = [
     "Log",
     "LoginToken",
     "MatchedRule",
+    "MatchFacts",
     "Receipt",
     "Rule",
+    "RuleRevision",
     "Token",
     "TokenStandard",
     "TokenTransfer",

@@ -57,7 +57,7 @@ export function useScene(
       condition,
       trace,
       text: (node: Comparison) => describeGate(node, describer),
-      value: (node: Comparison) => observedText(node.id === null ? undefined : trace?.[node.id]),
+      value: (node: Comparison) => observedText(node.id === null ? undefined : trace?.[node.id], node),
       maxWidth: width,
       minWidth: width,
       compact,
