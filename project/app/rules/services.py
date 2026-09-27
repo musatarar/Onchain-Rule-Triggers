@@ -20,6 +20,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Min, Q
 from django.utils import timezone
 
+from project.app.constants import NEEDS_CONDITIONS, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
 from project.app.rules import onchain, utils
@@ -66,9 +67,6 @@ def matches_for(owner):
 # --------------------------------------------------------------------------
 
 
-NEEDS_CONDITIONS = "A rule needs a conditions payload."
-
-
 def _save(instance, fields):
     """Apply ``fields``, check the rule and its conditions, and save both at once.
 
@@ -82,11 +80,16 @@ def _save(instance, fields):
     they compare against are.
     """
     fields = dict(fields)
+    stored = instance.conditions_payload()
     replacing = "conditions" in fields
-    payload = fields.pop("conditions") if replacing else instance.conditions_payload()
+    payload = fields.pop("conditions") if replacing else stored
     for field, value in fields.items():
         setattr(instance, field, value)
     _check(instance, payload)
+    if replacing and instance.pk is not None and utils.lowercase_thresholds(payload) != stored:
+        # A match names the revision it ran, so only a new tree bumps it;
+        # a rename, a new tag or glyph, or arming the rule does not.
+        instance.revision += 1
     try:
         with transaction.atomic():
             instance.save()
@@ -95,6 +98,10 @@ def _save(instance, fields):
                 _forget_tree(instance)
                 utils.build_tree(instance, utils.lowercase_thresholds(payload))
     except IntegrityError as exc:
+        # The owner-tag constraint backs the SELECT in _check_tag: a concurrent
+        # write taking the same tag lands here, and reads as the taken tag.
+        if _tag_taken(instance):
+            raise ValidationError({"tag": TAG_TAKEN.format(tag=instance.tag)}) from exc
         # full_clean checks uniqueness and the check constraints with SELECTs,
         # so a concurrent writer can still win the race and leave the database
         # to refuse this INSERT. That refusal is an answer about the data, not
@@ -110,15 +117,38 @@ def _check(rule, payload):
     files them."""
     problems = {}
     try:
-        rule.full_clean()
+        # The tag is checked by _check_tag, which names the tag it refuses;
+        # full_clean would refuse it again, as a nameless constraint violation.
+        rule.full_clean(exclude=["tag"])
     except ValidationError as exc:
         exc.update_error_dict(problems)
-    try:
-        _check_conditions(payload)
-    except ValidationError as exc:
-        exc.update_error_dict(problems)
+    for check, arg in ((_check_tag, rule), (_check_conditions, payload)):
+        try:
+            check(arg)
+        except ValidationError as exc:
+            exc.update_error_dict(problems)
     if problems:
         raise ValidationError(problems)
+
+
+def _check_tag(rule):
+    """A tag is A–Z, 0–9 and hyphens, up to 12 characters, and one per owner.
+
+    ``""``, the tag of a rule written before tags, is left alone.
+    """
+    if rule.tag == "":
+        return
+    if not TAG_PATTERN.fullmatch(rule.tag):
+        raise ValidationError({"tag": TAG_FORMAT})
+    if _tag_taken(rule):
+        raise ValidationError({"tag": TAG_TAKEN.format(tag=rule.tag)})
+
+
+def _tag_taken(rule):
+    """Whether another of the owner's rules already has this rule's tag."""
+    if rule.tag == "":
+        return False
+    return Rule.objects.filter(owner_id=rule.owner_id, tag=rule.tag).exclude(pk=rule.pk).exists()
 
 
 def _check_conditions(payload):
