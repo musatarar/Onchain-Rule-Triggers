@@ -13,3 +13,19 @@ TAG_FORMAT = "Tags use A–Z, 0–9 and hyphens, up to 12 characters."
 TAG_TAKEN = "{tag} is already used by another circuit."
 # A rule's tag: A–Z, 0–9 and hyphens, up to 12 characters, not led by a hyphen.
 TAG_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9-]{0,11}")
+
+# The 12 drawn glyphs a circuit shows beside its tag in the UI.
+GLYPH_CHOICES = [
+    ("triangle", "Triangle"),
+    ("diamond", "Diamond"),
+    ("target", "Target"),
+    ("square", "Square"),
+    ("star", "Star"),
+    ("bars", "Bars"),
+    ("chevron", "Chevron"),
+    ("bolt", "Bolt"),
+    ("hexagon", "Hexagon"),
+    ("circle", "Circle"),
+    ("xmark", "X mark"),
+    ("ring", "Ring"),
+]

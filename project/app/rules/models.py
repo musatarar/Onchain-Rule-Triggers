@@ -12,6 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from project.app.constants import GLYPH_CHOICES
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.rules import utils
 
@@ -28,22 +29,6 @@ class Rule(models.Model):
     # The ``conditions`` schema, its vocabulary, its validator and its tree
     # conversion all live in utils.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
-
-    # The 12 drawn glyphs a circuit shows beside its tag in the UI.
-    GLYPH_CHOICES = [
-        ("triangle", "Triangle"),
-        ("diamond", "Diamond"),
-        ("target", "Target"),
-        ("square", "Square"),
-        ("star", "Star"),
-        ("bars", "Bars"),
-        ("chevron", "Chevron"),
-        ("bolt", "Bolt"),
-        ("hexagon", "Hexagon"),
-        ("circle", "Circle"),
-        ("xmark", "X mark"),
-        ("ring", "Ring"),
-    ]
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="rules"
