@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { logout } from '../api/endpoints';
 import { useSession } from '../auth/session.tsx';
@@ -10,10 +10,15 @@ import { JournalSheet } from './journal/JournalSheet.tsx';
 import { PRODUCT } from './product.ts';
 import { ConsoleProvider, useConsole } from './state.tsx';
 import { Mark } from './ui/Mark.tsx';
+import { Skeleton } from './ui/States.tsx';
 import './console.css';
+
+// DOOM and its terminal load only when someone finds the way in.
+const TerminalSheet = lazy(() => import('./terminal/TerminalSheet.tsx').then((module) => ({ default: module.TerminalSheet })));
 
 function sheetOf(pathname: string): string {
   if (pathname.startsWith('/journal')) return 'Match journal';
+  if (pathname.startsWith('/terminal')) return 'Service terminal';
   if (pathname.startsWith('/circuits/new')) return 'New circuit';
   if (/^\/circuits\/\d+/.test(pathname)) return 'Edit circuit';
   return 'Circuits';
@@ -102,6 +107,8 @@ function Shell() {
   const navigate = useNavigate();
   const sheet = sheetOf(pathname);
   const onJournal = pathname.startsWith('/journal');
+  const onTerminal = pathname.startsWith('/terminal');
+  const onCircuits = !onJournal && !onTerminal;
 
   useEffect(() => {
     document.title = `${sheet} · ${PRODUCT}`;
@@ -110,7 +117,8 @@ function Shell() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (target.closest('input, select, textarea') || event.metaKey || event.ctrlKey || event.altKey) return;
+      // The terminal's keys belong to its prompt and to DOOM.
+      if (onTerminal || target.closest('input, select, textarea') || event.metaKey || event.ctrlKey || event.altKey) return;
       const keys = journalKeys.current;
       const actions: Record<string, (() => void) | undefined> = {
         '/': keys?.focusSearch,
@@ -132,7 +140,7 @@ function Shell() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onJournal, journalKeys, journalSearch, navigate]);
+  }, [onJournal, onTerminal, journalKeys, journalSearch, navigate]);
 
   const boot = useBoot();
 
@@ -154,9 +162,14 @@ function Shell() {
               <NavLink to={`/journal/${journalSearch}`} className={() => (onJournal ? 'tab active' : 'tab')} aria-current={onJournal ? 'page' : undefined}>
                 JOURNAL <span className="n">{engine.data?.match_count ?? ''}</span>
               </NavLink>
-              <NavLink to="/circuits/" className={() => (!onJournal ? 'tab active' : 'tab')} aria-current={!onJournal ? 'page' : undefined}>
+              <NavLink to="/circuits/" className={() => (onCircuits ? 'tab active' : 'tab')} aria-current={onCircuits ? 'page' : undefined}>
                 CIRCUITS <span className="n">{rules.data?.length ?? ''}</span>
               </NavLink>
+              {onTerminal && (
+                <span className="tab active" aria-current="page">
+                  TERMINAL
+                </span>
+              )}
               <span className="sp" />
               <Link to="/circuits/new/" className="newc">
                 NEW<span className="nw-long"> CIRCUIT</span>
@@ -172,10 +185,15 @@ function Shell() {
               <span>
                 SEL <b>{onJournal ? selection : '—'}</b>
               </span>
-              <span className="hint">/ SEARCH · J/K NEXT MATCH · [ ] CHANNEL · R REPLAY</span>
-              <span className="blink" aria-hidden="true">
-                █
+              <span className="hint">
+                {onTerminal
+                  ? 'ARROWS/WASD MOVE · CTRL/CLICK FIRE · SPACE/E USE · SHIFT RUN · ESC MENU'
+                  : '/ SEARCH · J/K NEXT MATCH · [ ] CHANNEL · R REPLAY'}
               </span>
+              {/* The way into the service terminal: the cursor itself. */}
+              <Link to="/terminal/" className="blink trap" aria-label="Service terminal">
+                █
+              </Link>
             </footer>
           </div>
         </div>
@@ -193,6 +211,15 @@ export function ConsoleApp() {
     <ConsoleProvider>
       <Shell />
     </ConsoleProvider>
+  );
+}
+
+/** The service terminal, fetched the first time it opens. */
+export function TerminalRoute() {
+  return (
+    <Suspense fallback={<Skeleton rows={2} lines={3} label="Opening the service terminal" />}>
+      <TerminalSheet />
+    </Suspense>
   );
 }
 

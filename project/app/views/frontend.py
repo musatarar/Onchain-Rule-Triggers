@@ -45,3 +45,9 @@ def circuit_new(request):
 def circuit_edit(request, rule_id):
     """Render the circuit composer shell; the client loads rule ``rule_id`` itself."""
     return render(request, "app/circuit_edit.html")
+
+
+@ensure_csrf_cookie
+def terminal(request):
+    """Render the service terminal shell, the sheet the status line's cursor opens."""
+    return render(request, "app/terminal.html")

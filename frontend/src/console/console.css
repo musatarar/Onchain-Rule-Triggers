@@ -660,6 +660,36 @@ html:has(.phosphor) body {
   .phosphor .sl .blink { animation: none; }
 }
 
+/* ----- service terminal (terminal/): the status line's cursor opens it ----- */
+.phosphor .sl .trap { color: inherit; text-decoration: none; }
+.phosphor .sl .trap:hover { color: var(--ph); }
+.phosphor .term .acts-r { align-items: center; flex-wrap: wrap; }
+.phosphor .term-seg { display: flex; gap: 4px; }
+.phosphor .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.phosphor .term-scroll { padding: 12px 14px; }
+.phosphor .term-log { margin: 0; font: 400 14px/1.4 var(--font-ui); white-space: pre-wrap; overflow-wrap: anywhere; }
+.phosphor .term-load { margin-top: 2px; font-size: 13px; color: var(--ph-2); }
+.phosphor .term-cmd { padding: 2px 0 0; border-bottom: 0; }
+/* The game fills the pane at 4:3, the shape DOOM's 320×200 was shown at. */
+.phosphor .doom { flex: 1; min-height: 0; position: relative; display: grid; place-items: center; container-type: size; user-select: none; }
+/* CLICK TO PLAY stands in for a focus ring, which would draw a second border round the pane. */
+.phosphor .doom:focus-visible { outline: none; }
+.phosphor .doom[hidden] { display: none; }
+.phosphor .doom canvas { display: block; width: min(100cqw, 100cqh * 4 / 3); aspect-ratio: 4 / 3; image-rendering: pixelated; }
+.phosphor .doom-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 7px 12px;
+  background: var(--ph);
+  color: var(--scr);
+  text-shadow: none;
+  font: 400 22px/1 var(--font-big);
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
 .phosphor .toast {
   position: fixed;
   left: 50%;
@@ -717,6 +747,8 @@ html:has(.phosphor) body {
   .phosphor .insp.pinned { position: static; max-height: none; box-shadow: none; }
   .phosphor .rung-row { grid-template-columns: 40px minmax(0, 1fr); }
   .phosphor .rung-row .side { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; border-left: 0; border-top: 1px solid var(--ph-5); gap: 14px; }
+  .phosphor .doom { container-type: normal; }
+  .phosphor .doom canvas { width: 100%; }
 }
 @media (max-width: 520px) {
   .phosphor .sh-r { display: none; }
