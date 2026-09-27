@@ -6,9 +6,9 @@ coin with an EVM-style (0x) address it asks CoinGecko's ``/coins/{id}`` for
 the entry, next to ``all_platforms``; ``manage.py load_tokens`` reads it from
 there. A decimals CoinGecko does not know is written as null.
 
-Resumable: a coin that already has ``platform_decimals`` is skipped, and the
-file is saved every ``--save-every`` coins, so an interrupted run picks up
-where it stopped. Set COINGECKO_API_KEY for a demo key, or add --pro for a
+Resumable: the file is saved when the run ends, stopped or not, and a restart
+picks up after the last coin that has ``platform_decimals``; it reads ``--out``
+when that exists, so progress written there is not lost. Set COINGECKO_API_KEY for a demo key, or add --pro for a
 paid one; without a key the public rate limit applies, so keep --delay high.
 
     python scripts/fetch_token_decimals.py --limit 500
@@ -100,33 +100,28 @@ def main():
         "--delay", type=float, default=2.5, help="seconds between requests (default 2.5)"
     )
     parser.add_argument(
-        "--save-every", type=int, default=25, help="save after this many fetched coins"
-    )
-    parser.add_argument(
-        "--refetch", action="store_true", help="fetch coins that already have decimals too"
+        "--refetch", action="store_true", help="start from the top, not after the last filled coin"
     )
     parser.add_argument("--pro", action="store_true", help="COINGECKO_API_KEY is a paid (pro) key")
     args = parser.parse_args()
 
     api_key = os.environ.get("COINGECKO_API_KEY", "").strip()
     out = args.out or args.path
-    with open(args.path, encoding="utf-8") as source:
+    with open(out if os.path.exists(out) else args.path, encoding="utf-8") as source:
         entries = json.load(source)
 
-    todo = [
-        entry
-        for entry in entries[: args.limit]
-        if has_evm_address(entry) and (args.refetch or "platform_decimals" not in entry)
-    ]
-    print(f"Fetching decimals for {len(todo)} coin(s).")
+    start = 0
+    if not args.refetch:
+        filled = [i for i, entry in enumerate(entries) if "platform_decimals" in entry]
+        start = filled[-1] + 1 if filled else 0
+    todo = [entry for entry in entries[start : args.limit] if has_evm_address(entry)]
+    print(f"Fetching decimals for {len(todo)} coin(s), from coin {start + 1} of the file.")
 
     try:
         for done, entry in enumerate(todo, start=1):
             coin = fetch_coin(entry["id"], api_key, args.pro)
             entry["platform_decimals"] = platform_decimals(entry, coin)
             print(f"[{done}/{len(todo)}] {entry['id']}: {entry['platform_decimals']}")
-            if done % args.save_every == 0:
-                save(out, entries)
             time.sleep(args.delay)
     finally:
         save(out, entries)
