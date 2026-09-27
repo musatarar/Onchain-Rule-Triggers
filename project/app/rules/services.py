@@ -355,6 +355,12 @@ JOURNAL_KEYS = (
     ("id", False),
 )
 JOURNAL_ORDER = tuple(f"-{field}" if descending else field for field, descending in JOURNAL_KEYS)
+# The relations the keys read through, fetched with a page's matches, so that
+# :func:`_position` and :func:`journal_rows` read a match's keys from the row
+# the order came from.
+JOURNAL_RELATIONS = tuple(
+    dict.fromkeys(field.rpartition("__")[0] for field, _ in JOURNAL_KEYS if "__" in field)
+)
 
 
 @dataclasses.dataclass
@@ -383,8 +389,8 @@ def journal_page(owner, *, rule=None, older_than=None, newer_than=None, size):
 
     ``head`` is the position of the journal's newest row whatever the page, so
     a poll can ask for what came after it. Three queries, whatever ``size``:
-    the head, the page with each match's transaction and rule, and the page's
-    token transfers with their tokens (:func:`journal_rows`).
+    the head, the page with each match's :data:`JOURNAL_RELATIONS` and rule,
+    and the page's token transfers with their tokens (:func:`journal_rows`).
     """
     journal = matches_for(owner)
     if rule is not None:
@@ -396,7 +402,7 @@ def journal_page(owner, *, rule=None, older_than=None, newer_than=None, size):
     if newer_than is not None:
         journal = journal.filter(_past(newer_than, older=False))
     # One row past the page says whether another page follows.
-    matches = list(journal.select_related("transaction", "rule")[: size + 1])
+    matches = list(journal.select_related(*JOURNAL_RELATIONS, "rule")[: size + 1])
     page = matches[:size]
     return JournalPage(
         rows=journal_rows(page),
