@@ -15,7 +15,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0021_rule_tag_glyph_sentence_revision"),
+        ("app", "0022_token_symbol_length"),
     ]
 
     operations = [

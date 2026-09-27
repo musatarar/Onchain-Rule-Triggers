@@ -16,10 +16,10 @@ and the same token transfer:
 - a tree reading only ``block`` is tried against the block.
 
 A transaction's token transfers are the ones decoding stored for it
-(:mod:`project.app.evm.decoding`): the ``transfer`` or ``transferFrom`` its
-calldata makes, unchecked against its receipt. A token moved by a contract the
-transaction calls leaves no transfer, so ``absent`` holds of that transaction
-too. Before decoding has finished with every transaction in the block, their
+(:mod:`project.app.evm.decoding`): the Transfer events its receipt's logs
+carry, a token a contract it calls moved included, and none when it reverted;
+for a transaction stored without its receipt, the ``transfer`` or
+``transferFrom`` its calldata makes, unchecked. Before decoding has finished with every transaction in the block, their
 transfers are not all stored, so a tree reading ``token_transfer`` is refused
 with :class:`NotDecodedError` rather than judged on the ones that are.
 
@@ -47,7 +47,6 @@ import datetime
 import functools
 import operator
 from collections import Counter
-from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
@@ -489,7 +488,7 @@ def _range_key(node, children):
             return None
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
             return None
-        return node.source, node.field_name, _BOUNDS[node.operator], _exact(node.value)
+        return node.source, node.field_name, _BOUNDS[node.operator], utils.exact_number(node.value)
     if node.type == "AND":
         for child in children.get(node.pk) or []:
             bound = _range_key(child, children)
@@ -595,7 +594,7 @@ def _compile_leaf(node):
     """One comparison as a function of the rows bound by source, answering whether it holds.
 
     A blank value (:func:`_blank`) satisfies ``absent`` and no other
-    operator; a number is compared exactly (:func:`_exact`), and a date
+    operator; a number is compared exactly (:func:`utils.exact_number`), and a date
     threshold is read as an ISO date.
     """
     field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
@@ -605,9 +604,9 @@ def _compile_leaf(node):
     threshold = node.value
     if field_type == utils.NUMBER:
         threshold = (
-            [_exact(item) for item in threshold]
+            [utils.exact_number(item) for item in threshold]
             if isinstance(threshold, list)
-            else _exact(threshold)
+            else utils.exact_number(threshold)
         )
     if node.operator == "exists":
         return lambda bound: not _blank(read(bound))
@@ -680,19 +679,6 @@ def _value(source, field, field_type, row):
     if field_type == utils.DATE and isinstance(value, datetime.datetime):
         return value.astimezone(datetime.UTC).date()
     return value
-
-
-def _exact(number):
-    """A number threshold as a ``Decimal``, so a uint256 is never rounded through a float.
-
-    An int converts exactly. A float threshold is read from its shortest repr
-    (``1e+18`` rather than its binary expansion).
-    """
-    if isinstance(number, bool) or not isinstance(number, (int, float)):
-        return number
-    if isinstance(number, float):
-        return Decimal(repr(number))
-    return Decimal(number)
 
 
 def _blank(value):

@@ -12,9 +12,11 @@ from project.app.evm.block.models import DecodeStatus
 from project.app.evm.block.services import store_blocks
 from project.app.evm.chains import ChainId
 from project.app.evm.function_signatures import FunctionSignatureCreateSchema, InputCreateSchema
+from project.app.evm.receipt.services import store_receipts
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import Token, TokenTransfer, Transaction
 from project.app.tests.tests_evm_block import BLOCK_HASH, block, legacy_transaction
+from project.app.tests.tests_evm_receipt import TRANSFER_TOPIC, receipt
 from scripts.load_blocks import load_blocks
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
@@ -202,6 +204,187 @@ class DecodeTransactionsTests(TestCase):
         self.assertEqual(counts[DecodeStatus.UNABLE_TO_DECODE], 1)
         self.assertEqual(sum(again.values()), 0)
         self.assertEqual(TokenTransfer.objects.count(), 2)
+
+
+def topic(address):
+    return "0x" + word(address)
+
+
+def transfer_log(contract, from_address, to_address, value, log_index=0, **overrides):
+    """An ERC-20 Transfer log ``contract`` emitted, in the block ``store`` stores."""
+    entry = {
+        "address": contract,
+        "topics": [TRANSFER_TOPIC, topic(from_address), topic(to_address)],
+        "data": "0x" + word(value),
+        "blockHash": BLOCK_HASH,
+        "blockNumber": "0x112a880",
+        "transactionHash": f"0x{0:064x}",
+        "transactionIndex": "0x0",
+        "logIndex": hex(log_index),
+        "removed": False,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def store_receipt(*logs, status="0x1", chain=ChainId.ETHEREUM, **overrides):
+    """Store the receipt of the first transaction ``store`` stores, carrying ``logs``."""
+    fields = {
+        "transactionHash": f"0x{0:064x}",
+        "transactionIndex": "0x0",
+        "blockHash": BLOCK_HASH,
+        "blockNumber": "0x112a880",
+        "from": SENDER,
+        "to": USDT,
+        "status": status,
+        "logs": list(logs),
+    }
+    fields.update(overrides)
+    store_receipts([receipt(**fields)], chain)
+
+
+class DecodeFromReceiptTests(TestCase):
+    """A transaction stored with its receipt makes the transfers its Transfer logs record."""
+
+    def setUp(self):
+        catalog_transfer_calls()
+        services.save_token(
+            TokenCreateSchema(
+                chain=ChainId.ETHEREUM, address=USDT, name="Tether", coingecko_id="tether"
+            )
+        )
+
+    def test_a_transfer_call_is_verified_by_its_log(self):
+        (tx_hash,) = store(calldata(TRANSFER, RECIPIENT, 1_500_000))
+        store_receipt(transfer_log(USDT, SENDER, RECIPIENT, 1_500_000, log_index=7))
+
+        counts = decoding.decode_transactions()
+
+        transfer = TokenTransfer.objects.get()
+        self.assertEqual(transfer.token, Token.objects.get(contract__address=USDT))
+        self.assertEqual(
+            (transfer.from_address, transfer.to_address, transfer.raw_value),
+            (SENDER, RECIPIENT, Decimal(1_500_000)),
+        )
+        self.assertEqual(transfer.log_index, 7)
+        self.assertTrue(transfer.verified)
+        self.assertEqual(counts[DecodeStatus.DECODED], 1)
+        self.assertEqual(status(tx_hash), DecodeStatus.DECODED)
+
+    def test_the_log_not_the_calldata_says_how_much_moved(self):
+        store(calldata(TRANSFER, RECIPIENT, 1_000))
+        store_receipt(transfer_log(USDT, SENDER, RECIPIENT, 990))  # a fee-on-transfer token
+
+        decoding.decode_transactions()
+
+        self.assertEqual(TokenTransfer.objects.get().raw_value, Decimal(990))
+
+    def test_a_reverted_transfer_call_makes_no_transfer(self):
+        (tx_hash,) = store(calldata(TRANSFER, RECIPIENT, 1))
+        store_receipt(status="0x0")
+
+        decoding.decode_transactions()
+
+        self.assertFalse(TokenTransfer.objects.exists())
+        self.assertEqual(status(tx_hash), DecodeStatus.UNABLE_TO_DECODE)
+
+    def test_a_transfer_call_that_emitted_no_transfer_event_makes_no_transfer(self):
+        (tx_hash,) = store(calldata(TRANSFER, RECIPIENT, 1))
+        store_receipt()
+
+        decoding.decode_transactions()
+
+        self.assertFalse(TokenTransfer.objects.exists())
+        self.assertEqual(status(tx_hash), DecodeStatus.UNABLE_TO_DECODE)
+
+    def test_tokens_a_called_contract_moves_are_indirect_transfers(self):
+        router = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
+        pool = "0x" + "dd" * 20
+        unknown = "0x" + "ee" * 20
+        (tx_hash,) = store("0x18cbafe5" + word(1), to=router)  # a swap, no transfer call
+        store_receipt(
+            transfer_log(USDT, SENDER, pool, 500, log_index=3),
+            transfer_log(unknown, pool, SENDER, 42, log_index=4),
+            to=router,
+        )
+
+        decoding.decode_transactions()
+
+        paid, received = TokenTransfer.objects.order_by("log_index")
+        self.assertEqual(
+            (paid.token.contract.address, paid.from_address, paid.to_address, paid.raw_value),
+            (USDT, SENDER, pool, Decimal(500)),
+        )
+        self.assertTrue(paid.verified)
+        self.assertEqual(
+            (received.token.contract.address, received.from_address, received.to_address),
+            (unknown, pool, SENDER),
+        )
+        self.assertEqual((received.log_index, received.raw_value), (4, Decimal(42)))
+        self.assertIsNone(received.token.name)
+        self.assertFalse(received.verified)  # any contract can emit a Transfer event
+        self.assertEqual({paid.transaction_hash, received.transaction_hash}, {tx_hash})
+        self.assertEqual(status(tx_hash), DecodeStatus.DECODED)
+
+    def test_an_erc721_transfer_moves_the_token_id_its_fourth_topic_indexes(self):
+        collection = "0x" + "cc" * 20
+        store("0x", to=collection)
+        log = transfer_log(collection, OWNER, RECIPIENT, 0)
+        log.update(topics=[*log["topics"], topic(hex(1234))], data="0x")
+        store_receipt(log, to=collection)
+
+        decoding.decode_transactions()
+
+        transfer = TokenTransfer.objects.get()
+        self.assertEqual(
+            (transfer.from_address, transfer.to_address, transfer.raw_value),
+            (OWNER, RECIPIENT, Decimal(1234)),
+        )
+
+    def test_logs_that_are_no_transfer_are_skipped(self):
+        (tx_hash,) = store(calldata(TRANSFER, RECIPIENT, 1))
+        approval = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
+        store_receipt(
+            transfer_log(USDT, SENDER, RECIPIENT, 1, removed=True),  # dropped by a reorg
+            transfer_log(USDT, SENDER, RECIPIENT, 1, log_index=1, topics=[approval]),
+            transfer_log(USDT, SENDER, RECIPIENT, 1, log_index=2, topics=[]),  # anonymous
+            transfer_log(USDT, SENDER, RECIPIENT, 1, log_index=3, data="0x"),  # amount missing
+            transfer_log(
+                USDT, SENDER, RECIPIENT, 1, log_index=4, topics=[TRANSFER_TOPIC, topic(SENDER)]
+            ),
+            transfer_log(
+                USDT,
+                SENDER,
+                RECIPIENT,
+                1,
+                log_index=5,
+                topics=[TRANSFER_TOPIC, "0x" + "f" * 64, topic(RECIPIENT)],  # past 20 bytes
+            ),
+        )
+
+        decoding.decode_transactions()
+
+        self.assertFalse(TokenTransfer.objects.exists())
+        self.assertEqual(status(tx_hash), DecodeStatus.UNABLE_TO_DECODE)
+
+    def test_a_receipt_on_another_chain_is_not_the_transactions(self):
+        store(calldata(TRANSFER, RECIPIENT, 1), chain=ChainId.BASE)
+        store_receipt(transfer_log(USDT, SENDER, OWNER, 9), chain=ChainId.ETHEREUM)
+
+        decoding.decode_transactions()
+
+        transfer = TokenTransfer.objects.get()  # read from its calldata
+        self.assertEqual((transfer.to_address, transfer.log_index), (RECIPIENT, None))
+        self.assertFalse(transfer.verified)
+
+    def test_a_receipt_from_another_block_is_not_the_transactions(self):
+        store(calldata(TRANSFER, RECIPIENT, 1))
+        store_receipt(transfer_log(USDT, SENDER, OWNER, 9), blockHash="0x" + "12" * 32)
+
+        decoding.decode_transactions()
+
+        transfer = TokenTransfer.objects.get()
+        self.assertEqual((transfer.to_address, transfer.log_index), (RECIPIENT, None))
 
 
 class DecodeTransactionsCommandTests(TestCase):

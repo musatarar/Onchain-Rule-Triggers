@@ -117,7 +117,8 @@ VARIANT_THRESHOLDS = {
 
 def template_rules():
     """The ten rules each demo user owns: the demo rules, and each again with another threshold."""
-    demo = _raw("demo_rules.json")
+    # The first five, the ones these workloads were first measured with.
+    demo = _raw("demo_rules.json")[:5]
     variants = [
         {"name": f"{rule['name']} (variant)", "conditions": _varied(rule["conditions"])}
         for rule in demo
@@ -132,7 +133,7 @@ def _varied(node):
     node = dict(node)
     if "conditions" in node:
         node["conditions"] = [_varied(child) for child in node["conditions"]]
-    elif node.get("threshold") in VARIANT_THRESHOLDS:
+    elif isinstance(node.get("threshold"), (int, str)) and node["threshold"] in VARIANT_THRESHOLDS:
         node["threshold"] = VARIANT_THRESHOLDS[node["threshold"]]
     return node
 
