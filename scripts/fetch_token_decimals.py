@@ -1,15 +1,18 @@
-"""Add each coin's decimals per platform to raw_data/tokens.json, from CoinGecko.
+"""Add each coin's decimals per platform and categories to raw_data/tokens.json, from CoinGecko.
 
 Run locally; it needs only the standard library and network access. For every
-coin with an EVM-style (0x) address it asks CoinGecko's ``/coins/{id}`` for
-``detail_platforms`` and writes ``platform_decimals`` ({platform: decimals}) on
-the entry, next to ``all_platforms``; ``manage.py load_tokens`` reads it from
-there. A decimals CoinGecko does not know is written as null.
+coin with an EVM-style (0x) address it asks CoinGecko's ``/coins/{id}`` and
+writes on the entry ``platform_decimals`` ({platform: decimals}, next to
+``all_platforms``; ``manage.py load_tokens`` reads it from there), from
+``detail_platforms``, and ``categories`` (["Stablecoins", ...]). A decimals
+CoinGecko does not know is written as null; a coin it does not know gets no
+categories.
 
 Resumable: the file is saved when the run ends, stopped or not, and a restart
 picks up after the last coin that has ``platform_decimals``; it reads ``--out``
-when that exists, so progress written there is not lost. Set COINGECKO_API_KEY for a demo key, or add --pro for a
-paid one; without a key the public rate limit applies, so keep --delay high.
+when that exists, so progress written there is not lost. Set COINGECKO_API_KEY
+for a demo key, or add --pro for a paid one; without a key the public rate
+limit applies, so keep --delay high.
 
     python scripts/fetch_token_decimals.py --limit 500
 """
@@ -81,6 +84,11 @@ def platform_decimals(entry, coin):
     return decimals
 
 
+def categories(coin):
+    """The category names CoinGecko files ``coin`` under, as strings; none for an unknown coin."""
+    return [str(name) for name in (coin or {}).get("categories") or [] if name]
+
+
 def save(path, entries):
     """Write ``entries`` to ``path`` through a temporary file, so a crash never truncates it."""
     temporary = f"{path}.tmp"
@@ -121,7 +129,11 @@ def main():
         for done, entry in enumerate(todo, start=1):
             coin = fetch_coin(entry["id"], api_key, args.pro)
             entry["platform_decimals"] = platform_decimals(entry, coin)
-            print(f"[{done}/{len(todo)}] {entry['id']}: {entry['platform_decimals']}")
+            entry["categories"] = categories(coin)
+            print(
+                f"[{done}/{len(todo)}] {entry['id']}: "
+                f"{entry['platform_decimals']} {entry['categories']}"
+            )
             time.sleep(args.delay)
     finally:
         save(out, entries)
