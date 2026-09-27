@@ -685,13 +685,16 @@ class UnauthenticatedAccessTests(APITestCase):
         resp = self.client.get("/api/rules/")
         self.assertEqual(resp.headers["WWW-Authenticate"], 'Session realm="api"')
 
-    def test_the_allow_any_exemption_list_is_exactly_three_endpoints(self):
+    def test_the_allow_any_exemption_list_is_exactly_the_sign_in_endpoints(self):
         exempt = {
             pattern.name
             for pattern in app_urls.urlpatterns
             if AllowAny in getattr(pattern.callback, "cls", type(None)).permission_classes
         }
-        self.assertEqual(exempt, {"auth-request-link", "auth-consume", "auth-me"})
+        self.assertEqual(
+            exempt,
+            {"auth-request-link", "auth-consume", "auth-register", "auth-login", "auth-me"},
+        )
 
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})

@@ -1,0 +1,341 @@
+[
+ {
+  "sentence": "USDT transfers over 10k",
+  "name": "USDT transfers over 10k",
+  "understood": [
+   "USDT",
+   "over 10k"
+  ],
+  "tag": "STABLE-10K",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "token",
+     "operator": "eq",
+     "value": {
+      "chain": 1,
+      "address": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+     }
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "amount",
+     "operator": "gt",
+     "value": "10000"
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "Stablecoins leaving Binance",
+  "name": "Stablecoins leaving Binance",
+  "understood": [
+   "USDT or USDC",
+   "from Binance hot wallets"
+  ],
+  "tag": "BNB-STAB-OUT",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "or",
+     "children": [
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+       }
+      },
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+       }
+      }
+     ]
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "from_address",
+     "operator": "in",
+     "value": {
+      "addresses": [
+       "0x28c6c06298d514db089934071355e5743bf21d60",
+       "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+       "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+      ],
+      "name": "Binance hot wallets"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "ETH over 20",
+  "name": "ETH over 20",
+  "understood": [
+   "over 20"
+  ],
+  "tag": "ETH-20",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "transaction",
+     "field": "value",
+     "operator": "gt",
+     "value": "20"
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "Transfers of unknown tokens",
+  "name": "Transfers of unknown tokens",
+  "understood": [
+   "unrecognised token"
+  ],
+  "tag": "UNKNOWN",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "token_recognised",
+     "operator": "eq",
+     "value": false
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "PEPE or LINK above 1m",
+  "name": "PEPE or LINK above 1m",
+  "understood": [
+   "PEPE or LINK",
+   "above 1m"
+  ],
+  "tag": "PEPELI-1M",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "or",
+     "children": [
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+       }
+      },
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0x514910771af9ca656af840dff83e8264ecf986ca"
+       }
+      }
+     ]
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "amount",
+     "operator": "gt",
+     "value": "1000000"
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "Stablecoins leaving Binance over 300",
+  "name": "Stablecoins leaving Binance over 300",
+  "understood": [
+   "USDT or USDC",
+   "over 300",
+   "from Binance hot wallets"
+  ],
+  "tag": "BNB-STAB-OUT",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "or",
+     "children": [
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+       }
+      },
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+       }
+      }
+     ]
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "amount",
+     "operator": "gt",
+     "value": "300"
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "from_address",
+     "operator": "in",
+     "value": {
+      "addresses": [
+       "0x28c6c06298d514db089934071355e5743bf21d60",
+       "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+       "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+      ],
+      "name": "Binance hot wallets"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "Anything leaving the Binance hot wallets: USDT or USDC of 250 or more, PEPE over 1M, or more than 1 ETH",
+  "name": "Anything leaving the Binance hot wallets: USDT or USDC of 250 or more, PEPE over 1M, or more than 1 ETH",
+  "understood": [
+   "USDT or USDC or PEPE",
+   "over 1m",
+   "from Binance hot wallets"
+  ],
+  "tag": "BNB-USDT-OUT",
+  "condition": {
+   "id": null,
+   "type": "and",
+   "children": [
+    {
+     "id": null,
+     "type": "or",
+     "children": [
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+       }
+      },
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+       }
+      },
+      {
+       "id": null,
+       "type": "comparison",
+       "source": "token_transfer",
+       "field": "token",
+       "operator": "eq",
+       "value": {
+        "chain": 1,
+        "address": "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+       }
+      }
+     ]
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "amount",
+     "operator": "gt",
+     "value": "1000000"
+    },
+    {
+     "id": null,
+     "type": "comparison",
+     "source": "token_transfer",
+     "field": "from_address",
+     "operator": "in",
+     "value": {
+      "addresses": [
+       "0x28c6c06298d514db089934071355e5743bf21d60",
+       "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+       "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+      ],
+      "name": "Binance hot wallets"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "sentence": "hello there",
+  "name": "",
+  "understood": [],
+  "tag": null,
+  "condition": null
+ }
+]

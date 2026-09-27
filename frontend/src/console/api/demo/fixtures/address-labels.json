@@ -1,0 +1,17 @@
+[
+  {
+    "chain": 1,
+    "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "label": "Binance 14"
+  },
+  {
+    "chain": 1,
+    "address": "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+    "label": "Binance 15"
+  },
+  {
+    "chain": 1,
+    "address": "0xdfd5293d8e347dfe59e90efd55b2956a1343963d",
+    "label": "Binance 16"
+  }
+]

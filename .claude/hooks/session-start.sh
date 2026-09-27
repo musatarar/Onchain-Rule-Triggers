@@ -1,6 +1,6 @@
 #!/bin/bash
 # SessionStart hook for Claude Code on the web: reproduce the CLAUDE.md clean-clone
-# setup (3.12 venv + dev deps + .env) before the session starts.
+# setup (3.12 venv + dev deps + .env + frontend deps) before the session starts.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -19,6 +19,8 @@ fi
 
 # settings.py refuses to boot without DJANGO_SECRET_KEY; this mints a fresh one.
 [ -f .env ] || python3 scripts/setup_env.py
+
+npm install --prefix frontend --no-audit --no-fund
 
 # Venv binaries (python, ruff, mypy, coverage) resolve without activation.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then

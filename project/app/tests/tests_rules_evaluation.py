@@ -349,22 +349,20 @@ class EvaluateRulesCommandTests(EvaluationTestCase):
 
 
 class CreateDemoRulesScriptTests(TestCase):
-    def load(self, owner="Watcher@LockedIn.example"):
-        """Run the script's loader for ``owner``; answer its output."""
+    def load(self, username=" watcher ", password="watcher"):
+        """Run the script's loader for the account ``username``; answer its output."""
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            create_demo_rules(owner)
+            create_demo_rules(username, password)
         return out.getvalue()
 
-    def test_creates_the_demo_rules_for_the_user_signing_in_with_the_address(self):
+    def test_creates_the_demo_rules_for_the_account_signing_in_with_the_username(self):
         output = self.load()
 
-        self.assertEqual(output, "Loaded 5 demo rule(s) for watcher@lockedin.example.\n")
+        self.assertEqual(output, "Loaded 5 demo rule(s) for watcher.\n")
         owner = get_user_model().objects.get()
-        self.assertEqual(
-            (owner.username, owner.email), ("watcher@lockedin.example", "watcher@lockedin.example")
-        )
-        self.assertFalse(owner.has_usable_password())
+        self.assertEqual((owner.username, owner.email), ("watcher", ""))
+        self.assertTrue(owner.check_password("watcher"))
         self.assertEqual(
             list(Rule.objects.values_list("owner", "name", "enabled")),
             [
@@ -375,14 +373,40 @@ class CreateDemoRulesScriptTests(TestCase):
                 (owner.pk, "Blocks built by beaverbuild", True),
             ],
         )
+        self.assertEqual(
+            list(Rule.objects.values_list("tag", "glyph", "sentence", "revision")),
+            [
+                ("USDT-10K", "diamond", "USDT transfers of 10,000 USDT or more", 1),
+                ("ETH-50", "bolt", "Any transaction moving 50 ETH or more", 1),
+                (
+                    "UNI-1ETH",
+                    "hexagon",
+                    "Swaps through the Uniswap routers paying 1 ETH or more",
+                    1,
+                ),
+                ("VAL-WD", "bars", "Validator withdrawals over 0.05 ETH", 1),
+                ("BEAVER", "target", "Blocks built by beaverbuild", 1),
+            ],
+        )
 
-    def test_the_rules_go_to_the_user_already_signed_in_with_the_address(self):
-        user = get_user_model().objects.create_user(username="watcher@lockedin.example")
+    def test_the_rules_go_to_the_account_already_registered_with_the_username(self):
+        user = get_user_model().objects.create_user(username="watcher", password="registered")
 
         self.load()
 
         self.assertEqual(get_user_model().objects.count(), 1)
         self.assertEqual(set(Rule.objects.values_list("owner", flat=True)), {user.pk})
+        # The loader's password wins, so the pair it was given always signs in.
+        user.refresh_from_db()
+        self.assertTrue(user.check_password("watcher"))
+
+    def test_a_username_registration_refuses_stores_nothing(self):
+        # A username with @ could claim the account an email link signs in to.
+        with self.assertRaisesMessage(ValueError, "'watcher@lockedin.example': Usernames may"):
+            self.load("watcher@lockedin.example")
+
+        self.assertFalse(get_user_model().objects.exists())
+        self.assertFalse(Rule.objects.exists())
 
     def test_loading_again_restores_the_rules_it_stored_rather_than_adding_to_them(self):
         self.load()

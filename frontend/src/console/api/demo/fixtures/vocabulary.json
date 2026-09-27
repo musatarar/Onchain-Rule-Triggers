@@ -1,0 +1,15 @@
+{
+  "sources": [
+    { "key": "transaction", "label": "Transaction", "fields": [
+      { "key": "from_address", "label": "sender",    "type": "address",      "operators": ["eq", "ne", "in"] },
+      { "key": "to_address",   "label": "to address", "type": "address",     "operators": ["eq", "ne", "in"] },
+      { "key": "value",        "label": "ETH value", "type": "native_amount", "operators": ["gt", "gte", "lt", "lte", "eq"] },
+      { "key": "method",       "label": "method",    "type": "signature",    "operators": ["eq", "ne"] } ] },
+    { "key": "token_transfer", "label": "Token transfer", "fields": [
+      { "key": "token",            "label": "token",            "type": "token",   "operators": ["eq", "ne"] },
+      { "key": "amount",           "label": "amount",           "type": "amount",  "operators": ["gt", "gte", "lt", "lte", "eq"] },
+      { "key": "from_address",     "label": "from",             "type": "address", "operators": ["eq", "ne", "in"] },
+      { "key": "to_address",       "label": "to",               "type": "address", "operators": ["eq", "ne", "in"] },
+      { "key": "token_recognised", "label": "token recognised", "type": "bool",    "operators": ["eq"] } ] }
+  ]
+}

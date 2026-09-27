@@ -15,7 +15,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("app", "0020_matched_rules"),
+        ("app", "0021_rule_tag_glyph_sentence_revision"),
     ]
 
     operations = [

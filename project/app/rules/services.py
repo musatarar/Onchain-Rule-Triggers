@@ -6,7 +6,8 @@ so the vocabulary rules hold whatever calls in. A rule's conditions
 are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
 payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
-row they match as a ``MatchedRule``.
+row they match as a ``MatchedRule``; the engine status reports the stored
+window with each owner's own rule and match counts.
 
 Django-only on purpose — no DRF here; the HTTP layer translates these
 exceptions.
@@ -18,10 +19,12 @@ import io
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count, DecimalField, Func, Sum
+from django.db.models import Count, DecimalField, Func, Max, Min, Q, Sum
 from django.utils import timezone
 
+from project.app.constants import NEEDS_CONDITIONS, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.chains import ChainId
 from project.app.rules import onchain, utils
 from project.app.rules.models import Condition, MatchedRule, Rule
 
@@ -47,12 +50,23 @@ def rule_for(owner, pk):
     return rules_for(owner).filter(pk=pk).first()
 
 
+def matches_for(owner):
+    """The owner's recorded matches the console shows: its enabled rules' matches of a transaction.
+
+    The console's journal row is a transaction, so a withdrawal rule's matches
+    and a block-only rule's stay recorded but are neither counted nor shown.
+    Nor are a disabled rule's, as the console shows what its armed circuits
+    matched; enabling the rule again brings them back. Every match count the
+    console shows reads this, so they all agree.
+    """
+    return MatchedRule.objects.filter(
+        rule__owner=owner, rule__enabled=True, transaction__isnull=False
+    )
+
+
 # --------------------------------------------------------------------------
 # writes
 # --------------------------------------------------------------------------
-
-
-NEEDS_CONDITIONS = "A rule needs a conditions payload."
 
 
 def _save(instance, fields):
@@ -68,11 +82,16 @@ def _save(instance, fields):
     they compare against are.
     """
     fields = dict(fields)
+    stored = instance.conditions_payload()
     replacing = "conditions" in fields
-    payload = fields.pop("conditions") if replacing else instance.conditions_payload()
+    payload = fields.pop("conditions") if replacing else stored
     for field, value in fields.items():
         setattr(instance, field, value)
     _check(instance, payload)
+    if replacing and instance.pk is not None and utils.lowercase_thresholds(payload) != stored:
+        # A match names the revision it ran, so only a new tree bumps it;
+        # a rename, a new tag or glyph, or arming the rule does not.
+        instance.revision += 1
     try:
         with transaction.atomic():
             instance.save()
@@ -81,6 +100,10 @@ def _save(instance, fields):
                 _forget_tree(instance)
                 utils.build_tree(instance, utils.lowercase_thresholds(payload))
     except IntegrityError as exc:
+        # The owner-tag constraint backs the SELECT in _check_tag: a concurrent
+        # write taking the same tag lands here, and reads as the taken tag.
+        if _tag_taken(instance):
+            raise ValidationError({"tag": TAG_TAKEN.format(tag=instance.tag)}) from exc
         # full_clean checks uniqueness and the check constraints with SELECTs,
         # so a concurrent writer can still win the race and leave the database
         # to refuse this INSERT. That refusal is an answer about the data, not
@@ -96,15 +119,38 @@ def _check(rule, payload):
     files them."""
     problems = {}
     try:
-        rule.full_clean()
+        # The tag is checked by _check_tag, which names the tag it refuses;
+        # full_clean would refuse it again, as a nameless constraint violation.
+        rule.full_clean(exclude=["tag"])
     except ValidationError as exc:
         exc.update_error_dict(problems)
-    try:
-        _check_conditions(payload)
-    except ValidationError as exc:
-        exc.update_error_dict(problems)
+    for check, arg in ((_check_tag, rule), (_check_conditions, payload)):
+        try:
+            check(arg)
+        except ValidationError as exc:
+            exc.update_error_dict(problems)
     if problems:
         raise ValidationError(problems)
+
+
+def _check_tag(rule):
+    """A tag is A–Z, 0–9 and hyphens, up to 12 characters, and one per owner.
+
+    ``""``, the tag of a rule written before tags, is left alone.
+    """
+    if rule.tag == "":
+        return
+    if not TAG_PATTERN.fullmatch(rule.tag):
+        raise ValidationError({"tag": TAG_FORMAT})
+    if _tag_taken(rule):
+        raise ValidationError({"tag": TAG_TAKEN.format(tag=rule.tag)})
+
+
+def _tag_taken(rule):
+    """Whether another of the owner's rules already has this rule's tag."""
+    if rule.tag == "":
+        return False
+    return Rule.objects.filter(owner_id=rule.owner_id, tag=rule.tag).exclude(pk=rule.pk).exists()
 
 
 def _check_conditions(payload):
@@ -347,3 +393,45 @@ def _record(matches):
     MatchedRule.objects.bulk_create(
         MatchedRule(**dict(zip(_MATCH_COLUMNS, match, strict=True))) for match in matches
     )
+
+
+# --------------------------------------------------------------------------
+# engine status — the stored window, with one owner's rules and matches
+# --------------------------------------------------------------------------
+
+
+def engine_status(owner):
+    """What the console's header shows ``owner``: the blocks stored, and its rules and matches.
+
+    ``chains`` has one entry per chain with a block stored, in chain order: the
+    first and last block numbers stored and the last block's timestamp, the
+    same for every owner. ``rules`` counts the owner's rules and the enabled
+    ones among them, and ``match_count`` the matches :func:`matches_for`
+    answers. Three queries, however much is stored.
+    """
+    # A block's timestamp is always later than its parent's, so the latest
+    # stored is the last block's. Reading the last block's own through a
+    # subquery would run it once per stored block, since Django groups by it.
+    windows = (
+        Block.objects.values("chain")
+        .annotate(
+            first_block=Min("number"), last_block=Max("number"), last_block_at=Max("timestamp")
+        )
+        .order_by("chain")
+    )
+    return {
+        "chains": [
+            {
+                "chain": window["chain"],
+                "name": ChainId(window["chain"]).label,
+                "first_block": window["first_block"],
+                "last_block": window["last_block"],
+                "last_block_at": window["last_block_at"],
+            }
+            for window in windows
+        ],
+        "rules": rules_for(owner).aggregate(
+            total=Count("pk"), enabled=Count("pk", filter=Q(enabled=True))
+        ),
+        "match_count": matches_for(owner).count(),
+    }
