@@ -231,6 +231,21 @@ class CreateDemoRulesScriptTests(TestCase):
                 (owner.pk, "Blocks built by beaverbuild", True),
             ],
         )
+        self.assertEqual(
+            list(Rule.objects.values_list("tag", "glyph", "sentence", "revision")),
+            [
+                ("USDT-10K", "diamond", "USDT transfers of 10,000 USDT or more", 1),
+                ("ETH-50", "bolt", "Any transaction moving 50 ETH or more", 1),
+                (
+                    "UNI-1ETH",
+                    "hexagon",
+                    "Swaps through the Uniswap routers paying 1 ETH or more",
+                    1,
+                ),
+                ("VAL-WD", "bars", "Validator withdrawals over 0.05 ETH", 1),
+                ("BEAVER", "target", "Blocks built by beaverbuild", 1),
+            ],
+        )
 
     def test_the_rules_go_to_the_account_already_registered_with_the_username(self):
         user = get_user_model().objects.create_user(username="watcher", password="registered")
