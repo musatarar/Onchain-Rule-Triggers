@@ -23,7 +23,9 @@ class Rule(models.Model):
     The predicate is a tree of :class:`Condition` rows, read and written as the
     structured, versioned ``conditions`` payload of
     :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
-    ``rules.services`` on write).
+    ``rules.services`` on write). The console reads the same tree in its own
+    shape (:meth:`console_condition`), and names the rule by its :attr:`tag`
+    and :attr:`glyph`.
     """
 
     # The ``conditions`` schema, its vocabulary, its validator and its tree
@@ -71,6 +73,16 @@ class Rule(models.Model):
         if self.pk is None:
             return {}
         return utils.render_tree(self.all_conditions.all())
+
+    def console_condition(self):
+        """This rule's tree in the console's ``ConditionNode`` shape; ``None`` when it has none.
+
+        One read of ``all_conditions``, as :meth:`conditions_payload` makes, so
+        a prefetched catalog renders free (:func:`utils.render_condition`).
+        """
+        if self.pk is None:
+            return None
+        return utils.render_condition(self.all_conditions.all())
 
     def __str__(self):
         return f"rule {self.name!r} of user {self.owner_id}"
