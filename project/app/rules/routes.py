@@ -250,7 +250,7 @@ class MatchListView(APIView):
     """
 
     # The catalog's scope: a scope of its own would need a rate in settings.
-    throttle_scope = "rules_catalog"
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
 
     def get(self, request, *args, **kwargs):
         query = JournalQuerySerializer(data=request.query_params)
