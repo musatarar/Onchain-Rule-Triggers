@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'reac
 import { logout } from '../api/endpoints';
 import { useSession } from '../auth/session.tsx';
 import { useBoot } from './Boot.tsx';
+import { CommandLine } from './CommandLine.tsx';
 import { CircuitsSheet } from './circuits/CircuitsSheet.tsx';
 import { ComposerSheet } from './composer/ComposerSheet.tsx';
 import { groupDigits } from './derive/format.ts';
@@ -13,8 +14,12 @@ import { Mark } from './ui/Mark.tsx';
 import { Skeleton } from './ui/States.tsx';
 import './console.css';
 
-// DOOM and its terminal load only when someone finds the way in.
+// DOOM and its terminal load only when someone types their way in.
 const TerminalSheet = lazy(() => import('./terminal/TerminalSheet.tsx').then((module) => ({ default: module.TerminalSheet })));
+
+function reducedMotion(): boolean {
+  return !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+}
 
 function sheetOf(pathname: string): string {
   if (pathname.startsWith('/journal')) return 'Match journal';
@@ -109,6 +114,14 @@ function Shell() {
   const onJournal = pathname.startsWith('/journal');
   const onTerminal = pathname.startsWith('/terminal');
   const onCircuits = !onJournal && !onTerminal;
+  const [commanding, setCommanding] = useState(false);
+  const [degauss, setDegauss] = useState(false);
+
+  useEffect(() => {
+    if (!degauss) return;
+    const timer = window.setTimeout(() => setDegauss(false), 560);
+    return () => window.clearTimeout(timer);
+  }, [degauss]);
 
   useEffect(() => {
     document.title = `${sheet} · ${PRODUCT}`;
@@ -119,6 +132,11 @@ function Shell() {
       const target = event.target as HTMLElement;
       // The terminal's keys belong to its prompt and to DOOM.
       if (onTerminal || target.closest('input, select, textarea') || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === ':') {
+        event.preventDefault();
+        setCommanding(true);
+        return;
+      }
       const keys = journalKeys.current;
       const actions: Record<string, (() => void) | undefined> = {
         '/': keys?.focusSearch,
@@ -148,7 +166,7 @@ function Shell() {
     <div className="phosphor">
       <div className="dev">
         <div className="screen">
-          <div className={boot.className} style={boot.style}>
+          <div className={degauss ? `${boot.className} degauss` : boot.className} style={boot.style}>
             {boot.overlay}
             <header className="sh">
               <div className="logo">
@@ -185,15 +203,24 @@ function Shell() {
               <span>
                 SEL <b>{onJournal ? selection : '—'}</b>
               </span>
-              <span className="hint">
-                {onTerminal
-                  ? 'ARROWS/WASD MOVE · CTRL/CLICK FIRE · SPACE/E USE · SHIFT RUN · ESC MENU'
-                  : '/ SEARCH · J/K NEXT MATCH · [ ] CHANNEL · R REPLAY'}
-              </span>
-              {/* The way into the service terminal: the cursor itself. */}
-              <Link to="/terminal/" className="blink trap" aria-label="Service terminal">
-                █
-              </Link>
+              {!commanding && (
+                <span className="hint">
+                  {onTerminal
+                    ? 'ARROWS/WASD MOVE · CTRL/CLICK FIRE · SPACE/E USE · SHIFT RUN · ESC MENU'
+                    : '/ SEARCH · J/K NEXT MATCH · [ ] CHANNEL · R REPLAY · : COMMAND'}
+                </span>
+              )}
+              <CommandLine
+                open={commanding}
+                journalSearch={journalSearch}
+                onOpen={() => setCommanding(true)}
+                onClose={() => setCommanding(false)}
+                onGo={({ to, degauss: shake }) => {
+                  setCommanding(false);
+                  if (shake && !reducedMotion()) setDegauss(true);
+                  navigate(to);
+                }}
+              />
             </footer>
           </div>
         </div>

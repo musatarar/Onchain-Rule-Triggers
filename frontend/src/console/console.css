@@ -660,9 +660,46 @@ html:has(.phosphor) body {
   .phosphor .sl .blink { animation: none; }
 }
 
-/* ----- service terminal (terminal/): the status line's cursor opens it ----- */
-.phosphor .sl .trap { color: inherit; text-decoration: none; }
-.phosphor .sl .trap:hover { color: var(--ph); }
+/* ----- command line (CommandLine.tsx): the status line's cursor, and the prompt it opens ----- */
+/* The block is one glyph; the padding and matching negative margin give it a finger-sized target without moving it. */
+.phosphor .sl .cl-cursor { color: inherit; font: inherit; line-height: inherit; padding: 4px 8px; margin: -4px -8px; cursor: var(--cursor-text); }
+.phosphor .sl .cl-cursor:hover { color: var(--ph); }
+.phosphor .sl .cl-cursor:focus-visible { outline: 1px solid var(--ph); outline-offset: -2px; animation: none; color: var(--ph); }
+.phosphor .sl .cl { display: flex; align-items: baseline; gap: 8px; flex: 1 1 16ch; min-width: 0; }
+.phosphor .sl .cl-prompt { font: 400 18px/1 var(--font-big); color: var(--ph); }
+.phosphor .sl .cl input {
+  field-sizing: content;
+  min-width: 2ch;
+  max-width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--ph);
+  font: 400 13px/1.45 var(--font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  caret-color: var(--ph);
+  caret-shape: block;
+}
+.phosphor .sl .cl input:focus { outline: none; }
+.phosphor .sl .cl input::selection { background: var(--ph); color: var(--scr); }
+.phosphor .sl .cl-reply { color: var(--ph-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* DOOM typed at the command line: the picture shakes and flares as the tube degausses, then settles on the terminal. */
+@media (prefers-reduced-motion: no-preference) {
+  .phosphor .scr-in.degauss > :not(.boot) { animation: ph-degauss 0.56s cubic-bezier(0.16, 1, 0.3, 1) 1; }
+}
+@keyframes ph-degauss {
+  0% { transform: none; filter: none; }
+  10% { transform: skewX(3deg) scale(1.025, 0.975); filter: brightness(2) blur(0.8px); }
+  28% { transform: skewX(-2deg) scale(0.99, 1.015); filter: brightness(1.5) blur(0.4px); }
+  46% { transform: skewX(1.2deg); filter: brightness(1.25); }
+  64% { transform: skewX(-0.6deg); filter: brightness(1.1); }
+  82% { transform: skewX(0.25deg); filter: none; }
+  100% { transform: none; filter: none; }
+}
+
+/* ----- service terminal (terminal/): DOOM typed at the command line opens it ----- */
 .phosphor .term .acts-r { align-items: center; flex-wrap: wrap; }
 .phosphor .term-seg { display: flex; gap: 4px; }
 .phosphor .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }

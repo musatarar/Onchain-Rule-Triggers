@@ -49,5 +49,5 @@ def circuit_edit(request, rule_id):
 
 @ensure_csrf_cookie
 def terminal(request):
-    """Render the service terminal shell, the sheet the status line's cursor opens."""
+    """Render the service terminal shell, the sheet DOOM at the command line opens."""
     return render(request, "app/terminal.html")

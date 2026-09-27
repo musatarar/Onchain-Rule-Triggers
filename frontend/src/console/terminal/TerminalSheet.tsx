@@ -17,8 +17,8 @@ type Phase = 'loading' | 'running' | 'prompt';
 const keepFocus = (event: MouseEvent) => event.preventDefault();
 
 /**
- * The service terminal: the console's hidden sheet, opened from the cursor
- * at the end of the status line. It runs DOOM on the tube straight away,
+ * The service terminal: the console's hidden sheet, opened by typing DOOM at
+ * the status line's command line. It runs DOOM on the tube straight away,
  * shows the engine's own startup log while it loads, and drops to a prompt
  * when the game quits.
  */
