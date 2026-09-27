@@ -15,10 +15,10 @@ and the same token transfer:
 - a tree reading only ``block`` is tried against the block.
 
 A transaction's token transfers are the ones decoding stored for it
-(:mod:`project.app.evm.decoding`): the ``transfer`` or ``transferFrom`` its
-calldata makes, unchecked against its receipt. A token moved by a contract the
-transaction calls leaves no transfer, so ``absent`` holds of that transaction
-too. Before decoding has finished with every transaction in the block, their
+(:mod:`project.app.evm.decoding`): the Transfer events its receipt's logs
+carry, a token a contract it calls moved included, and none when it reverted;
+for a transaction stored without its receipt, the ``transfer`` or
+``transferFrom`` its calldata makes, unchecked. Before decoding has finished with every transaction in the block, their
 transfers are not all stored, so a tree reading ``token_transfer`` is refused
 with :class:`NotDecodedError` rather than judged on the ones that are.
 
@@ -43,7 +43,6 @@ the number of rules.
 
 import datetime
 import functools
-from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
@@ -196,9 +195,9 @@ def _leaf(node, rows):
     threshold = node.value
     if field_type == utils.NUMBER:
         threshold = (
-            [_exact(item) for item in threshold]
+            [utils.exact_number(item) for item in threshold]
             if isinstance(threshold, list)
-            else _exact(threshold)
+            else utils.exact_number(threshold)
         )
     return _compare(value, node.operator, threshold, field_type)
 
@@ -213,19 +212,6 @@ def _value(source, field, field_type, row):
     if field_type == utils.DATE and isinstance(value, datetime.datetime):
         return value.astimezone(datetime.UTC).date()
     return value
-
-
-def _exact(number):
-    """A number threshold as a ``Decimal``, so a uint256 is never rounded through a float.
-
-    An int converts exactly. A float threshold is read from its shortest repr
-    (``1e+18`` rather than its binary expansion).
-    """
-    if isinstance(number, bool) or not isinstance(number, (int, float)):
-        return number
-    if isinstance(number, float):
-        return Decimal(repr(number))
-    return Decimal(number)
 
 
 def _blank(value):

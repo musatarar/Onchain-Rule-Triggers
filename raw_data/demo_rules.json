@@ -1,6 +1,9 @@
 [
   {
     "name": "USDT transfers of 10,000 USDT or more",
+    "tag": "USDT-10K",
+    "glyph": "diamond",
+    "sentence": "USDT transfers of 10,000 USDT or more",
     "conditions": {
       "version": 1,
       "operator": "all_of",
@@ -12,6 +15,9 @@
   },
   {
     "name": "Transactions moving 50 ETH or more",
+    "tag": "ETH-50",
+    "glyph": "bolt",
+    "sentence": "Any transaction moving 50 ETH or more",
     "conditions": {
       "version": 1,
       "operator": "all_of",
@@ -22,6 +28,9 @@
   },
   {
     "name": "Uniswap swaps paying 1 ETH or more",
+    "tag": "UNI-1ETH",
+    "glyph": "hexagon",
+    "sentence": "Swaps through the Uniswap routers paying 1 ETH or more",
     "conditions": {
       "version": 1,
       "operator": "all_of",
@@ -39,6 +48,9 @@
   },
   {
     "name": "Validator withdrawals over 0.05 ETH",
+    "tag": "VAL-WD",
+    "glyph": "bars",
+    "sentence": "Validator withdrawals over 0.05 ETH",
     "conditions": {
       "version": 1,
       "operator": "all_of",
@@ -49,11 +61,50 @@
   },
   {
     "name": "Blocks built by beaverbuild",
+    "tag": "BEAVER",
+    "glyph": "target",
+    "sentence": "Blocks built by beaverbuild",
     "conditions": {
       "version": 1,
       "operator": "all_of",
       "conditions": [
         {"source": "block", "field": "miner", "operator": "==", "threshold": "0x95222290dd7278aa3ddd389cc1e1d165cc4bafe5"}
+      ]
+    }
+  },
+  {
+    "name": "Swaps through any Uniswap router",
+    "tag": "UNI-SWAP",
+    "glyph": "star",
+    "sentence": "Swaps through the Uniswap routers, any size",
+    "conditions": {
+      "version": 1,
+      "operator": "all_of",
+      "conditions": [
+        {
+          "source": "transaction",
+          "field": "to_address",
+          "operator": "in",
+          "threshold": [
+            "0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
+            "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad",
+            "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "USDC transfers of 1,000 USDC or more",
+    "tag": "USDC-1K",
+    "glyph": "circle",
+    "sentence": "USDC transfers of 1,000 USDC or more",
+    "conditions": {
+      "version": 1,
+      "operator": "all_of",
+      "conditions": [
+        {"source": "token_transfer", "field": "token", "operator": "==", "threshold": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"},
+        {"source": "token_transfer", "field": "raw_value", "operator": ">=", "threshold": 1000000000}
       ]
     }
   }

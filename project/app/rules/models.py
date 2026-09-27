@@ -12,6 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from project.app.constants import GLYPH_CHOICES
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.rules import utils
 
@@ -22,7 +23,9 @@ class Rule(models.Model):
     The predicate is a tree of :class:`Condition` rows, read and written as the
     structured, versioned ``conditions`` payload of
     :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
-    ``rules.services`` on write).
+    ``rules.services`` on write). The console reads the same tree in its own
+    shape (:meth:`console_condition`), and names the rule by its :attr:`tag`
+    and :attr:`glyph`.
     """
 
     # The ``conditions`` schema, its vocabulary, its validator and its tree
@@ -33,6 +36,14 @@ class Rule(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="rules"
     )
     name = models.CharField(max_length=255)  # "Large USDT transfers"
+    # The circuit's short handle, unique per owner: "BNB-OUT". "" on rules
+    # written before tags, which the owner-tag constraint lets repeat.
+    tag = models.CharField(max_length=12, blank=True, default="")
+    glyph = models.CharField(max_length=16, choices=GLYPH_CHOICES, default="triangle")
+    # What the user typed to describe the rule; "" when built by hand.
+    sentence = models.TextField(blank=True, default="")
+    # Bumps on every condition change, so a match can name the tree it ran.
+    revision = models.PositiveIntegerField(default=1)
     # The predicate is the ``all_conditions`` tree, which every rule has.
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -43,6 +54,13 @@ class Rule(models.Model):
         indexes = [
             # The engine's fetch: one user's enabled rules.
             models.Index(fields=["owner", "enabled"], name="orule_owner_enabled"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "tag"],
+                condition=~Q(tag=""),
+                name="rule_owner_tag_unique",
+            ),
         ]
 
     def conditions_payload(self):
@@ -55,6 +73,16 @@ class Rule(models.Model):
         if self.pk is None:
             return {}
         return utils.render_tree(self.all_conditions.all())
+
+    def console_condition(self):
+        """This rule's tree in the console's ``ConditionNode`` shape; ``None`` when it has none.
+
+        One read of ``all_conditions``, as :meth:`conditions_payload` makes, so
+        a prefetched catalog renders free (:func:`utils.render_condition`).
+        """
+        if self.pk is None:
+            return None
+        return utils.render_condition(self.all_conditions.all())
 
     def __str__(self):
         return f"rule {self.name!r} of user {self.owner_id}"
