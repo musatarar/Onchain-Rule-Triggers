@@ -29,10 +29,34 @@ class Rule(models.Model):
     # conversion all live in utils.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
 
+    # The 12 drawn glyphs a circuit shows beside its tag in the UI.
+    GLYPH_CHOICES = [
+        ("triangle", "Triangle"),
+        ("diamond", "Diamond"),
+        ("target", "Target"),
+        ("square", "Square"),
+        ("star", "Star"),
+        ("bars", "Bars"),
+        ("chevron", "Chevron"),
+        ("bolt", "Bolt"),
+        ("hexagon", "Hexagon"),
+        ("circle", "Circle"),
+        ("xmark", "X mark"),
+        ("ring", "Ring"),
+    ]
+
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="rules"
     )
     name = models.CharField(max_length=255)  # "Large USDT transfers"
+    # The circuit's short handle, unique per owner: "BNB-OUT". "" on rules
+    # written before tags, which the owner-tag constraint lets repeat.
+    tag = models.CharField(max_length=12, blank=True, default="")
+    glyph = models.CharField(max_length=16, choices=GLYPH_CHOICES, default="triangle")
+    # What the user typed to describe the rule; "" when built by hand.
+    sentence = models.TextField(blank=True, default="")
+    # Bumps on every condition change, so a match can name the tree it ran.
+    revision = models.PositiveIntegerField(default=1)
     # The predicate is the ``all_conditions`` tree, which every rule has.
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -43,6 +67,13 @@ class Rule(models.Model):
         indexes = [
             # The engine's fetch: one user's enabled rules.
             models.Index(fields=["owner", "enabled"], name="orule_owner_enabled"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "tag"],
+                condition=~Q(tag=""),
+                name="rule_owner_tag_unique",
+            ),
         ]
 
     def conditions_payload(self):
