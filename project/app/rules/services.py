@@ -444,13 +444,16 @@ def journal_rows(matches):
 def _leading_transfers(transactions):
     """The token transfer each of ``transactions`` leads with, by hash: its first, in log order.
 
-    Decoding stores at most one per transaction today, from its calldata, and
-    receipts store none; were there more, the first by log index, then id,
-    would lead, the order the evaluator reads them in. A transaction replayed
-    on another chain keeps its hash, so a transfer is the transaction's only
-    when its token's contract is on the transaction's chain. That is checked
-    here rather than in the query, as ``onchain._transfers_by_hash`` checks
-    it, so the query goes in by the transaction-hash index.
+    Decoding stores one per Transfer log for a transaction with its receipt,
+    and at most one, from its calldata, for a transaction without. The first
+    by log index, then id, leads, the order the evaluator reads them in. It
+    need not be the transfer the matched rule's gates held of, since a rule
+    matches when any of its transaction's transfers does. A transaction
+    replayed on another chain keeps its hash, so a transfer is the
+    transaction's only when its token's contract is on the transaction's
+    chain. That is checked here rather than in the query, as
+    ``onchain._transfers_by_hash`` checks it, so the query goes in by the
+    transaction-hash index.
     """
     chains = {transaction.hash: transaction.chain for transaction in transactions}
     transfers = (
