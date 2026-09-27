@@ -29,9 +29,10 @@ if [ -n "$username" ]; then
     python scripts/create_demo_rules.py --username "$username" --password "$username"
 fi
 
-# Decoding reads both catalogs. Without the signature catalog no calldata
-# decodes into a transfer, so no token-transfer rule ever matches; the token
-# catalog names the contracts that moved.
+# Decoding reads both catalogs. The token catalog names the contracts that
+# moved, and only a Transfer event a catalogued token emitted is verified; the
+# signature catalog decodes the calldata of a transaction stored without its
+# receipt, which the pipeline's own ingestion never leaves.
 python manage.py load_function_signatures
 python manage.py load_tokens
 
