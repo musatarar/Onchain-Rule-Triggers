@@ -1,4 +1,4 @@
-"""Decoded token activity: one Transfer event a token contract emitted."""
+"""Decoded token activity: one Transfer event a contract emitted, or the transfer a transaction's calldata makes."""
 
 from django.db import models
 
@@ -11,10 +11,13 @@ from project.app.evm.tokens import Token
 class TokenTransfer(models.Model):
     """One Transfer log, decoded, or the transfer a transaction's calldata makes.
 
-    A transaction hash and a log index name one log on one chain; the token
-    carries the chain, so the three together name exactly one row. A transfer
-    read from calldata has no log index yet, so the constraint cannot hold it
-    to one row: the transaction's ``decode_status`` does, by decoding it once.
+    A transfer is read from the transaction's receipt when it was stored with
+    one, and from its calldata only when it was not (see
+    :mod:`project.app.evm.decoding`). A transaction hash and a log index name
+    one log on one chain; the token carries the chain, so the three together
+    name exactly one row. A transfer read from calldata has no log index, so
+    the constraint cannot hold it to one row: the transaction's
+    ``decode_status`` does, by decoding it once.
     Addresses are stored lowercased, as blocks, transactions and tokens store
     theirs.
     """
@@ -28,8 +31,8 @@ class TokenTransfer(models.Model):
     block_number = models.BigIntegerField(null=True, blank=True)
     block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
     block_timestamp = models.DateTimeField(null=True, blank=True)
-    # None for a transfer read from a transaction's calldata: which log it
-    # emitted is known only once the transfer is checked against the receipt.
+    # The index in its block of the Transfer log it was read from; None for a
+    # transfer read from calldata, the transaction having no receipt stored.
     log_index = models.PositiveIntegerField(null=True, blank=True)
     # A transfer is history: its token cannot be deleted out from under it.
     token = models.ForeignKey(Token, on_delete=models.PROTECT, related_name="transfers")
@@ -37,8 +40,10 @@ class TokenTransfer(models.Model):
     to_address = AddressField()
     # The amount for ERC-20 and ERC-1155, the token id for ERC-721; undivided by decimals.
     raw_value = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
-    # True once decoded as a known token's Transfer event; False when only the
-    # transfer signature matched, on a contract the catalog does not recognise.
+    # True when read from a successful transaction's Transfer log emitted by a
+    # token the catalog recognises; False for a transfer read from calldata,
+    # which nothing checks succeeded, and for an event an unknown contract
+    # emitted, since any contract can emit one.
     verified = models.BooleanField(default=False)
 
     class Meta:

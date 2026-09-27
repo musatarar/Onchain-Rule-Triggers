@@ -15,10 +15,10 @@ and the same token transfer:
 - a tree reading only ``block`` is tried against the block.
 
 A transaction's token transfers are the ones decoding stored for it
-(:mod:`project.app.evm.decoding`): the ``transfer`` or ``transferFrom`` its
-calldata makes, unchecked against its receipt. A token moved by a contract the
-transaction calls leaves no transfer, so ``absent`` holds of that transaction
-too. Before decoding has finished with every transaction in the block, their
+(:mod:`project.app.evm.decoding`): the Transfer events its receipt's logs
+carry, a token a contract it calls moved included, and none when it reverted;
+for a transaction stored without its receipt, the ``transfer`` or
+``transferFrom`` its calldata makes, unchecked. Before decoding has finished with every transaction in the block, their
 transfers are not all stored, so a tree reading ``token_transfer`` is refused
 with :class:`NotDecodedError` rather than judged on the ones that are.
 
