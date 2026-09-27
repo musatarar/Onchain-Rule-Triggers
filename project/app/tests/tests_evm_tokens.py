@@ -19,17 +19,23 @@ USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 SEI_COSMOS = "sei1hrndqntlvtmx2kepr0zsfgr7nzjptcc72cr4ppk4yav58vvy7v3s4er8ed"
 
 
-def coin(coingecko_id, name=None, **platforms):
-    """A tokens.json entry; keyword ``binance_smart_chain`` stands for ``binance-smart-chain``."""
-    return {
+def coin(coingecko_id, name=None, symbol="SYM", decimals=None, **platforms):
+    """A tokens.json entry; keyword ``binance_smart_chain`` stands for ``binance-smart-chain``.
+
+    ``decimals``, when given, is its ``platform_decimals``: {platform slug: decimals}.
+    """
+    entry = {
         "rank": 1,
         "id": coingecko_id,
-        "symbol": "SYM",
+        "symbol": symbol,
         "name": coingecko_id.title() if name is None else name,
         "market_cap_usd": 1,
         "ethereum_address": platforms.get("ethereum", ""),
         "all_platforms": {slug.replace("_", "-"): address for slug, address in platforms.items()},
     }
+    if decimals is not None:
+        entry["platform_decimals"] = decimals
+    return entry
 
 
 def address(n):
@@ -61,6 +67,12 @@ class TokenCreateSchemaTests(TestCase):
     def test_a_chain_without_an_id_is_refused(self):
         with self.assertRaises(ValidationError):
             token(chain=424242)
+
+    def test_negative_decimals_are_refused(self):
+        with self.assertRaises(ValidationError):
+            TokenCreateSchema(
+                name="Tether", coingecko_id="tether", chain=1, address=USDT, decimals=-1
+            )
 
 
 class SaveTokenTests(TestCase):
@@ -234,6 +246,50 @@ class LoadTokensTests(TestCase):
         row = Token.objects.get(contract__chain=ChainId.ETHEREUM, contract__address=USDT)
         self.assertEqual(row.name, "Tether")
         self.assertEqual(row.coingecko_id, "tether")
+
+    def test_stores_the_symbol_and_each_platforms_decimals(self):
+        load(
+            [
+                coin(
+                    "tether",
+                    symbol="USDT",
+                    decimals={"ethereum": 6, "binance-smart-chain": 18},
+                    ethereum=USDT,
+                    binance_smart_chain=address(1),
+                )
+            ]
+        )
+
+        self.assertEqual(
+            sorted(Token.objects.values_list("contract__chain", "symbol", "decimals")),
+            [(ChainId.ETHEREUM, "USDT", 6), (ChainId.BNB_SMART_CHAIN, "USDT", 18)],
+        )
+
+    def test_a_platform_without_decimals_stores_none(self):
+        load(
+            [coin("tether", decimals={"ethereum": 6, "base": None}, ethereum=USDT, base=address(1))]
+        )
+
+        self.assertIsNone(Token.objects.get(contract__chain=ChainId.BASE).decimals)
+        self.assertEqual(Token.objects.get(contract__chain=ChainId.ETHEREUM).decimals, 6)
+
+    def test_a_coin_without_platform_decimals_stores_none(self):
+        load([coin("tether", ethereum=USDT)])
+
+        self.assertIsNone(Token.objects.get().decimals)
+
+    def test_a_symbol_the_file_wrote_as_a_literal_is_stored_as_its_text(self):
+        load([coin("dogwifhat", symbol=69420, ethereum=USDT)])
+
+        self.assertEqual(Token.objects.get().symbol, "69420")
+
+    def test_a_second_run_updates_symbol_and_decimals(self):
+        load([coin("tether", symbol="USDT", ethereum=USDT)])
+
+        load([coin("tether", symbol="USD₮", decimals={"ethereum": 6}, ethereum=USDT)])
+
+        row = Token.objects.get()
+        self.assertEqual((row.symbol, row.decimals), ("USD₮", 6))
 
     def test_a_loaded_row_starts_unverified_with_no_functions(self):
         load([coin("tether", ethereum=USDT)])

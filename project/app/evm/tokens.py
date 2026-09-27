@@ -1,7 +1,7 @@
 """The token catalog: the contracts, each an address on one EVM chain, that are tokens."""
 
 from django.db import models
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from project.app.evm.chains import ChainId
 from project.app.evm.contracts import Contract
@@ -15,6 +15,9 @@ class TokenCreateSchema(BaseModel):
     address: str
     name: str
     coingecko_id: str
+    symbol: str = ""
+    # None when the catalog does not know it: a guessed 18 would misprice a 6-decimal token.
+    decimals: int | None = Field(default=None, ge=0)
 
     @field_validator("address")
     @classmethod
@@ -29,6 +32,8 @@ class TokenUpdateSchema(BaseModel):
 
     name: str
     coingecko_id: str
+    symbol: str
+    decimals: int | None
 
 
 class Token(models.Model):
@@ -48,12 +53,12 @@ class Token(models.Model):
     )
     name = models.CharField(max_length=255, null=True)  # "Tether"
     coingecko_id = models.CharField(max_length=255, null=True, db_index=True)  # "tether"
-    # Learned about the contract later: in neither schema, so a save never sets or clears them.
+    # Learned about the contract later: in neither schema, so a save never sets or clears it.
     standard = models.ForeignKey(
         TokenStandard, on_delete=models.PROTECT, null=True, blank=True, related_name="tokens"
     )
-    symbol = models.CharField(max_length=20, blank=True, default="")  # "USDT"
-    # Unknown until read from the contract: a guessed 18 would misprice a 6-decimal token.
+    symbol = models.CharField(max_length=255, blank=True, default="")  # "USDT"
+    # Null while unknown: a guessed 18 would misprice a 6-decimal token.
     decimals = models.PositiveSmallIntegerField(null=True, default=None)  # 6
 
     class Meta:
