@@ -1,9 +1,11 @@
 """Load the token catalog from raw_data/.
 
 Run after `manage.py migrate`. The file is a JSON list of coins, highest market
-cap first, each listing its contract address per platform. A coin becomes a
-token per address it has on a chain below; a native coin with no address, or
-one only on a non-EVM platform, becomes none. Idempotent: a chain and an address
+cap first, each listing its contract address per platform and, once
+scripts/fetch_token_decimals.py has run, its decimals per platform. A coin
+becomes a token per address it has on a chain below, with the coin's symbol and
+that platform's decimals; a native coin with no address, or one only on a
+non-EVM platform, becomes none. Idempotent: a chain and an address
 name one row, so a re-run updates what it stored rather than adding to it.
 """
 
@@ -31,6 +33,8 @@ def _text(value):
 def tokens_from_entries(entries):
     """The tokens ``entries`` list, in file order: one per EVM address a coin has."""
     for entry in entries:
+        # A token bridged to another chain can have other decimals there (USDT: 6, on BSC 18).
+        decimals = entry.get("platform_decimals") or {}
         for platform, address in entry["all_platforms"].items():
             chain = PLATFORM_CHAINS.get(platform)
             if chain is None or not _EVM_ADDRESS_RE.match(address or ""):
@@ -38,6 +42,8 @@ def tokens_from_entries(entries):
             yield TokenCreateSchema(
                 name=_text(entry["name"]),
                 coingecko_id=_text(entry["id"]),
+                symbol=_text(entry.get("symbol", "")),
+                decimals=decimals.get(platform),
                 chain=chain,
                 address=address,
             )
