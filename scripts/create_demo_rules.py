@@ -2,8 +2,8 @@
 
 Run after `manage.py migrate`, and before `manage.py evaluate_rules`: a block is
 evaluated once, against the rules there are then. The file is a JSON list of
-rules, each a name and its v1 ``conditions`` payload, written through the rules
-catalog's write path as the API writes one. --username and --password are the
+rules, each a name, tag, glyph, sentence and v1 ``conditions`` payload, written
+through the rules catalog's write path as the API writes one. --username and --password are the
 username/password account the rules belong to, so signing in with them shows
 the rules: the account is created if it does not exist yet, and its password is
 set either way. Idempotent: an owner and a name are one demo rule, so a re-run
@@ -54,7 +54,7 @@ def create_demo_rules(username, password, path=DEFAULT_PATH):
     user.set_password(password)
     user.save(update_fields=["password"])
     for entry in entries:
-        fields = {"name": entry["name"], "conditions": entry["conditions"]}
+        fields = {key: entry[key] for key in ("name", "tag", "glyph", "sentence", "conditions")}
         rule = services.rules_for(user).filter(name=entry["name"]).first()
         if rule is None:
             services.create_rule(user, fields)

@@ -11,6 +11,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
+from project.app.constants import NEEDS_CONDITIONS
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
 
@@ -54,9 +55,7 @@ class RuleTests(TestCase):
             with self.subTest(fields=fields):
                 with self.assertRaises(ValidationError) as ctx:
                     services.create_rule(self.user, fields)
-                self.assertEqual(
-                    ctx.exception.message_dict["conditions"], [services.NEEDS_CONDITIONS]
-                )
+                self.assertEqual(ctx.exception.message_dict["conditions"], [NEEDS_CONDITIONS])
 
     def test_a_rule_naming_a_field_its_source_does_not_carry_is_refused(self):
         with self.assertRaises(ValidationError) as ctx:

@@ -2,11 +2,10 @@
 
 Pins owner scoping (foreign rows read as 404, owner bound server-side),
 model-backed validation surfacing as 400s, and paginated lists; then a rule
-in the console's shape: its exact JSON, how its tree and thresholds read, its
-derived tag and glyph, and which recorded matches its stats count; then the
-engine status's exact JSON, and which recorded matches it counts; then the
-journal: a row's exact JSON, the order and the cursors, and which recorded
-matches it lists.
+in the console's shape: its exact JSON, how its tree and thresholds read,
+and which recorded matches its stats count; then the engine status's exact
+JSON, and which recorded matches it counts; then the journal: a row's exact
+JSON, the order and the cursors, and which recorded matches it lists.
 """
 
 import unittest
@@ -332,7 +331,7 @@ class RuleApiTests(RulesApiTestCase):
 
 
 class ConsoleRuleTests(RulesApiTestCase):
-    """A rule in the console's shape: its tree, its derived tag and glyph, and its match stats."""
+    """A rule in the console's shape: its stored fields, its tree, and its match stats."""
 
     def _leaves(self, rule):
         """The root's comparisons as the console reads them: source, field, operator and value."""
@@ -358,7 +357,13 @@ class ConsoleRuleTests(RulesApiTestCase):
         self._store(_later_block())
         # The tree reads token transfers, which wait for decoding to finish.
         Transaction.objects.update(decode_status=DecodeStatus.DECODED)
-        rule = self._rule(name="Small moves from the sample senders", conditions=conditions)
+        rule = self._rule(
+            name="Small moves from the sample senders",
+            tag="SMALL-MOVES",
+            glyph="bolt",
+            sentence="Small moves from the addresses that sent the sample block",
+            conditions=conditions,
+        )
         # The same tree, someone else's: its matches are theirs.
         self._rule(self.other, conditions=conditions)
         rules_services.evaluate_blocks()
@@ -374,9 +379,9 @@ class ConsoleRuleTests(RulesApiTestCase):
             {
                 "id": rule.pk,
                 "name": "Small moves from the sample senders",
-                "tag": rule.tag,
-                "glyph": rule.glyph,
-                "sentence": "",
+                "tag": "SMALL-MOVES",
+                "glyph": "bolt",
+                "sentence": "Small moves from the addresses that sent the sample block",
                 "enabled": True,
                 "revision": 1,
                 "condition": {
@@ -567,33 +572,6 @@ class ConsoleRuleTests(RulesApiTestCase):
         rule = Rule.objects.create(owner=self.user, name="No tree")
 
         self.assertIsNone(self.client.get(f"{RULES_URL}{rule.pk}/").json()["condition"])
-
-    def test_a_rules_tag_and_glyph_come_from_its_id_until_they_are_stored(self):
-        tags = [Rule(pk=pk).tag for pk in (1, 7, 10**11 - 1)]
-
-        self.assertEqual(tags, ["R1", "R7", "R99999999999"])
-        for tag in tags:
-            self.assertRegex(tag, r"^[A-Z0-9][A-Z0-9-]{0,11}$")
-        # The rules take the contract's twelve glyphs in turn, in its order.
-        self.assertEqual(
-            [Rule(pk=pk).glyph for pk in range(1, 14)],
-            [
-                "triangle",
-                "diamond",
-                "target",
-                "square",
-                "star",
-                "bars",
-                "chevron",
-                "bolt",
-                "hexagon",
-                "circle",
-                "xmark",
-                "ring",
-                "triangle",
-            ],
-        )
-        self.assertEqual((Rule(pk=1).sentence, Rule(pk=1).revision), ("", 1))
 
     def test_a_rules_stats_count_its_transaction_matches_while_it_is_enabled(self):
         self._store(block())
