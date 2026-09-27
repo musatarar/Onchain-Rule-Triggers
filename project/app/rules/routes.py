@@ -17,6 +17,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from project.app.constants import RULES_CATALOG_THROTTLE_SCOPE
 from project.app.rules import services
 from project.app.rules.models import Rule
 
@@ -97,7 +98,7 @@ class RuleSerializer(serializers.ModelSerializer):
 class _CatalogView(APIView):
     """The read/write plumbing the two endpoints share."""
 
-    throttle_scope = "rules_catalog"
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
     serializer_class = None
 
     def _payload(self, request, instance=None):
@@ -186,7 +187,7 @@ class EngineStatusView(APIView):
     """
 
     # The catalog's scope: a scope of its own would need a rate in settings.
-    throttle_scope = "rules_catalog"
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
 
     def get(self, request, *args, **kwargs):
         return Response(services.engine_status(request.user))
@@ -249,7 +250,7 @@ class MatchListView(APIView):
     """
 
     # The catalog's scope: a scope of its own would need a rate in settings.
-    throttle_scope = "rules_catalog"
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
 
     def get(self, request, *args, **kwargs):
         query = JournalQuerySerializer(data=request.query_params)
