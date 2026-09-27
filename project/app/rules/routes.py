@@ -44,10 +44,10 @@ class ConditionsField(serializers.JSONField):
 class RuleSerializer(serializers.ModelSerializer):
     """A rule in the console's ``Rule`` shape, with its v1 ``conditions`` alongside.
 
-    ``tag``, ``glyph``, ``sentence`` and ``revision`` are the model's, derived
-    until #47 stores them, and ``condition`` is its tree in the console's
-    shape; all read-only, and a write naming ``condition`` is refused.
-    ``stats`` come from the view, which reads a whole page's in one query
+    ``tag``, ``glyph``, ``sentence`` and ``revision`` are the rule's own
+    columns, and ``condition`` is its tree in the console's shape; all
+    read-only, and a write naming ``condition`` is refused. ``stats`` come
+    from the view, which reads a whole page's in one query
     (``context["stats"]``, by rule id).
     """
 
@@ -71,7 +71,15 @@ class RuleSerializer(serializers.ModelSerializer):
             "updated_at",
             "stats",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "tag",
+            "glyph",
+            "sentence",
+            "revision",
+            "created_at",
+            "updated_at",
+        ]
 
     def get_stats(self, rule):
         return self.context["stats"][rule.pk]
