@@ -485,8 +485,8 @@ def _journal_row(match, transfer):
         "headline": _headline(transaction, transfer),
         "flags": {
             # A placeholder token, which the catalog does not recognise, has no
-            # coingecko id. The demo data flags a token with no symbol, but no
-            # symbol is stored yet (#45), so that would flag every token.
+            # coingecko id. The demo data tests for a missing symbol instead;
+            # the coingecko id is what marks a token the catalog loaded.
             "token_unrecognised": transfer is not None and not transfer.token.coingecko_id,
             "decimals_unknown": transfer is not None and transfer.token.decimals is None,
             "verified": transfer is not None and transfer.verified,
@@ -521,7 +521,7 @@ def _headline(transaction, transfer):
         "token": {
             "chain": token.contract.chain,
             "address": token.contract.address,
-            # "" until symbols are stored (#45); unknown is null in the contract.
+            # Blank when the catalog gives none; unknown is null in the contract.
             "symbol": token.symbol or None,
             "name": token.name,
             "decimals": token.decimals,
