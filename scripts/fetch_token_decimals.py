@@ -1,0 +1,137 @@
+"""Add each coin's decimals per platform to raw_data/tokens.json, from CoinGecko.
+
+Run locally; it needs only the standard library and network access. For every
+coin with an EVM-style (0x) address it asks CoinGecko's ``/coins/{id}`` for
+``detail_platforms`` and writes ``platform_decimals`` ({platform: decimals}) on
+the entry, next to ``all_platforms``; ``manage.py load_tokens`` reads it from
+there. A decimals CoinGecko does not know is written as null.
+
+Resumable: a coin that already has ``platform_decimals`` is skipped, and the
+file is saved every ``--save-every`` coins, so an interrupted run picks up
+where it stopped. Set COINGECKO_API_KEY for a demo key, or add --pro for a
+paid one; without a key the public rate limit applies, so keep --delay high.
+
+    python scripts/fetch_token_decimals.py --limit 500
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_PATH = os.path.join(PROJECT_ROOT, "raw_data", "tokens.json")
+
+PUBLIC_API = "https://api.coingecko.com/api/v3"
+PRO_API = "https://pro-api.coingecko.com/api/v3"
+_EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+MAX_RETRIES = 5
+
+
+def has_evm_address(entry):
+    return any(_EVM_ADDRESS_RE.match(address or "") for address in entry["all_platforms"].values())
+
+
+def fetch_coin(coin_id, api_key, pro):
+    """CoinGecko's ``/coins/{id}`` for ``coin_id``, without the market, ticker and social data."""
+    query = (
+        "localization=false&tickers=false&market_data=false"
+        "&community_data=false&developer_data=false&sparkline=false"
+    )
+    url = f"{PRO_API if pro else PUBLIC_API}/coins/{urllib.parse.quote(str(coin_id))}?{query}"
+    headers = {"accept": "application/json", "user-agent": "fetch-token-decimals"}
+    if api_key:
+        headers["x-cg-pro-api-key" if pro else "x-cg-demo-api-key"] = api_key
+
+    wait = 15
+    for _ in range(MAX_RETRIES):
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            if exc.code != 429 and exc.code < 500:
+                raise
+            retry_after = exc.headers.get("retry-after")
+            pause = int(retry_after) if retry_after and retry_after.isdigit() else wait
+            print(f"  {exc.code} on {coin_id}; waiting {pause}s", file=sys.stderr)
+            time.sleep(pause)
+            wait *= 2
+        except urllib.error.URLError as exc:
+            print(f"  {exc.reason} on {coin_id}; waiting {wait}s", file=sys.stderr)
+            time.sleep(wait)
+            wait *= 2
+    raise RuntimeError(f"Gave up on {coin_id} after {MAX_RETRIES} tries.")
+
+
+def platform_decimals(entry, coin):
+    """``{platform: decimals}`` for each platform ``entry`` lists; null where CoinGecko has none."""
+    details = (coin or {}).get("detail_platforms") or {}
+    decimals = {}
+    for platform in entry["all_platforms"]:
+        place = (details.get(platform) or {}).get("decimal_place")
+        decimals[platform] = place if isinstance(place, int) else None
+    return decimals
+
+
+def save(path, entries):
+    """Write ``entries`` to ``path`` through a temporary file, so a crash never truncates it."""
+    temporary = f"{path}.tmp"
+    with open(temporary, "w", encoding="utf-8") as out:
+        json.dump(entries, out, indent=2, ensure_ascii=False)
+    os.replace(temporary, path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--path", default=DEFAULT_PATH, help="tokens.json to read (default raw_data/tokens.json)"
+    )
+    parser.add_argument("--out", default=None, help="where to write (default: --path, in place)")
+    parser.add_argument("--limit", type=int, default=None, help="only the top N coins of the file")
+    parser.add_argument(
+        "--delay", type=float, default=2.5, help="seconds between requests (default 2.5)"
+    )
+    parser.add_argument(
+        "--save-every", type=int, default=25, help="save after this many fetched coins"
+    )
+    parser.add_argument(
+        "--refetch", action="store_true", help="fetch coins that already have decimals too"
+    )
+    parser.add_argument("--pro", action="store_true", help="COINGECKO_API_KEY is a paid (pro) key")
+    args = parser.parse_args()
+
+    api_key = os.environ.get("COINGECKO_API_KEY", "").strip()
+    out = args.out or args.path
+    with open(args.path, encoding="utf-8") as source:
+        entries = json.load(source)
+
+    todo = [
+        entry
+        for entry in entries[: args.limit]
+        if has_evm_address(entry) and (args.refetch or "platform_decimals" not in entry)
+    ]
+    print(f"Fetching decimals for {len(todo)} coin(s).")
+
+    try:
+        for done, entry in enumerate(todo, start=1):
+            coin = fetch_coin(entry["id"], api_key, args.pro)
+            entry["platform_decimals"] = platform_decimals(entry, coin)
+            print(f"[{done}/{len(todo)}] {entry['id']}: {entry['platform_decimals']}")
+            if done % args.save_every == 0:
+                save(out, entries)
+            time.sleep(args.delay)
+    finally:
+        save(out, entries)
+    print(f"Wrote {out}.")
+
+
+if __name__ == "__main__":
+    main()
