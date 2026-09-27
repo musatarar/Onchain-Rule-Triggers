@@ -715,6 +715,97 @@ class ConsoleRuleTests(RulesApiTestCase):
         stored = rules_services.rule_for(self.user, rule.pk)
         self.assertEqual((stored.name, stored.conditions_payload()), (rule.name, _conditions()))
 
+    def test_a_rules_tag_glyph_and_sentence_are_written_and_read_back(self):
+        created = self.client.post(
+            RULES_URL,
+            {
+                "name": "Large transfers",
+                "tag": "BIG-ETH",
+                "glyph": "bolt",
+                "sentence": "Transactions moving more than 1 ETH",
+                "conditions": _conditions(),
+            },
+            content_type="application/json",
+        )
+        url = f"{RULES_URL}{created.json()['id']}/"
+        patched = self.client.patch(
+            url,
+            {"tag": "HUGE-ETH", "glyph": "star", "sentence": "Anything over 1 ETH"},
+            content_type="application/json",
+        )
+
+        fields = ("tag", "glyph", "sentence", "revision")
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(
+            [created.json()[key] for key in fields],
+            ["BIG-ETH", "bolt", "Transactions moving more than 1 ETH", 1],
+        )
+        self.assertEqual(patched.status_code, 200)
+        # None of the three is the tree, so the revision stays where it was.
+        self.assertEqual(
+            [patched.json()[key] for key in fields], ["HUGE-ETH", "star", "Anything over 1 ETH", 1]
+        )
+        self.assertEqual(
+            [self.client.get(url).json()[key] for key in fields],
+            ["HUGE-ETH", "star", "Anything over 1 ETH", 1],
+        )
+
+    def test_a_tag_or_glyph_the_write_path_refuses_is_a_400_and_changes_nothing(self):
+        self._rule(name="Taken", tag="BNB-OUT")
+        mine = self._rule(tag="MINE")
+        self._rule(self.other, tag="THEIRS")
+        url = f"{RULES_URL}{mine.pk}/"
+        bad_form = "tag: Tags use A–Z, 0–9 and hyphens, up to 12 characters."
+        taken = "tag: BNB-OUT is already used by another circuit."
+
+        for body, detail in (
+            ({"tag": "bnb-out"}, bad_form),
+            ({"tag": "-OUT"}, bad_form),
+            ({"tag": "THIRTEEN-CHAR"}, bad_form),
+            ({"tag": "BNB-OUT"}, taken),
+            ({"glyph": "sparkle"}, 'glyph: "sparkle" is not a valid choice.'),
+        ):
+            with self.subTest(body=body):
+                response = self.client.patch(url, body, content_type="application/json")
+
+                self.assertEqual(
+                    (response.status_code, response.json()),
+                    (400, {"code": "validation_error", "detail": detail}),
+                )
+        created = self.client.post(
+            RULES_URL,
+            {"name": "Copy", "tag": "BNB-OUT", "conditions": _conditions()},
+            content_type="application/json",
+        )
+
+        self.assertEqual(
+            (created.status_code, created.json()),
+            (400, {"code": "validation_error", "detail": taken}),
+        )
+        self.assertEqual(Rule.objects.filter(owner=self.user).count(), 2)
+        mine.refresh_from_db()
+        self.assertEqual((mine.tag, mine.glyph), ("MINE", "triangle"))
+        # Another owner's tag is theirs alone, so this owner can use it too.
+        shared = self.client.patch(url, {"tag": "THEIRS"}, content_type="application/json")
+        self.assertEqual((shared.status_code, shared.json()["tag"]), (200, "THEIRS"))
+
+    def test_a_rules_revision_is_not_written_and_moves_only_with_its_tree(self):
+        rule = self._rule(tag="BIG")
+        url = f"{RULES_URL}{rule.pk}/"
+        new_tree = {"conditions": _all_of(tx("value", ">=", 0))}
+
+        ignored = self.client.patch(url, {"revision": 9}, content_type="application/json")
+        retree = self.client.patch(url, new_tree, content_type="application/json")
+        same_tree = self.client.patch(url, new_tree, content_type="application/json")
+
+        self.assertEqual(
+            [
+                (response.status_code, response.json()["revision"])
+                for response in (ignored, retree, same_tree)
+            ],
+            [(200, 1), (200, 2), (200, 2)],
+        )
+
 
 class EngineStatusTests(RulesApiTestCase):
     """GET /api/engine/status/: the blocks stored, and the signed-in user's rules and matches."""

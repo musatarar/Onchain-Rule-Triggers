@@ -54,14 +54,19 @@ class ConditionsField(serializers.JSONField):
 class RuleSerializer(serializers.ModelSerializer):
     """A rule in the console's ``Rule`` shape, with its v1 ``conditions`` alongside.
 
-    ``tag``, ``glyph``, ``sentence`` and ``revision`` are the rule's own
-    columns, and ``condition`` is its tree in the console's shape; all
-    read-only, and a write naming ``condition`` is refused. ``stats`` come
+    ``tag``, ``glyph`` and ``sentence`` are the rule's own columns and take
+    writes, which ``services`` checks: a tag's form, and that no other rule of
+    the owner's has it. ``revision`` is read-only, since the write path bumps
+    it when the tree changes. ``condition`` is the tree in the console's
+    shape, read-only too, and a write naming it is refused. ``stats`` come
     from the view, which reads a whole page's in one query
     (``context["stats"]``, by rule id).
     """
 
     conditions = ConditionsField(required=False)
+    # No length check here: services refuses a tag with one message for its
+    # form, length included, which a max_length here would pre-empt.
+    tag = serializers.CharField(required=False, allow_blank=True)
     condition = serializers.ReadOnlyField(source="console_condition")
     stats = serializers.SerializerMethodField()
 
@@ -81,15 +86,7 @@ class RuleSerializer(serializers.ModelSerializer):
             "updated_at",
             "stats",
         ]
-        read_only_fields = [
-            "id",
-            "tag",
-            "glyph",
-            "sentence",
-            "revision",
-            "created_at",
-            "updated_at",
-        ]
+        read_only_fields = ["id", "revision", "created_at", "updated_at"]
 
     def get_stats(self, rule):
         return self.context["stats"][rule.pk]
