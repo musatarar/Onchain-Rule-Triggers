@@ -14,13 +14,13 @@ exceptions.
 """
 
 import dataclasses
-import re
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Min, Q
 from django.utils import timezone
 
+from project.app.constants import NEEDS_CONDITIONS, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
 from project.app.rules import onchain, utils
@@ -65,12 +65,6 @@ def matches_for(owner):
 # --------------------------------------------------------------------------
 # writes
 # --------------------------------------------------------------------------
-
-
-NEEDS_CONDITIONS = "A rule needs a conditions payload."
-TAG_FORMAT = "Tags use A–Z, 0–9 and hyphens, up to 12 characters."
-TAG_TAKEN = "{tag} is already used by another circuit."
-TAG_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9-]{0,11}")
 
 
 def _save(instance, fields):

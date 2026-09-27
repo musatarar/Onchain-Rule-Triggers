@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
+from project.app.constants import NEEDS_CONDITIONS
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
 from project.app.rules.utils import _all_of, _any_of, _cond
@@ -132,7 +133,7 @@ class ConditionsTreeTests(RulesServiceTestCase):
         rule = self._rule("Whales")
         with self.assertRaises(ValidationError) as ctx:
             services.update_rule(rule, {"conditions": {}})
-        self.assertEqual(ctx.exception.message_dict["conditions"], [services.NEEDS_CONDITIONS])
+        self.assertEqual(ctx.exception.message_dict["conditions"], [NEEDS_CONDITIONS])
         self.assertEqual(self._stored(rule), WHALES)
 
     def test_a_refused_update_keeps_the_stored_tree(self):
