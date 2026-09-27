@@ -6,15 +6,16 @@ writes on the entry ``platform_decimals`` ({platform: decimals}, next to
 ``all_platforms``; ``manage.py load_tokens`` reads it from there), from
 ``detail_platforms``, and ``categories`` (["Stablecoins", ...]). A decimals
 CoinGecko does not know is written as null; a coin it does not know gets no
-categories.
+categories. ``--only decimals`` or ``--only categories`` fetches just that one.
 
 Resumable: the file is saved when the run ends, stopped or not, and a restart
-picks up after the last coin that has ``platform_decimals``; it reads ``--out``
-when that exists, so progress written there is not lost. Set COINGECKO_API_KEY
+picks up after the last coin that has every field the run fetches; it reads
+``--out`` when that exists, so progress written there is not lost. Set COINGECKO_API_KEY
 for a demo key, or add --pro for a paid one; without a key the public rate
 limit applies, so keep --delay high.
 
     python scripts/fetch_token_decimals.py --limit 500
+    python scripts/fetch_token_decimals.py --only categories
 """
 
 import argparse
@@ -34,6 +35,11 @@ PUBLIC_API = "https://api.coingecko.com/api/v3"
 PRO_API = "https://pro-api.coingecko.com/api/v3"
 _EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 MAX_RETRIES = 5
+# Each field a run can fetch, and how it is read from ``entry`` and CoinGecko's ``coin``.
+FIELDS = {
+    "decimals": ("platform_decimals", lambda entry, coin: platform_decimals(entry, coin)),
+    "categories": ("categories", lambda entry, coin: categories(coin)),
+}
 
 
 def has_evm_address(entry):
@@ -110,6 +116,9 @@ def main():
     parser.add_argument(
         "--refetch", action="store_true", help="start from the top, not after the last filled coin"
     )
+    parser.add_argument(
+        "--only", choices=FIELDS, default=None, help="fetch just this field (default both)"
+    )
     parser.add_argument("--pro", action="store_true", help="COINGECKO_API_KEY is a paid (pro) key")
     args = parser.parse_args()
 
@@ -118,21 +127,22 @@ def main():
     with open(out if os.path.exists(out) else args.path, encoding="utf-8") as source:
         entries = json.load(source)
 
+    fields = [FIELDS[args.only]] if args.only else list(FIELDS.values())
     start = 0
     if not args.refetch:
-        filled = [i for i, entry in enumerate(entries) if "platform_decimals" in entry]
+        filled = [i for i, entry in enumerate(entries) if all(key in entry for key, _ in fields)]
         start = filled[-1] + 1 if filled else 0
     todo = [entry for entry in entries[start : args.limit] if has_evm_address(entry)]
-    print(f"Fetching decimals for {len(todo)} coin(s), from coin {start + 1} of the file.")
+    names = " and ".join(key for key, _ in fields)
+    print(f"Fetching {names} for {len(todo)} coin(s), from coin {start + 1} of the file.")
 
     try:
         for done, entry in enumerate(todo, start=1):
             coin = fetch_coin(entry["id"], api_key, args.pro)
-            entry["platform_decimals"] = platform_decimals(entry, coin)
-            entry["categories"] = categories(coin)
+            for key, read in fields:
+                entry[key] = read(entry, coin)
             print(
-                f"[{done}/{len(todo)}] {entry['id']}: "
-                f"{entry['platform_decimals']} {entry['categories']}"
+                f"[{done}/{len(todo)}] {entry['id']}: " + " ".join(str(entry[k]) for k, _ in fields)
             )
             time.sleep(args.delay)
     finally:
