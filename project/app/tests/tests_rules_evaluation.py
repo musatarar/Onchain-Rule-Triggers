@@ -217,7 +217,7 @@ class CreateDemoRulesScriptTests(TestCase):
     def test_creates_the_demo_rules_for_the_account_signing_in_with_the_username(self):
         output = self.load()
 
-        self.assertEqual(output, "Loaded 5 demo rule(s) for watcher.\n")
+        self.assertEqual(output, "Loaded 7 demo rule(s) for watcher.\n")
         owner = get_user_model().objects.get()
         self.assertEqual((owner.username, owner.email), ("watcher", ""))
         self.assertTrue(owner.check_password("watcher"))
@@ -229,6 +229,8 @@ class CreateDemoRulesScriptTests(TestCase):
                 (owner.pk, "Uniswap swaps paying 1 ETH or more", True),
                 (owner.pk, "Validator withdrawals over 0.05 ETH", True),
                 (owner.pk, "Blocks built by beaverbuild", True),
+                (owner.pk, "Swaps through any Uniswap router", True),
+                (owner.pk, "USDC transfers of 1,000 USDC or more", True),
             ],
         )
         self.assertEqual(
@@ -244,6 +246,8 @@ class CreateDemoRulesScriptTests(TestCase):
                 ),
                 ("VAL-WD", "bars", "Validator withdrawals over 0.05 ETH", 1),
                 ("BEAVER", "target", "Blocks built by beaverbuild", 1),
+                ("UNI-SWAP", "star", "Swaps through the Uniswap routers, any size", 1),
+                ("USDC-1K", "circle", "USDC transfers of 1,000 USDC or more", 1),
             ],
         )
 
@@ -273,7 +277,7 @@ class CreateDemoRulesScriptTests(TestCase):
 
         self.load()
 
-        self.assertEqual(Rule.objects.count(), 5)
+        self.assertEqual(Rule.objects.count(), 7)
         self.assertEqual(
             Rule.objects.get(pk=rule.pk).conditions_payload(),
             _all_of(_cond("miner", "==", BEAVERBUILD, source="block")),
@@ -288,7 +292,7 @@ class CreateDemoRulesScriptTests(TestCase):
 
         run = rules_services.evaluate_blocks()
 
-        self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (5, 11, 0, {}))
+        self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (5, 132, 0, {}))
         self.assertEqual(
             Counter(MatchedRule.objects.values_list("rule__name", flat=True)),
             {
@@ -297,5 +301,7 @@ class CreateDemoRulesScriptTests(TestCase):
                 "Uniswap swaps paying 1 ETH or more": 2,
                 "Validator withdrawals over 0.05 ETH": 4,
                 "Blocks built by beaverbuild": 1,
+                "Swaps through any Uniswap router": 119,
+                "USDC transfers of 1,000 USDC or more": 2,
             },
         )
