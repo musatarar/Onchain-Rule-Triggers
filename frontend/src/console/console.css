@@ -660,6 +660,73 @@ html:has(.phosphor) body {
   .phosphor .sl .blink { animation: none; }
 }
 
+/* ----- command line (CommandLine.tsx): the status line's cursor, and the prompt it opens ----- */
+/* The block is one glyph; the padding and matching negative margin give it a finger-sized target without moving it. */
+.phosphor .sl .cl-cursor { color: inherit; font: inherit; line-height: inherit; padding: 4px 8px; margin: -4px -8px; cursor: var(--cursor-text); }
+.phosphor .sl .cl-cursor:hover { color: var(--ph); }
+.phosphor .sl .cl-cursor:focus-visible { outline: 1px solid var(--ph); outline-offset: -2px; animation: none; color: var(--ph); }
+.phosphor .sl .cl { display: flex; align-items: baseline; gap: 8px; flex: 1 1 16ch; min-width: 0; }
+.phosphor .sl .cl-prompt { font: 400 18px/1 var(--font-big); color: var(--ph); }
+.phosphor .sl .cl input {
+  field-sizing: content;
+  min-width: 2ch;
+  max-width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--ph);
+  font: 400 13px/1.45 var(--font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  caret-color: var(--ph);
+  caret-shape: block;
+}
+.phosphor .sl .cl input:focus { outline: none; }
+.phosphor .sl .cl input::selection { background: var(--ph); color: var(--scr); }
+.phosphor .sl .cl-reply { color: var(--ph-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* DOOM typed at the command line: the picture shakes and flares as the tube degausses, then settles on the terminal. */
+@media (prefers-reduced-motion: no-preference) {
+  .phosphor .scr-in.degauss > :not(.boot) { animation: ph-degauss 0.56s cubic-bezier(0.16, 1, 0.3, 1) 1; }
+}
+@keyframes ph-degauss {
+  0% { transform: none; filter: none; }
+  10% { transform: skewX(3deg) scale(1.025, 0.975); filter: brightness(2) blur(0.8px); }
+  28% { transform: skewX(-2deg) scale(0.99, 1.015); filter: brightness(1.5) blur(0.4px); }
+  46% { transform: skewX(1.2deg); filter: brightness(1.25); }
+  64% { transform: skewX(-0.6deg); filter: brightness(1.1); }
+  82% { transform: skewX(0.25deg); filter: none; }
+  100% { transform: none; filter: none; }
+}
+
+/* ----- service terminal (terminal/): DOOM typed at the command line opens it ----- */
+.phosphor .term .acts-r { align-items: center; flex-wrap: wrap; }
+.phosphor .term-seg { display: flex; gap: 4px; }
+.phosphor .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.phosphor .term-scroll { padding: 12px 14px; }
+.phosphor .term-log { margin: 0; font: 400 14px/1.4 var(--font-ui); white-space: pre-wrap; overflow-wrap: anywhere; }
+.phosphor .term-load { margin-top: 2px; font-size: 13px; color: var(--ph-2); }
+.phosphor .term-cmd { padding: 2px 0 0; border-bottom: 0; }
+/* The game fills the pane at 4:3, the shape DOOM's 320×200 was shown at. */
+.phosphor .doom { flex: 1; min-height: 0; position: relative; display: grid; place-items: center; container-type: size; user-select: none; }
+/* CLICK TO PLAY stands in for a focus ring, which would draw a second border round the pane. */
+.phosphor .doom:focus-visible { outline: none; }
+.phosphor .doom[hidden] { display: none; }
+.phosphor .doom canvas { display: block; width: min(100cqw, 100cqh * 4 / 3); aspect-ratio: 4 / 3; image-rendering: pixelated; }
+.phosphor .doom-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 7px 12px;
+  background: var(--ph);
+  color: var(--scr);
+  text-shadow: none;
+  font: 400 22px/1 var(--font-big);
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
 .phosphor .toast {
   position: fixed;
   left: 50%;
@@ -717,6 +784,8 @@ html:has(.phosphor) body {
   .phosphor .insp.pinned { position: static; max-height: none; box-shadow: none; }
   .phosphor .rung-row { grid-template-columns: 40px minmax(0, 1fr); }
   .phosphor .rung-row .side { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; border-left: 0; border-top: 1px solid var(--ph-5); gap: 14px; }
+  .phosphor .doom { container-type: normal; }
+  .phosphor .doom canvas { width: 100%; }
 }
 @media (max-width: 520px) {
   .phosphor .sh-r { display: none; }

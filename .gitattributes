@@ -5,3 +5,4 @@
 # loads it.
 project/app/static/frontend/assets/index.js   -diff -merge linguist-generated
 project/app/static/frontend/assets/index.css  -diff -merge linguist-generated
+project/app/static/frontend/assets/TerminalSheet.js  -diff -merge linguist-generated
