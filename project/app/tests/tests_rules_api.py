@@ -1693,11 +1693,12 @@ class TokenSearchTests(RulesApiTestCase):
             page["results"],
         )
 
-    def test_a_symbol_matches_by_its_start_case_ignored(self):
+    def test_a_symbol_matches_anywhere_in_it_case_ignored(self):
         self._save("USDT", "Tether", USDT)
         self._save("AIUSD", "Ai dollar", "0x" + "a1" * 20)
+        self._save("WETH", "Wrapped Ether", "0x" + "c3" * 20)
 
-        self.assertEqual(self._symbols(q="us"), ["USDT"])
+        self.assertEqual(self._symbols(q="us"), ["USDT", "AIUSD"])
 
     def test_a_name_matches_anywhere_in_it(self):
         self._save("USDT", "Tether", USDT)
@@ -1712,19 +1713,34 @@ class TokenSearchTests(RulesApiTestCase):
         self.assertEqual(self._symbols(q=USDT), ["USDT"])
         self.assertEqual(self._symbols(q="0xDAC17F"), ["USDT"])
 
-    def test_rows_are_sorted_by_symbol(self):
+    def test_rows_are_ranked_by_where_the_search_matched(self):
+        self._save("AUSDT", "Aave USDT", "0x" + "a2" * 20)
+        self._save("USDT", "Tether USD", USDT)
+        self._save("ALUSD", "Alchemix USD", "0x" + "a3" * 20)
+        self._save("XAUT", "Tether Gold USD", "0x" + "a4" * 20)
+        self._save("USDC", "USD Coin", USDC)
+        self._save("USD", "Dollar", "0x" + "a5" * 20)
+
+        self.assertEqual(self._symbols(q="usd"), ["USD", "USDC", "USDT", "ALUSD", "AUSDT", "XAUT"])
+
+    def test_a_ticker_match_outranks_a_name_match_whatever_the_symbol(self):
+        self._save("AAA", "Usual", "0x" + "a6" * 20)
+        self._save("ZUSUAL", "Zeta", "0x" + "a7" * 20)
+
+        self.assertEqual(self._symbols(q="usual"), ["ZUSUAL", "AAA"])
+
+    def test_an_address_match_comes_after_every_ticker_and_name_match(self):
+        self._save("ZZZ", "Last", "0x" + "ab" * 20)
+        self._save("AAA", "0xab fund", "0x" + "cd" * 20)
+
+        self.assertEqual(self._symbols(q="0xab"), ["AAA", "ZZZ"])
+
+    def test_rows_with_one_score_are_sorted_by_symbol(self):
         self._save("USDT", "Tether", USDT)
         self._save("USDC", "USD Coin", USDC)
-        self._save("AIUSD", "AI USD", "0x" + "a1" * 20)
+        self._save("USDE", "Ethena USDe", "0x" + "a8" * 20)
 
-        self.assertEqual(self._symbols(q="usd"), ["AIUSD", "USDC", "USDT"])
-
-    def test_an_exact_symbol_comes_before_the_rest(self):
-        self._save("USDTB", "USDtb", "0x" + "b2" * 20)
-        self._save("USDT", "Tether", USDT)
-        self._save("AUSDT", "Aave USDT", "0x" + "a2" * 20)
-
-        self.assertEqual(self._symbols(q="usdt"), ["USDT", "AUSDT", "USDTB"])
+        self.assertEqual(self._symbols(q="usd"), ["USDC", "USDE", "USDT"])
 
     def test_chain_narrows_the_search_to_it(self):
         self._save("USDT", "Tether", USDT)

@@ -1,7 +1,7 @@
 """The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from django.db import transaction
-from django.db.models import BooleanField, Case, Q, Value, When
+from django.db.models import Case, IntegerField, Q, Value, When
 
 from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import (
@@ -185,27 +185,42 @@ def save_tokens(tokens):
 
 
 def search_tokens(q, chain=None):
-    """The tokens ``q`` names, on ``chain`` when one is given.
+    """The tokens ``q`` names, best match first, on ``chain`` when one is given.
 
-    ``q`` matches a symbol's start, part of a name, or an address's start, case
+    ``q`` matches part of a symbol, part of a name, or an address's start, case
     ignored. A placeholder token has no symbol or name, so only its address
-    finds it, and an empty ``q`` lists the catalog without them. Tokens whose
-    symbol is ``q`` come first, then the rest by symbol, so ``usdt`` puts USDT
-    ahead of USDTB and USDTZ, and the picker's first page holds it.
+    finds it, and an empty ``q`` lists the catalog without them.
+
+    Each token is scored by where ``q`` matched, and the lowest score comes
+    first (``SEARCH_RANKS``). For ``usd``: a symbol USD, then USDC and USDT,
+    then AUSDT and ALUSD, then "Tether USD" found by its name alone, then an
+    address. Tokens with one score are sorted by symbol.
     """
     q = (q or "").strip()
-    named = Q(name__isnull=False) & (Q(symbol__istartswith=q) | Q(name__icontains=q))
-    found = (named | Q(contract__address__startswith=q.lower())) if q else named
-    tokens = Token.objects.select_related("contract").filter(found)
+    named = Q(name__isnull=False) & (Q(symbol__icontains=q) | Q(name__icontains=q))
+    by_address = Q(contract__address__startswith=q.lower())
+    tokens = Token.objects.select_related("contract").filter((named | by_address) if q else named)
     if chain is not None:
         tokens = tokens.filter(contract__chain=chain)
     order = ["symbol", "contract__chain", "contract__address"]
     if q:
-        exact = Case(
-            When(symbol__iexact=q, then=Value(True)),
-            default=Value(False),
-            output_field=BooleanField(),
-        )
-        tokens = tokens.annotate(exact_symbol=exact)
-        order.insert(0, "-exact_symbol")
+        tokens = tokens.annotate(rank=_search_rank(q))
+        order.insert(0, "rank")
     return tokens.order_by(*order)
+
+
+# Where a search matched a token, best first; a token takes its best one.
+SEARCH_RANKS = ["symbol", "symbol_prefix", "symbol_substring", "name", "address"]
+
+
+def _search_rank(q):
+    """A token's place in ``SEARCH_RANKS`` for the search ``q``, as a query expression."""
+    rank = SEARCH_RANKS.index
+    return Case(
+        When(symbol__iexact=q, then=Value(rank("symbol"))),
+        When(symbol__istartswith=q, then=Value(rank("symbol_prefix"))),
+        When(symbol__icontains=q, then=Value(rank("symbol_substring"))),
+        When(name__icontains=q, then=Value(rank("name"))),
+        default=Value(rank("address")),
+        output_field=IntegerField(),
+    )
