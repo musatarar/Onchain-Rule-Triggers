@@ -1,7 +1,7 @@
 """The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import BooleanField, Case, Q, Value, When
 
 from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import (
@@ -185,11 +185,13 @@ def save_tokens(tokens):
 
 
 def search_tokens(q, chain=None):
-    """The tokens ``q`` names, by symbol, symbol first, on ``chain`` when one is given.
+    """The tokens ``q`` names, on ``chain`` when one is given.
 
     ``q`` matches a symbol's start, part of a name, or an address's start, case
     ignored. A placeholder token has no symbol or name, so only its address
-    finds it, and an empty ``q`` lists the catalog without them.
+    finds it, and an empty ``q`` lists the catalog without them. Tokens whose
+    symbol is ``q`` come first, then the rest by symbol, so ``usdt`` puts USDT
+    ahead of USDTB and USDTZ, and the picker's first page holds it.
     """
     q = (q or "").strip()
     named = Q(name__isnull=False) & (Q(symbol__istartswith=q) | Q(name__icontains=q))
@@ -197,4 +199,13 @@ def search_tokens(q, chain=None):
     tokens = Token.objects.select_related("contract").filter(found)
     if chain is not None:
         tokens = tokens.filter(contract__chain=chain)
-    return tokens.order_by("symbol", "contract__chain", "contract__address")
+    order = ["symbol", "contract__chain", "contract__address"]
+    if q:
+        exact = Case(
+            When(symbol__iexact=q, then=Value(True)),
+            default=Value(False),
+            output_field=BooleanField(),
+        )
+        tokens = tokens.annotate(exact_symbol=exact)
+        order.insert(0, "-exact_symbol")
+    return tokens.order_by(*order)

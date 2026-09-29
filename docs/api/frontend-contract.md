@@ -204,7 +204,7 @@ The FE derives everything else from the snapshot and the `held` values: the powe
 Until the evaluator records a trace per match, the server answers `"trace": null`, with the rule's tree as it reads now in `condition`. The pane then shows the match's transaction and transfer without the circuit, and Replay is off.
 
 ### `GET /api/tokens/?q=<text>&chain=<id>`
-The token picker in the gate editor. Paginated `TokenRef[]`, matched on symbol prefix, name substring or address prefix, case ignored, and sorted by symbol. A search for `usd` on chain 1 answers `{ "chain": 1, "address": "0xdac17f958d2ee523a2206206994597c13d831ec7", "symbol": "USDT", "name": "Tether", "decimals": 6 }` among its rows. A placeholder token (a contract the catalog doesn't know) has a null `symbol` and `name`, so only an address search finds it. The console looks a gate's token up with its full address that way.
+The token picker in the gate editor. Paginated `TokenRef[]`, matched on symbol prefix, name substring or address prefix, case ignored. Tokens whose symbol equals `q` come first, then the rest by symbol, so `usdt` lists USDT before AUSDT and USDTB. A search for `usd` on chain 1 answers `{ "chain": 1, "address": "0xdac17f958d2ee523a2206206994597c13d831ec7", "symbol": "USDT", "name": "Tether", "decimals": 6 }` among its rows. A placeholder token (a contract the catalog doesn't know) has a null `symbol` and `name`, so only an address search finds it. The console looks a gate's token up with its full address that way.
 
 ## Backend work this implies
 

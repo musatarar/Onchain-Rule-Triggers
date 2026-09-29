@@ -1719,6 +1719,13 @@ class TokenSearchTests(RulesApiTestCase):
 
         self.assertEqual(self._symbols(q="usd"), ["AIUSD", "USDC", "USDT"])
 
+    def test_an_exact_symbol_comes_before_the_rest(self):
+        self._save("USDTB", "USDtb", "0x" + "b2" * 20)
+        self._save("USDT", "Tether", USDT)
+        self._save("AUSDT", "Aave USDT", "0x" + "a2" * 20)
+
+        self.assertEqual(self._symbols(q="usdt"), ["USDT", "AUSDT", "USDTB"])
+
     def test_chain_narrows_the_search_to_it(self):
         self._save("USDT", "Tether", USDT)
         self._save("USDT", "Tether", USDT, chain=ChainId.POLYGON)
