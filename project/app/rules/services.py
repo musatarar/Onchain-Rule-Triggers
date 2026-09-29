@@ -1,10 +1,10 @@
 """Business logic for the rules entity.
 
 Owner-scoped reads and the single validated write path for rules: every write
-runs ``full_clean()`` for the rule's own fields and checks its conditions here,
-so the vocabulary rules hold whatever calls in. A rule's conditions
-are a tree of ``Condition`` rows, read and written as the v1 ``conditions``
-payload of :mod:`project.app.rules.utils`. Evaluation runs every owner's
+runs ``full_clean()`` for the rule's own fields and checks its condition here,
+so the vocabulary rules hold whatever calls in. A rule's condition is a tree of
+``Condition`` rows, read and written in the console's ``ConditionNode`` shape
+(:mod:`project.app.rules.utils`). Evaluation runs every owner's
 enabled rules against the stored blocks not evaluated yet, and records each
 row they match as a ``MatchedRule``; the engine status reports the stored
 window with each owner's own rule and match counts, each rule's stats count
@@ -24,10 +24,9 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Min, Q
 from django.utils import timezone
 
-from project.app.constants import NEEDS_CONDITIONS, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
+from project.app.constants import NEEDS_CONDITION, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
-from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import onchain, utils
 from project.app.rules.models import Condition, MatchedRule, Rule
@@ -103,35 +102,40 @@ def match_stats(owner, rules):
 
 
 def _save(instance, fields):
-    """Apply ``fields``, check the rule and its conditions, and save both at once.
+    """Apply ``fields``, check the rule and its condition, and save both at once.
 
-    ``fields["conditions"]``, when given, is a v1 payload that replaces the
-    rule's tree. Left out, the stored tree stays, and is checked again like
-    every other field this write keeps.
+    ``fields["condition"]``, when given, is a console ``ConditionNode`` that
+    replaces the rule's tree; its ids are ignored. Left out, the stored tree
+    stays, and is checked again like every other field this write keeps.
 
     Raises ``django.core.exceptions.ValidationError`` — the model's own
-    verdict on its fields, and the conditions' against their vocabulary.
-    Thresholds on addresses and calldata are stored lowercased, as the values
-    they compare against are.
+    verdict on its fields, and the condition's against the vocabulary.
+    Addresses in the tree are stored lowercased, as the values they compare
+    against are.
     """
     fields = dict(fields)
-    stored = instance.conditions_payload()
-    replacing = "conditions" in fields
-    payload = fields.pop("conditions") if replacing else stored
+    stored = instance.console_condition()
+    replacing = "condition" in fields
+    tree = fields.pop("condition") if replacing else stored
     for field, value in fields.items():
         setattr(instance, field, value)
-    _check(instance, payload)
-    if replacing and instance.pk is not None and utils.lowercase_thresholds(payload) != stored:
-        # A match names the revision it ran, so only a new tree bumps it;
-        # a rename, a new tag or glyph, or arming the rule does not.
-        instance.revision += 1
+    _check(instance, tree)
+    if replacing:
+        tree = utils.lowercase_thresholds(tree)
+        # The console sends the tree with every save, a rename included. The
+        # same tree keeps its rows, so its node ids stay the ones already served.
+        replacing = utils.without_ids(tree) != utils.without_ids(stored)
+        if replacing and instance.pk is not None:
+            # A match names the revision it ran, so only a new tree bumps it;
+            # a rename, a new tag or glyph, or arming the rule does not.
+            instance.revision += 1
     try:
         with transaction.atomic():
             instance.save()
             if replacing:
                 Condition.objects.filter(rule=instance).delete()
                 _forget_tree(instance)
-                utils.build_tree(instance, utils.lowercase_thresholds(payload))
+                utils.build_tree(instance, tree)
     except IntegrityError as exc:
         # The owner-tag constraint backs the SELECT in _check_tag: a concurrent
         # write taking the same tag lands here, and reads as the taken tag.
@@ -147,7 +151,7 @@ def _save(instance, fields):
     return instance
 
 
-def _check(rule, payload):
+def _check(rule, tree):
     """Every problem with the write at once, filed by field as ``full_clean()``
     files them."""
     problems = {}
@@ -157,7 +161,7 @@ def _check(rule, payload):
         rule.full_clean(exclude=["tag"])
     except ValidationError as exc:
         exc.update_error_dict(problems)
-    for check, arg in ((_check_tag, rule), (_check_conditions, payload)):
+    for check, arg in ((_check_tag, rule), (_check_condition, tree)):
         try:
             check(arg)
         except ValidationError as exc:
@@ -186,14 +190,14 @@ def _tag_taken(rule):
     return Rule.objects.filter(owner_id=rule.owner_id, tag=rule.tag).exclude(pk=rule.pk).exists()
 
 
-def _check_conditions(payload):
-    """Every rule needs conditions, and they name the on-chain vocabulary."""
-    if not payload:
-        raise ValidationError({"conditions": NEEDS_CONDITIONS})
+def _check_condition(tree):
+    """Every rule needs a condition, and it names the vocabulary."""
+    if tree is None:
+        raise ValidationError({"condition": NEEDS_CONDITION})
     try:
-        utils.validate_conditions(payload)
+        utils.validate_condition(tree)
     except ValidationError as exc:
-        raise ValidationError({"conditions": exc.messages}) from exc
+        raise ValidationError({"condition": exc.messages}) from exc
 
 
 def _forget_tree(rule):
@@ -564,9 +568,6 @@ def _amount(raw, decimals):
 # a match's detail — its journal row, with the transaction and transfer it matched
 # --------------------------------------------------------------------------
 
-# "0x" and the four bytes naming the function a transaction calls.
-SELECTOR_LENGTH = 10
-
 
 def match_detail(owner, pk):
     """``owner``'s match ``pk`` as the console's ``MatchDetail``; ``None`` when their journal lists no such match.
@@ -587,7 +588,7 @@ def match_detail(owner, pk):
         return None
     transaction = match.transaction
     transfer = _leading_transfers([transaction]).get(transaction.hash)
-    selector = _selector(transaction.input)
+    selector = onchain.selector_of(transaction.input)
     row = _journal_row(match, transfer)
     return {
         **row,
@@ -607,25 +608,12 @@ def match_detail(owner, pk):
     }
 
 
-def _selector(calldata):
-    """The selector ``calldata`` opens with, lowercased; ``None`` when it has none, as a plain ETH transfer's ``0x`` has none."""
-    selector = calldata[:SELECTOR_LENGTH].lower()
-    return selector if len(selector) == SELECTOR_LENGTH else None
-
-
 def _method(selector):
-    """The name of the function ``selector`` calls, from the signature catalog; ``None`` when it names none.
-
-    A selector is four bytes of a hash, so the catalog can hold several
-    functions for one. Their name is answered only when they all share it:
-    picking one of several could name a function the transaction never called.
-    """
+    """The name of the function ``selector`` calls, from the signature catalog
+    (:func:`onchain.method_names`); ``None`` when it names none."""
     if selector is None:
         return None
-    names = set(
-        FunctionSignature.objects.filter(hex_signature=selector).values_list("name", flat=True)
-    )
-    return names.pop() if len(names) == 1 else None
+    return onchain.method_names([selector]).get(selector)
 
 
 def _transfer_detail(transfer):

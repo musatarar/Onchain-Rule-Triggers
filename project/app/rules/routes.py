@@ -1,6 +1,6 @@
 """Rules-catalog API: CRUD over the signed-in user's rules, in the console's
-``Rule`` shape, the engine status, the match journal, one match's detail, and
-the token search.
+``Rule`` shape, the condition vocabulary, the engine status, the match journal,
+one match's detail, and the token search.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
@@ -21,12 +21,8 @@ from rest_framework.views import APIView
 from project.app.constants import RULES_CATALOG_THROTTLE_SCOPE
 from project.app.evm import services as evm_services
 from project.app.evm.chains import ChainId
-from project.app.rules import services
+from project.app.rules import services, utils
 from project.app.rules.models import Rule
-
-# A write naming the console's tree is refused rather than dropped; the UI
-# calls a rule a circuit and a comparison a gate.
-CONDITION_NOT_WRITABLE = "Circuits can't save gates from the console yet (#44)."
 
 # The journal's page size when ``?page_size=`` is left out, and the most it can ask for.
 JOURNAL_PAGE_SIZE = 50
@@ -43,34 +39,33 @@ class CatalogPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class ConditionsField(serializers.JSONField):
-    """The rule's conditions in their v1 JSON shape, which no column holds.
+class ConditionField(serializers.JSONField):
+    """The rule's tree in the console's ``ConditionNode`` shape, which no column holds.
 
-    A read renders the rule's ``Condition`` tree; a write hands the payload to
-    ``services`` as-is, which validates it and stores it as the tree.
+    A read renders the rule's ``Condition`` rows, each node with its id; a
+    write hands the tree to ``services`` as-is, which validates it and stores
+    it, ignoring the ids it was sent.
     """
 
     def get_attribute(self, instance):
-        return instance.conditions_payload()
+        return instance.console_condition()
 
 
 class RuleSerializer(serializers.ModelSerializer):
-    """A rule in the console's ``Rule`` shape, with its v1 ``conditions`` alongside.
+    """A rule in the console's ``Rule`` shape.
 
     ``tag``, ``glyph`` and ``sentence`` are the rule's own columns and take
     writes, which ``services`` checks: a tag's form, and that no other rule of
     the owner's has it. ``revision`` is read-only, since the write path bumps
-    it when the tree changes. ``condition`` is the tree in the console's
-    shape, read-only too, and a write naming it is refused. ``stats`` come
-    from the view, which reads a whole page's in one query
-    (``context["stats"]``, by rule id).
+    it when the tree changes. ``condition`` is the tree, and a write sending
+    it replaces the whole tree. ``stats`` come from the view, which reads a
+    whole page's in one query (``context["stats"]``, by rule id).
     """
 
-    conditions = ConditionsField(required=False)
     # No length check here: services refuses a tag with one message for its
     # form, length included, which a max_length here would pre-empt.
     tag = serializers.CharField(required=False, allow_blank=True)
-    condition = serializers.ReadOnlyField(source="console_condition")
+    condition = ConditionField(required=False)
     stats = serializers.SerializerMethodField()
 
     class Meta:
@@ -84,7 +79,6 @@ class RuleSerializer(serializers.ModelSerializer):
             "enabled",
             "revision",
             "condition",
-            "conditions",
             "created_at",
             "updated_at",
             "stats",
@@ -93,14 +87,6 @@ class RuleSerializer(serializers.ModelSerializer):
 
     def get_stats(self, rule):
         return self.context["stats"][rule.pk]
-
-    def validate(self, attrs):
-        # DRF drops a read-only field from a write without a word, so the
-        # console's save would report success and leave the tree as it was.
-        # `conditions` writes a tree until #44 stores the console's.
-        if "condition" in self.initial_data:
-            raise serializers.ValidationError({"condition": [CONDITION_NOT_WRITABLE]})
-        return attrs
 
 
 class _CatalogView(APIView):
@@ -185,6 +171,20 @@ class RuleDetailView(_CatalogView):
     def delete(self, request, pk, *args, **kwargs):
         services.delete_rule(self._rule(request, pk))
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class VocabularyView(APIView):
+    """GET /api/conditions/vocabulary/ — the sources, fields and operators a condition may name.
+
+    The same for everyone, and the one the write path validates against
+    (:data:`utils.VOCABULARY`), so the gate editor offers only what saves.
+    """
+
+    # The catalog's scope: a scope of its own would need a rate in settings.
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
+
+    def get(self, request, *args, **kwargs):
+        return Response(utils.VOCABULARY)
 
 
 class EngineStatusView(APIView):
@@ -342,6 +342,7 @@ class TokenListView(APIView):
 urlpatterns = [
     path("rules/", RuleListCreateView.as_view(), name="rules-list"),
     path("rules/<int:pk>/", RuleDetailView.as_view(), name="rules-detail"),
+    path("conditions/vocabulary/", VocabularyView.as_view(), name="conditions-vocabulary"),
     path("engine/status/", EngineStatusView.as_view(), name="engine-status"),
     path("matches/", MatchListView.as_view(), name="matches-list"),
     path("matches/<int:pk>/", MatchDetailView.as_view(), name="matches-detail"),

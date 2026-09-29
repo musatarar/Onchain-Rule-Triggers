@@ -75,7 +75,7 @@ Feeds the header's WINDOW and ENGINE line.
 ```
 
 ### `GET /api/conditions/vocabulary/`
-What the composer can offer. The server owns this list, and it is the same one `validate_conditions` enforces.
+What the composer can offer. The server owns this list, and it is the same one `validate_condition` enforces on every write.
 ```json
 {
   "sources": [
@@ -114,7 +114,7 @@ type Rule = {
 };
 ```
 - A write sends `{ name, tag, glyph, sentence, enabled, condition }`. A `PATCH` with `condition` replaces the whole tree and bumps `revision`. Changing `tag` or `glyph` does not bump `revision`.
-- `400` shapes: `{ "condition": ["conditions[1][0].field: 'token_transfer' has no field 'amont'"] }`, in the path style `validate_conditions` already uses. Also `{ "tag": ["BNB-OUT is already used by another circuit."] }` and `{ "tag": ["Tags use A–Z, 0–9 and hyphens, up to 12 characters."] }`.
+- `400` shapes: `{ "code": "validation_error", "detail": "condition: condition.children[1].children[0].field: 'token_transfer' has no field 'amont'; known: 'amount', 'from_address', 'to_address', 'token', 'token_recognised'." }`. The path names the node from the root, so the composer can point at the gate. Also `{ "tag": ["BNB-OUT is already used by another circuit."] }` and `{ "tag": ["Tags use A–Z, 0–9 and hyphens, up to 12 characters."] }`.
 - The list is the channel list. The FE filters it by tag, name and sentence as the user types on the command line, so there's no search endpoint. Past a few hundred circuits, add `?q=`.
 
 ### `POST /api/rules/propose/`

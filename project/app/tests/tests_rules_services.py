@@ -1,4 +1,9 @@
-"""Rules-entity business logic: owner-scoped reads and validated writes."""
+"""Rules-entity business logic: owner-scoped reads and validated writes.
+
+A write sends a rule's condition as a console ``ConditionNode`` tree
+(:mod:`project.app.tests.condition_trees` builds them), and a read renders the
+stored tree back in that shape with its ``Condition`` ids.
+"""
 
 from unittest import mock
 
@@ -6,13 +11,21 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from project.app.constants import NEEDS_CONDITIONS
+from project.app.constants import NEEDS_CONDITION
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
-from project.app.rules.utils import _all_of, _any_of, _cond
-from project.app.tests.tests_rules_catalog import _example_conditions
+from project.app.rules.utils import without_ids
+from project.app.tests.condition_trees import addresses, and_, gate, or_, token, transfer, tx
 
-WHALES = _all_of(_cond("value", ">", 10**18, source="transaction"))
+# Transactions sending more than one ether.
+WHALES = and_(tx("value", "gt", "1"))
+# A field no source in the vocabulary carries.
+GAS = and_(tx("gas", "eq", "21000"))
+
+
+def _ids(node):
+    """Every node's id in ``node``, parent first and in list order."""
+    return [node["id"], *(id for child in node.get("children", []) for id in _ids(child))]
 
 
 class RulesServiceTestCase(TestCase):
@@ -23,9 +36,9 @@ class RulesServiceTestCase(TestCase):
 
     def _rule(self, name, owner=None, **kwargs):
         kwargs.setdefault("owner", owner or self.user)
-        conditions = kwargs.pop("conditions", WHALES)
+        condition = kwargs.pop("condition", WHALES)
         rule = Rule.objects.create(name=name, **kwargs)
-        utils.build_tree(rule, conditions)
+        utils.build_tree(rule, condition)
         return rule
 
 
@@ -46,24 +59,35 @@ class OwnerScopedReadTests(RulesServiceTestCase):
 
 
 class ValidatedWriteTests(RulesServiceTestCase):
-    def test_creating_a_rule_binds_the_owner_and_validates_the_payload(self):
-        rule = services.create_rule(self.user, {"name": "Whales", "conditions": WHALES})
+    def test_creating_a_rule_binds_the_owner_and_validates_the_condition(self):
+        rule = services.create_rule(self.user, {"name": "Whales", "condition": WHALES})
         self.assertEqual(rule.owner, self.user)
 
         with self.assertRaises(ValidationError) as ctx:
-            services.create_rule(self.user, {"name": "No payload", "conditions": {}})
-        self.assertIn("conditions", ctx.exception.message_dict)
+            services.create_rule(self.user, {"name": "No tree", "condition": {}})
+        self.assertEqual(
+            ctx.exception.message_dict["condition"],
+            ["condition.type must be 'and' or 'or' at the root, got None."],
+        )
 
     def test_a_lead_rule_is_refused(self):
         with self.assertRaises(ValidationError) as ctx:
             services.create_rule(
                 self.user,
-                {
-                    "name": "Nudge",
-                    "conditions": _all_of(_cond("deals_closed", ">", 20, source="lead")),
-                },
+                {"name": "Nudge", "condition": and_(gate("lead", "deals_closed", "gt", "20"))},
             )
-        self.assertIn("source must be one of", ctx.exception.message_dict["conditions"][0])
+        self.assertIn("source must be one of", ctx.exception.message_dict["condition"][0])
+
+    def test_a_misspelt_field_is_refused_by_its_path(self):
+        condition = and_(tx("value", "gt", "1"), transfer("amont", "gte", "250"))
+        with self.assertRaises(ValidationError) as ctx:
+            services.create_rule(self.user, {"name": "Typo", "condition": condition})
+        self.assertTrue(
+            ctx.exception.message_dict["condition"][0].startswith(
+                "condition.children[1].field: 'token_transfer' has no field 'amont'; known: "
+            )
+        )
+        self.assertFalse(Rule.objects.exists())
 
     def test_updating_a_rule_runs_the_models_validation_too(self):
         rule = self._rule("Whales")
@@ -77,79 +101,89 @@ class ValidatedWriteTests(RulesServiceTestCase):
         self.assertFalse(Rule.objects.filter(pk=rule.pk).exists())
 
 
-class ConditionsTreeTests(RulesServiceTestCase):
-    """A rule's conditions are stored as a tree and read back as the payload
-    they were written as."""
+class ConditionTreeTests(RulesServiceTestCase):
+    """A rule's condition is stored as a tree of ``Condition`` rows and read back
+    as the tree it was written as, with each node's id."""
 
     def _stored(self, rule):
-        return Rule.objects.get(pk=rule.pk).conditions_payload()
+        return Rule.objects.get(pk=rule.pk).console_condition()
 
     def test_the_example_rule_round_trips_through_the_tree(self):
-        rule = services.create_rule(
-            self.user, {"name": "Large transfers", "conditions": _example_conditions()}
-        )
+        rule = services.create_rule(self.user, {"name": "Large transfers", "condition": WHALES})
 
-        self.assertEqual(self._stored(rule), _example_conditions())
+        self.assertEqual(without_ids(self._stored(rule)), without_ids(WHALES))
         root = rule.all_conditions.get(parent__isnull=True)
         self.assertEqual(root.type, Condition.TYPE_AND)
         self.assertEqual(
             [(c.type, c.field_name, c.operator, c.value, c.source) for c in root.children.all()],
-            [(Condition.TYPE_COMPARISON, "value", ">", 10**18, Condition.SOURCE_TRANSACTION)],
+            [(Condition.TYPE_COMPARISON, "value", "gt", "1", Condition.SOURCE_TRANSACTION)],
         )
 
-    def test_a_nested_group_keeps_its_order_and_its_thresholdless_leaves(self):
-        payload = _all_of(
-            _cond("value", ">", 2, source="transaction"),
-            _any_of(
-                _cond("to_address", "exists", source="transaction"),
-                _cond("input", "in", ["0xa9059cbb", "0x23b872dd"], source="transaction"),
+    def test_a_nested_tree_keeps_its_order_and_renders_the_stored_ids(self):
+        condition = and_(
+            tx("value", "gt", "2"),
+            or_(
+                tx("method", "eq", "transfer"),
+                transfer("to_address", "in", addresses("0x" + "1" * 40, name="Hot wallets")),
             ),
-            _cond("number", "<=", 7, source="block"),
+            transfer("token_recognised", "eq", False),
         )
-        rule = services.create_rule(self.user, {"name": "Nested", "conditions": payload})
-        self.assertEqual(self._stored(rule), payload)
+        rule = services.create_rule(self.user, {"name": "Nested", "condition": condition})
 
-    def test_a_rule_with_no_tree_renders_the_empty_payload(self):
+        stored = self._stored(rule)
+        self.assertEqual(without_ids(stored), without_ids(condition))
+        # Ids are the stored rows', assigned parent first and in list order.
+        pks = list(rule.all_conditions.order_by("pk").values_list("pk", flat=True))
+        self.assertEqual(_ids(stored), pks)
+
+    def test_the_ids_a_write_sends_are_ignored(self):
+        sent = {**WHALES, "id": 900, "children": [{**WHALES["children"][0], "id": 901}]}
+        rule = services.create_rule(self.user, {"name": "Stale ids", "condition": sent})
+
+        stored = self._stored(rule)
+        self.assertEqual(
+            _ids(stored), list(rule.all_conditions.order_by("pk").values_list("pk", flat=True))
+        )
+
+    def test_a_rule_with_no_tree_renders_none(self):
         # Every write refuses one; a row made around the write path has none.
         rule = Rule.objects.create(owner=self.user, name="No tree")
-        self.assertEqual(self._stored(rule), {})
+        self.assertIsNone(self._stored(rule))
         self.assertFalse(rule.all_conditions.exists())
 
-    def test_an_update_naming_conditions_replaces_the_tree(self):
+    def test_an_update_naming_a_condition_replaces_the_tree(self):
         rule = self._rule("Whales")
-        replacement = _all_of(_cond("number", ">=", 5, source="block"))
-        services.update_rule(rule, {"conditions": replacement})
-        self.assertEqual(self._stored(rule), replacement)
-        self.assertEqual(rule.conditions_payload(), replacement)
+        replacement = and_(transfer("amount", "gte", "250"))
+        services.update_rule(rule, {"condition": replacement})
+        self.assertEqual(without_ids(self._stored(rule)), without_ids(replacement))
+        self.assertEqual(without_ids(rule.console_condition()), without_ids(replacement))
         self.assertEqual(rule.all_conditions.count(), 2)
 
-    def test_an_update_leaving_conditions_out_leaves_the_tree_alone(self):
+    def test_an_update_leaving_the_condition_out_leaves_the_tree_alone(self):
         rule = self._rule("Whales")
         before = list(rule.all_conditions.values_list("pk", flat=True))
         services.update_rule(rule, {"name": "Renamed"})
         self.assertEqual(list(rule.all_conditions.values_list("pk", flat=True)), before)
 
-    def test_an_update_emptying_the_conditions_is_refused_and_keeps_the_tree(self):
+    def test_an_update_clearing_the_condition_is_refused_and_keeps_the_tree(self):
         rule = self._rule("Whales")
         with self.assertRaises(ValidationError) as ctx:
-            services.update_rule(rule, {"conditions": {}})
-        self.assertEqual(ctx.exception.message_dict["conditions"], [NEEDS_CONDITIONS])
-        self.assertEqual(self._stored(rule), WHALES)
+            services.update_rule(rule, {"condition": None})
+        self.assertEqual(ctx.exception.message_dict["condition"], [NEEDS_CONDITION])
+        self.assertEqual(without_ids(self._stored(rule)), without_ids(WHALES))
 
     def test_a_refused_update_keeps_the_stored_tree(self):
         rule = self._rule("Whales")
         with self.assertRaises(ValidationError):
-            services.update_rule(
-                rule, {"conditions": _all_of(_cond("gas", "==", 21_000, source="transaction"))}
-            )
-        self.assertEqual(self._stored(rule), WHALES)
+            services.update_rule(rule, {"condition": GAS})
+        self.assertEqual(without_ids(self._stored(rule)), without_ids(WHALES))
 
     def test_rendering_a_prefetched_catalog_costs_no_query_per_rule(self):
         for index in range(3):
             self._rule(f"rule {index}")
         with self.assertNumQueries(2):
-            payloads = [rule.conditions_payload() for rule in services.rules_for(self.user)]
-        self.assertEqual(len(payloads), 3)
+            trees = [rule.console_condition() for rule in services.rules_for(self.user)]
+        self.assertEqual(len(trees), 3)
 
 
 class TagTests(RulesServiceTestCase):
@@ -157,7 +191,7 @@ class TagTests(RulesServiceTestCase):
 
     def _create(self, tag, owner=None):
         return services.create_rule(
-            owner or self.user, {"name": tag or "untagged", "tag": tag, "conditions": WHALES}
+            owner or self.user, {"name": tag or "untagged", "tag": tag, "condition": WHALES}
         )
 
     def _tag_errors(self, write):
@@ -215,9 +249,9 @@ class TagTests(RulesServiceTestCase):
 class RevisionTests(RulesServiceTestCase):
     """A rule's revision bumps when its tree changes, and on nothing else."""
 
-    def _created(self):
+    def _created(self, condition=WHALES):
         return services.create_rule(
-            self.user, {"name": "Whales", "tag": "WHALES", "conditions": WHALES}
+            self.user, {"name": "Whales", "tag": "WHALES", "condition": condition}
         )
 
     def _revision(self, rule):
@@ -228,11 +262,9 @@ class RevisionTests(RulesServiceTestCase):
 
     def test_a_new_tree_bumps_the_revision(self):
         rule = self._created()
-        services.update_rule(
-            rule, {"conditions": _all_of(_cond("number", ">=", 5, source="block"))}
-        )
+        services.update_rule(rule, {"condition": and_(transfer("amount", "gte", "250"))})
         self.assertEqual(self._revision(rule), 2)
-        services.update_rule(rule, {"conditions": WHALES})
+        services.update_rule(rule, {"condition": WHALES})
         self.assertEqual(self._revision(rule), 3)
 
     def test_other_fields_leave_the_revision(self):
@@ -243,57 +275,81 @@ class RevisionTests(RulesServiceTestCase):
 
     def test_resending_the_same_tree_leaves_the_revision(self):
         rule = self._created()
-        services.update_rule(rule, {"conditions": WHALES, "glyph": "star"})
+        services.update_rule(rule, {"condition": WHALES, "glyph": "star"})
+        self.assertEqual(self._revision(rule), 1)
+
+    def test_resending_the_rendered_tree_with_its_ids_leaves_the_revision(self):
+        # The console sends back the tree it read, ids and all; the ids are
+        # not what the tree tests.
+        rule = self._created()
+        served = Rule.objects.get(pk=rule.pk).console_condition()
+        services.update_rule(rule, {"condition": served, "name": "renamed"})
+        self.assertEqual(self._revision(rule), 1)
+        # The same tree keeps its rows, so the ids the console holds stay valid.
+        self.assertEqual(Rule.objects.get(pk=rule.pk).console_condition(), served)
+
+    def test_resending_an_address_in_another_case_leaves_the_revision(self):
+        # The stored threshold is lowercased, so a checksummed resend is the same tree.
+        mixed = "0xDAC17F958d2ee523a2206206994597C13D831ec7"
+        rule = self._created(and_(tx("to_address", "eq", mixed)))
+        services.update_rule(rule, {"condition": and_(tx("to_address", "eq", mixed.lower()))})
+        services.update_rule(
+            rule, {"condition": and_(tx("to_address", "eq", "0x" + mixed[2:].upper()))}
+        )
         self.assertEqual(self._revision(rule), 1)
 
     def test_a_refused_tree_leaves_the_revision(self):
         rule = self._created()
         with self.assertRaises(ValidationError):
-            services.update_rule(
-                rule, {"conditions": _all_of(_cond("gas", "==", 21_000, source="transaction"))}
-            )
+            services.update_rule(rule, {"condition": GAS})
         self.assertEqual(self._revision(rule), 1)
 
 
 class LowercaseWriteTests(RulesServiceTestCase):
-    """Address and calldata thresholds are stored in the case the values they
-    compare against are stored in."""
+    """Address and token thresholds are stored in the case the values they
+    compare against are stored in: lowercase."""
 
     MIXED = "0xDAC17F958d2ee523a2206206994597C13D831ec7"
+    OTHER = "0x28C6c06298d514Db089934071355E5743bf21d60"
 
-    def test_address_and_calldata_thresholds_are_stored_lowercased(self):
-        conditions = _all_of(
-            _cond("from_address", "==", self.MIXED, source="transaction"),
-            _cond("input", "contains", "0xA9059CBB", source="transaction"),
-            _cond("token", "in", [self.MIXED], source="token_transfer"),
-            _any_of(
-                _cond("miner", "==", self.MIXED, source="block"),
-                _cond("to_address", "!=", self.MIXED, source="token_transfer"),
+    def test_address_token_and_list_thresholds_are_stored_lowercased(self):
+        condition = and_(
+            tx("from_address", "eq", self.MIXED),
+            transfer("token", "eq", token(self.MIXED)),
+            transfer("from_address", "in", addresses(self.MIXED, self.OTHER, name="Binance")),
+            or_(
+                transfer("to_address", "ne", self.MIXED),
+                tx("to_address", "in", addresses(self.OTHER)),
             ),
         )
 
-        rule = services.create_rule(self.user, {"name": "USDT", "conditions": conditions})
+        rule = services.create_rule(self.user, {"name": "USDT", "condition": condition})
 
         stored = Rule.objects.get(pk=rule.pk)
         self.assertEqual(
-            sorted(
-                (c.field_name, c.value) for c in stored.all_conditions.filter(type="COMPARISON")
-            ),
             [
-                ("from_address", self.MIXED.lower()),
-                ("input", "0xa9059cbb"),
-                ("miner", self.MIXED.lower()),
-                ("to_address", self.MIXED.lower()),
-                ("token", [self.MIXED.lower()]),
+                (c.source, c.field_name, c.value)
+                for c in stored.all_conditions.filter(type="COMPARISON").order_by("pk")
+            ],
+            [
+                ("transaction", "from_address", self.MIXED.lower()),
+                ("token_transfer", "token", {"chain": 1, "address": self.MIXED.lower()}),
+                (
+                    "token_transfer",
+                    "from_address",
+                    # The list's name is the owner's label, kept as written.
+                    {"addresses": [self.MIXED.lower(), self.OTHER.lower()], "name": "Binance"},
+                ),
+                ("token_transfer", "to_address", self.MIXED.lower()),
+                ("transaction", "to_address", {"addresses": [self.OTHER.lower()]}),
             ],
         )
-        withdrawal = services.create_rule(
-            self.user,
-            {
-                "name": "Withdrawals",
-                "conditions": _all_of(_cond("address", "==", self.MIXED, source="withdrawal")),
-            },
+
+    def test_other_thresholds_are_stored_as_written(self):
+        condition = and_(
+            tx("method", "eq", "transferFrom"),
+            transfer("amount", "gte", "0.5"),
+            transfer("token_recognised", "eq", True),
         )
-        self.assertEqual(
-            withdrawal.conditions_payload()["conditions"][0]["threshold"], self.MIXED.lower()
-        )
+        rule = services.create_rule(self.user, {"name": "As written", "condition": condition})
+        self.assertEqual(without_ids(rule.console_condition()), without_ids(condition))

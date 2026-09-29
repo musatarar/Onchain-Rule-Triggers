@@ -8,7 +8,7 @@ import re
 RULES_CATALOG_THROTTLE_SCOPE = "rules_catalog"
 
 # What the rules write path answers when it refuses a rule.
-NEEDS_CONDITIONS = "A rule needs a conditions payload."
+NEEDS_CONDITION = "A rule needs a condition."
 TAG_FORMAT = "Tags use A–Z, 0–9 and hyphens, up to 12 characters."
 TAG_TAKEN = "{tag} is already used by another circuit."
 # A rule's tag: A–Z, 0–9 and hyphens, up to 12 characters, not led by a hyphen.

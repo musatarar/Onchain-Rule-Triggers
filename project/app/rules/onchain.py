@@ -1,18 +1,28 @@
 """On-chain rules against one stored block: which of its rows satisfy a rule.
 
 A rule's tree is walked as stored (``AND`` is all of its children, ``OR`` any
-of them), not through the v1 payload. One evaluation binds at most one row per
-source, so every comparison in it reads the same block, the same transaction
-and the same token transfer:
+of them). One evaluation binds at most one row per source, so every comparison
+in it reads the same block, the same transaction and the same token transfer:
 
 - a tree reading ``transaction`` or ``token_transfer`` is tried against each
   transaction in the block, bound with each of its token transfers in turn,
   or with none when it has none. The transaction matches when one of those
   bindings satisfies the tree, so two ``token_transfer`` comparisons have to
-  hold of one transfer, and ``absent`` on a transfer field means no transfer
-  was decoded for the transaction;
+  hold of one transfer;
 - a tree reading ``withdrawal`` is tried against each withdrawal in the block;
-- a tree reading only ``block`` is tried against the block.
+- a tree reading only ``block`` is tried against the block. No field of the
+  vocabulary reads a withdrawal or the block, so a stored tree reaches
+  neither branch.
+
+A comparison's field has a type in :data:`utils.VOCABULARY`, and
+:data:`utils.COMPARES` says how it compares. Amounts are compared scaled: a
+transaction's ``value`` in ETH (wei ÷ 10^18), a transfer's ``amount`` in whole
+tokens (``raw_value`` ÷ 10^decimals). ``amount`` > "250" holds for a USDT
+transfer with ``raw_value`` 397092712 (6 decimals, so 397.092712). A
+transaction's ``method`` is the name the signature catalog gives its selector
+("transfer"), or the selector ("0xa9059cbb") when the catalog names none. A
+transfer's ``token_recognised`` is whether the catalog loaded its token rather
+than a placeholder.
 
 A transaction's token transfers are the ones decoding stored for it
 (:mod:`project.app.evm.decoding`): the Transfer events its receipt's logs
@@ -26,11 +36,13 @@ A block's rows are the ones stored with it, named by its hash, since a reorg
 can put two blocks at one number. A row stored before block hashes were
 recorded names no block, so no block reads it until its block is stored again.
 
-A comparison on a source the binding leaves unbound (a ``token_transfer``
-comparison with no transfer bound) reads no value: ``absent`` holds of it,
-``exists`` and every other operator do not. Quantities are compared exactly,
-as ``Decimal``: a uint256 is past what a float holds. A block's ``timestamp``
-is compared by its UTC date, since a date threshold names a day.
+A comparison with nothing to compare holds of no operator, ``ne`` included:
+one on a source the binding leaves unbound (a ``token_transfer`` comparison
+with no transfer bound), an ``amount`` of a token whose decimals are unknown,
+a ``method`` of calldata with no selector. So an ``amount`` gate never holds
+for a token with unknown decimals, where a guessed 18 would misjudge a
+6-decimal token. Quantities are compared exactly, as ``Decimal``: a uint256
+is past what a float holds.
 
 The block's rows are read once, whatever the number of transactions:
 :func:`matches_in_block` runs one query for the transactions (or withdrawals),
@@ -41,14 +53,18 @@ and shared by every rule after, so the queries a block costs do not grow with
 the number of rules.
 """
 
-import datetime
 import functools
+from decimal import Decimal
 
 from project.app.evm.block.models import DecodeStatus, Transaction, Withdrawal
+from project.app.evm.function_signatures import FunctionSignature
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import utils
 
 GROUP_CHECKS = {"AND": all, "OR": any}
+
+# "0x" and the four bytes naming the function a transaction calls.
+SELECTOR_LENGTH = 10
 
 # A transaction decoding has not finished with: its transfers may not be stored yet.
 UNDECODED = (DecodeStatus.INGESTED, DecodeStatus.PROCESSING)
@@ -89,6 +105,12 @@ class BlockRows:
         _require_decoded(self.block, self.transactions)
         return _transfers_by_hash(self.block)
 
+    @functools.cached_property
+    def methods(self):
+        """The name of the function each of the block's transactions calls, by selector
+        (:func:`method_names`)."""
+        return method_names(selector_of(transaction.input) for transaction in self.transactions)
+
 
 def matches_in_block(rule, block, rows=None):
     """The rows of ``block`` that satisfy ``rule``, in the order the block holds them.
@@ -111,7 +133,7 @@ def matches_in_block(rule, block, rows=None):
         raise ConditionError(f"Rule {rule.pk} has no conditions to evaluate.")
 
     def holds(**bound):
-        return _holds(root, children, {utils.SOURCE_BLOCK: block, **bound})
+        return _holds(root, children, {utils.SOURCE_BLOCK: block, **bound}, rows)
 
     if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
         transfers = rows.transfers if utils.SOURCE_TOKEN_TRANSFER in sources else {}
@@ -120,8 +142,8 @@ def matches_in_block(rule, block, rows=None):
             for transaction in rows.transactions
             if any(
                 holds(transaction=transaction, token_transfer=transfer)
-                # No transfer is bound only when there is none to bind, so
-                # `absent` cannot hold of a transaction a transfer was decoded for.
+                # No transfer is bound only when the transaction has none, so a
+                # transfer comparison reads nothing and holds of no operator.
                 for transfer in transfers.get(transaction.hash) or [None]
             )
         ]
@@ -175,82 +197,100 @@ def _transfers_by_hash(block):
     return by_hash
 
 
-def _holds(node, children, rows):
+def _holds(node, children, bound, rows):
     if node.type == utils.TREE_TYPE_COMPARISON:
-        return _leaf(node, rows)
+        return _leaf(node, bound, rows)
     check = GROUP_CHECKS.get(node.type)
     if check is None:
         raise ConditionError(f"Unknown group type {node.type!r}.")
     group = children.get(node.pk)
     if not group:
         raise ConditionError(f"A {node.type} group with no conditions has no verdict.")
-    return check(_holds(child, children, rows) for child in group)
+    return check(_holds(child, children, bound, rows) for child in group)
 
 
-def _leaf(node, rows):
-    field_type = utils.ONCHAIN_FIELDS.get(node.source, {}).get(node.field_name)
+def _leaf(node, bound, rows):
+    field_type = utils.field_type(node.source, node.field_name)
     if field_type is None:
         raise ConditionError(f"Unknown field {node.field_name!r} on source {node.source!r}.")
-    value = _value(node.source, node.field_name, field_type, rows.get(node.source))
-    threshold = node.value
-    if field_type == utils.NUMBER:
-        threshold = (
-            [utils.exact_number(item) for item in threshold]
-            if isinstance(threshold, list)
-            else utils.exact_number(threshold)
-        )
-    return _compare(value, node.operator, threshold, field_type)
+    value = _value(node.source, node.field_name, bound.get(node.source), rows)
+    compare = utils.COMPARES[field_type]
+    if compare == utils.NUMBER:
+        # A decimal string, "250" or "0.5", read exactly.
+        threshold = Decimal(node.value)
+    elif node.operator == "in":
+        threshold = node.value["addresses"]
+    else:
+        threshold = node.value
+    return _compare(value, node.operator, threshold)
 
 
-def _value(source, field, field_type, row):
-    """``row``'s ``field``; ``None`` when the binding left ``source`` unbound."""
+def _value(source, field, row, rows):
+    """What ``field`` of ``row`` compares as; ``None`` when there is nothing to compare.
+
+    ``None`` when the binding left ``source`` unbound, for a transfer of a
+    token whose decimals are unknown (a guessed 18 would misjudge a 6-decimal
+    token), and for a transaction's method when its calldata names none.
+    """
     if row is None:
         return None
-    if source == utils.SOURCE_TOKEN_TRANSFER and field == "token":
-        return row.token.contract.address
-    value = getattr(row, field)
-    if field_type == utils.DATE and isinstance(value, datetime.datetime):
-        return value.astimezone(datetime.UTC).date()
-    return value
+    if source == utils.SOURCE_TRANSACTION:
+        if field == "value":
+            return utils.scaled(row.value, utils.ETH_DECIMALS)
+        if field == "method":
+            selector = selector_of(row.input)
+            return rows.methods.get(selector) or selector
+        return getattr(row, field)
+    token = row.token
+    if field == "token":
+        return {"chain": token.contract.chain, "address": token.contract.address}
+    if field == "amount":
+        return None if token.decimals is None else utils.scaled(row.raw_value, token.decimals)
+    if field == "token_recognised":
+        # A placeholder token, which the catalog does not recognise, has no coingecko id.
+        return bool(token.coingecko_id)
+    return getattr(row, field)
 
 
-def _blank(value):
-    """Absent for `exists`/`absent`. ``False`` and ``0`` are present values."""
-    return value is None or value == ""
-
-
-def _compare(value, operator, threshold, field_type):
-    if operator == "exists":
-        return not _blank(value)
-    if operator == "absent":
-        return _blank(value)
-    if operator == "contains":
-        return _contains(value, threshold)
-    if _blank(value):
+def _compare(value, operator, threshold):
+    """``value`` against ``threshold`` by ``operator``; nothing to compare holds of no operator."""
+    if value is None:
         return False
     if operator == "in":
-        return value in [_coerce(item, field_type) for item in threshold]
-    threshold = _coerce(threshold, field_type)
-    if operator == "==":
+        return value in threshold
+    if operator == "eq":
         return value == threshold
-    if operator == "!=":
+    if operator == "ne":
         return value != threshold
-    if operator == ">":
+    if operator == "gt":
         return value > threshold
-    if operator == ">=":
+    if operator == "gte":
         return value >= threshold
-    if operator == "<":
+    if operator == "lt":
         return value < threshold
-    if operator == "<=":
+    if operator == "lte":
         return value <= threshold
     raise ConditionError(f"Unknown operator {operator!r}.")
 
 
-def _contains(value, threshold):
-    return threshold.strip().lower() in str(value or "").lower()
+def selector_of(calldata):
+    """The selector ``calldata`` opens with, lowercased; ``None`` when it has none, as a plain ETH transfer's ``0x`` has none."""
+    selector = (calldata or "")[:SELECTOR_LENGTH].lower()
+    return selector if len(selector) == SELECTOR_LENGTH else None
 
 
-def _coerce(threshold, field_type):
-    if field_type == utils.DATE and isinstance(threshold, str):
-        return datetime.date.fromisoformat(threshold)
-    return threshold
+def method_names(selectors):
+    """The name of the function each of ``selectors`` calls, from the signature catalog, by selector.
+
+    A selector is four bytes of a hash, so the catalog can hold several
+    functions for one. A selector is named only when they all share a name:
+    picking one of several could name a function the transaction never
+    called. A selector the catalog names no function for is left out. One
+    query, however many selectors.
+    """
+    names = {}
+    for selector, name in FunctionSignature.objects.filter(
+        hex_signature__in=set(selectors) - {None}
+    ).values_list("hex_signature", "name"):
+        names.setdefault(selector, set()).add(name)
+    return {selector: found.pop() for selector, found in names.items() if len(found) == 1}
