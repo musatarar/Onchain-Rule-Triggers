@@ -525,7 +525,7 @@ def _headline(transaction, transfer):
         "from_label": None,
         "to_label": None,
         "amount": _amount(transfer.raw_value, transfer.token.decimals),
-        "token": _token_ref(transfer.token),
+        "token": token_ref(transfer.token),
     }
 
 
@@ -534,7 +534,7 @@ def _rule_ref(rule):
     return {"id": rule.pk, "name": rule.name, "tag": rule.tag, "glyph": rule.glyph}
 
 
-def _token_ref(token):
+def token_ref(token):
     """``token``, read with its contract, as the console's ``TokenRef``."""
     return {
         "chain": token.contract.chain,
@@ -636,7 +636,7 @@ def _transfer_detail(transfer):
     Transfer log would carry the log's index.
     """
     return {
-        "token": _token_ref(transfer.token),
+        "token": token_ref(transfer.token),
         "from_address": transfer.from_address,
         "to_address": transfer.to_address,
         "raw_value": utils.decimal_string(transfer.raw_value),

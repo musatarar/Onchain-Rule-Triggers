@@ -10,10 +10,12 @@ one match's detail: its exact JSON, the transaction and transfer facts, the
 other rules it names, and which matches it reads.
 """
 
+import io
 import unittest
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
@@ -1647,3 +1649,113 @@ class MatchDetailTests(RulesApiTestCase):
 
                 self.assertEqual(response.status_code, 405)
                 self.assertEqual(response.json()["code"], "method_not_allowed")
+
+
+class TokenSearchTests(RulesApiTestCase):
+    """GET /api/tokens/: the token catalog, searched by symbol, name or address prefix."""
+
+    TOKENS_URL = "/api/tokens/"
+
+    def _save(self, symbol, name, address, chain=ChainId.ETHEREUM, decimals=None):
+        evm_services.save_token(
+            TokenCreateSchema(
+                chain=chain,
+                address=address,
+                name=name,
+                coingecko_id=name.lower(),
+                symbol=symbol,
+                decimals=decimals,
+            )
+        )
+
+    def _search(self, **params):
+        response = self.client.get(self.TOKENS_URL, params)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def _symbols(self, **params):
+        return [row["symbol"] for row in self._search(**params)["results"]]
+
+    def test_the_search_requires_a_signed_in_session(self):
+        self.client.logout()
+        response = self.client.get(self.TOKENS_URL, {"q": "usd"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["code"], "not_authenticated")
+
+    def test_a_loaded_token_is_a_page_of_token_refs(self):
+        call_command("load_tokens", limit=3, stdout=io.StringIO())
+
+        page = self._search(q="usd", chain=1)
+
+        self.assertEqual(set(page), {"count", "next", "previous", "results"})
+        self.assertIn(
+            {"chain": 1, "address": USDT, "symbol": "USDT", "name": "Tether", "decimals": 6},
+            page["results"],
+        )
+
+    def test_a_symbol_matches_by_its_start_case_ignored(self):
+        self._save("USDT", "Tether", USDT)
+        self._save("AIUSD", "Ai dollar", "0x" + "a1" * 20)
+
+        self.assertEqual(self._symbols(q="us"), ["USDT"])
+
+    def test_a_name_matches_anywhere_in_it(self):
+        self._save("USDT", "Tether", USDT)
+        self._save("USDC", "USD Coin", USDC)
+
+        self.assertEqual(self._symbols(q="ether"), ["USDT"])
+
+    def test_an_address_matches_in_full_or_by_its_start(self):
+        self._save("USDT", "Tether", USDT)
+        self._save("USDC", "USD Coin", USDC)
+
+        self.assertEqual(self._symbols(q=USDT), ["USDT"])
+        self.assertEqual(self._symbols(q="0xDAC17F"), ["USDT"])
+
+    def test_rows_are_sorted_by_symbol(self):
+        self._save("USDT", "Tether", USDT)
+        self._save("USDC", "USD Coin", USDC)
+        self._save("AIUSD", "AI USD", "0x" + "a1" * 20)
+
+        self.assertEqual(self._symbols(q="usd"), ["AIUSD", "USDC", "USDT"])
+
+    def test_chain_narrows_the_search_to_it(self):
+        self._save("USDT", "Tether", USDT)
+        self._save("USDT", "Tether", USDT, chain=ChainId.POLYGON)
+
+        self.assertEqual(
+            [row["chain"] for row in self._search(q="usdt", chain=ChainId.POLYGON)["results"]],
+            [ChainId.POLYGON],
+        )
+
+    def test_a_chain_not_catalogued_is_refused(self):
+        response = self.client.get(self.TOKENS_URL, {"chain": 999_999})
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_placeholder_is_found_only_by_its_address(self):
+        self._save("USDT", "Tether", USDT)
+        evm_services.tokens_at([(ChainId.ETHEREUM, UNKNOWN_TOKEN)])
+
+        self.assertEqual(
+            self._search(q=UNKNOWN_TOKEN)["results"],
+            [
+                {
+                    "chain": 1,
+                    "address": UNKNOWN_TOKEN,
+                    "symbol": None,
+                    "name": None,
+                    "decimals": None,
+                }
+            ],
+        )
+        self.assertEqual(self._symbols(), ["USDT"])
+
+    def test_a_page_holds_the_default_page_size(self):
+        for n in range(30):
+            self._save(f"T{n:02}", f"Token {n}", "0x" + f"{n:02x}" * 20)
+
+        page = self._search(q="t")
+
+        self.assertEqual(page["count"], 30)
+        self.assertEqual(len(page["results"]), 25)
+        self.assertIsNotNone(page["next"])

@@ -1,6 +1,7 @@
 """The EVM catalogs: what a four-byte selector might decode to, which contracts are tokens, and how entries get in."""
 
 from django.db import transaction
+from django.db.models import Q
 
 from project.app.evm.contracts import Contract
 from project.app.evm.function_signatures import (
@@ -181,3 +182,19 @@ def save_tokens(tokens):
         Token.objects.bulk_create(created)
         Token.objects.bulk_update(updated, list(TokenUpdateSchema.model_fields))
     return len(by_key)
+
+
+def search_tokens(q, chain=None):
+    """The tokens ``q`` names, by symbol, symbol first, on ``chain`` when one is given.
+
+    ``q`` matches a symbol's start, part of a name, or an address's start, case
+    ignored. A placeholder token has no symbol or name, so only its address
+    finds it, and an empty ``q`` lists the catalog without them.
+    """
+    q = (q or "").strip()
+    named = Q(name__isnull=False) & (Q(symbol__istartswith=q) | Q(name__icontains=q))
+    found = (named | Q(contract__address__startswith=q.lower())) if q else named
+    tokens = Token.objects.select_related("contract").filter(found)
+    if chain is not None:
+        tokens = tokens.filter(contract__chain=chain)
+    return tokens.order_by("symbol", "contract__chain", "contract__address")

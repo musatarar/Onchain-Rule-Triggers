@@ -1,5 +1,6 @@
 """Rules-catalog API: CRUD over the signed-in user's rules, in the console's
-``Rule`` shape, the engine status, the match journal, and one match's detail.
+``Rule`` shape, the engine status, the match journal, one match's detail, and
+the token search.
 
 HTTP only — reads, writes and their rules live in :mod:`services`. Every
 lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
@@ -18,6 +19,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from project.app.constants import RULES_CATALOG_THROTTLE_SCOPE
+from project.app.evm import services as evm_services
+from project.app.evm.chains import ChainId
 from project.app.rules import services
 from project.app.rules.models import Rule
 
@@ -306,6 +309,34 @@ class MatchDetailView(APIView):
         return Response(detail)
 
 
+class TokenQuerySerializer(serializers.Serializer):
+    """The token search's query string; a ``q`` left out lists the catalog."""
+
+    q = serializers.CharField(required=False, allow_blank=True, default="", trim_whitespace=True)
+    chain = serializers.ChoiceField(choices=ChainId.choices, required=False)
+
+
+class TokenListView(APIView):
+    """GET /api/tokens/?q=&chain= — the token catalog, searched by symbol, name or address.
+
+    The same for everyone. The gate editor's picker lists a page of it, and the
+    console looks a gate's token up by its full address to label it.
+    """
+
+    # The catalog's scope: a scope of its own would need a rate in settings.
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
+
+    def get(self, request, *args, **kwargs):
+        query = TokenQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        paginator = CatalogPagination()
+        page = paginator.paginate_queryset(
+            evm_services.search_tokens(params["q"], params.get("chain")), request, view=self
+        )
+        return paginator.get_paginated_response([services.token_ref(token) for token in page])
+
+
 # Appended to the `api/` urlpatterns as flat patterns (not include()d): the
 # auth suite audits every pattern's permission classes and expects callbacks.
 urlpatterns = [
@@ -314,4 +345,5 @@ urlpatterns = [
     path("engine/status/", EngineStatusView.as_view(), name="engine-status"),
     path("matches/", MatchListView.as_view(), name="matches-list"),
     path("matches/<int:pk>/", MatchDetailView.as_view(), name="matches-detail"),
+    path("tokens/", TokenListView.as_view(), name="tokens-list"),
 ]
