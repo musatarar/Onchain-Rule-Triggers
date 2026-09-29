@@ -1,9 +1,9 @@
 """User-defined rules catalog: ``Rule``.
 
-Pins the rules-catalog schema: every rule needs conditions, the conditions
-vocabulary, and the clean sweep on owner delete. The conditions are checked on
-the write path (``rules.services``), so the refusals that name them go
-through it.
+Pins the rules-catalog schema: every rule needs a condition, the condition's
+vocabulary, and the clean sweep on owner delete. The condition is checked on
+the write path (``rules.services``), so the refusals that name it go through
+it.
 """
 
 from django.contrib.auth import get_user_model
@@ -11,24 +11,22 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from project.app.constants import NEEDS_CONDITIONS
+from project.app.constants import NEEDS_CONDITION
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
+from project.app.rules.utils import without_ids
+from project.app.tests.condition_trees import and_, gate, tx
+
+USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 
 
 def _user(username="planner@lockedin.example"):
     return get_user_model().objects.create_user(username=username)
 
 
-def _example_conditions(field="value", operator=">", threshold=10**18, source="transaction"):
+def _example_condition():
     """A worked example: a transaction moving more than one ether."""
-    return {
-        "version": Rule.CONDITIONS_SCHEMA_VERSION,
-        "operator": "all_of",
-        "conditions": [
-            {"field": field, "operator": operator, "threshold": threshold, "source": source}
-        ],
-    }
+    return and_(tx("value", "gt", "1"))
 
 
 class RuleTests(TestCase):
@@ -39,44 +37,49 @@ class RuleTests(TestCase):
     def _rule(self, **kwargs):
         kwargs.setdefault("owner", self.user)
         kwargs.setdefault("name", "Large transfers")
-        conditions = kwargs.pop("conditions", _example_conditions())
+        condition = kwargs.pop("condition", _example_condition())
         rule = Rule.objects.create(**kwargs)
-        utils.build_tree(rule, conditions)
+        utils.build_tree(rule, condition)
         return rule
 
     def test_the_example_rule_round_trips(self):
         rule = self._rule()
         rule.full_clean()
         rule.refresh_from_db()
-        self.assertEqual(rule.conditions_payload(), _example_conditions())
+        self.assertEqual(without_ids(rule.console_condition()), without_ids(_example_condition()))
 
-    def test_a_rule_needs_conditions(self):
-        for fields in ({"name": "no payload", "conditions": {}}, {"name": "no conditions"}):
+    def test_a_rule_needs_a_condition(self):
+        for fields in ({"name": "null condition", "condition": None}, {"name": "no condition"}):
             with self.subTest(fields=fields):
                 with self.assertRaises(ValidationError) as ctx:
                     services.create_rule(self.user, fields)
-                self.assertEqual(ctx.exception.message_dict["conditions"], [NEEDS_CONDITIONS])
+                self.assertEqual(ctx.exception.message_dict["condition"], [NEEDS_CONDITION])
 
     def test_a_rule_naming_a_field_its_source_does_not_carry_is_refused(self):
         with self.assertRaises(ValidationError) as ctx:
             services.create_rule(
-                self.user,
-                {"name": "reads gas", "conditions": _example_conditions(field="gas")},
+                self.user, {"name": "reads gas", "condition": and_(tx("gas", "gt", "21000"))}
             )
-        self.assertIn("conditions", ctx.exception.message_dict)
+        self.assertIn(
+            "condition.children[0].field: 'transaction' has no field 'gas'",
+            ctx.exception.message_dict["condition"][0],
+        )
 
-    def test_a_rule_reading_a_lead_source_is_refused(self):
-        for source in ("lead", "derived", "notes", "events"):
+    def test_a_rule_reading_a_source_outside_the_vocabulary_is_refused(self):
+        for source in ("lead", "block", "withdrawal", "events"):
             with self.subTest(source=source):
                 with self.assertRaises(ValidationError) as ctx:
                     services.create_rule(
                         self.user,
                         {
-                            "name": "reads a lead",
-                            "conditions": _example_conditions(field="deals_closed", source=source),
+                            "name": "reads elsewhere",
+                            "condition": and_(gate(source, "number", "gt", "20")),
                         },
                     )
-                self.assertIn("conditions", ctx.exception.message_dict)
+                self.assertIn(
+                    "condition.children[0].source must be one of",
+                    ctx.exception.message_dict["condition"][0],
+                )
 
     def test_deleting_a_user_sweeps_their_rules_with_them(self):
         user = _user("leaver@lockedin.example")
@@ -101,7 +104,7 @@ class ConditionTests(TestCase):
     def _comparison(self, parent, **kwargs):
         kwargs.setdefault("field_name", "value")
         kwargs.setdefault("operator", "gt")
-        kwargs.setdefault("value", 10**18)
+        kwargs.setdefault("value", "1")
         kwargs.setdefault("source", Condition.SOURCE_TRANSACTION)
         return Condition.objects.create(
             rule=parent.rule, parent=parent, type=Condition.TYPE_COMPARISON, **kwargs
@@ -114,12 +117,12 @@ class ConditionTests(TestCase):
 
     def test_an_and_root_with_two_comparisons_round_trips(self):
         root = self._group()
-        self._comparison(root, field_name="value", operator="gt", value=10**18)
+        self._comparison(root, field_name="value", operator="gt", value="1")
         self._comparison(
             root,
             field_name="to_address",
-            operator="exact",
-            value="0xabc",
+            operator="eq",
+            value=USDT,
             source=Condition.SOURCE_TOKEN_TRANSFER,
         )
         for condition in self.rule.all_conditions.all():
@@ -130,8 +133,8 @@ class ConditionTests(TestCase):
         self.assertEqual(
             [(c.type, c.field_name, c.operator, c.value, c.source) for c in root.children.all()],
             [
-                ("COMPARISON", "value", "gt", 10**18, "transaction"),
-                ("COMPARISON", "to_address", "exact", "0xabc", "token_transfer"),
+                ("COMPARISON", "value", "gt", "1", "transaction"),
+                ("COMPARISON", "to_address", "eq", USDT, "token_transfer"),
             ],
         )
         self.assertEqual(self.rule.all_conditions.count(), 3)
@@ -146,14 +149,14 @@ class ConditionTests(TestCase):
         for parts in (
             {"field_name": "value"},
             {"operator": "gt"},
-            {"source": Condition.SOURCE_BLOCK},
-            {"value": 0},
+            {"source": Condition.SOURCE_TRANSACTION},
+            {"value": "0"},
         ):
             with self.subTest(parts=parts):
                 self._refused(Condition(rule=self.rule, type=Condition.TYPE_OR, **parts), "type")
 
     def test_a_comparison_missing_a_part_is_refused(self):
-        whole = {"field_name": "value", "operator": "gt", "source": Condition.SOURCE_BLOCK}
+        whole = {"field_name": "value", "operator": "gt", "source": Condition.SOURCE_TRANSACTION}
         for missing, field in (
             ("field_name", "field_name"),
             ("operator", "field_name"),
@@ -218,7 +221,7 @@ class ConditionTests(TestCase):
                     "type": Condition.TYPE_COMPARISON,
                     "field_name": "value",
                     "operator": "gt",
-                    "source": Condition.SOURCE_BLOCK,
+                    "source": Condition.SOURCE_TRANSACTION,
                     **bad,
                 }
                 with self.assertRaises(IntegrityError), transaction.atomic():

@@ -1,0 +1,375 @@
+[
+  {
+    "id": 1,
+    "name": "Stablecoin transfers of 2,000 or more",
+    "tag": "STABLE-2K",
+    "glyph": "triangle",
+    "sentence": "USDT or USDC transfers of at least 2,000",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 1,
+      "type": "and",
+      "children": [
+        {
+          "id": 2,
+          "type": "or",
+          "children": [
+            {
+              "id": 3,
+              "type": "comparison",
+              "source": "token_transfer",
+              "field": "token",
+              "operator": "eq",
+              "value": {
+                "chain": 1,
+                "address": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+              }
+            },
+            {
+              "id": 4,
+              "type": "comparison",
+              "source": "token_transfer",
+              "field": "token",
+              "operator": "eq",
+              "value": {
+                "chain": 1,
+                "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+              }
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "amount",
+          "operator": "gte",
+          "value": "2000"
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 2,
+    "name": "Token outflows from Binance hot wallets",
+    "tag": "BNB-TOKENS",
+    "glyph": "diamond",
+    "sentence": "Any token transfer from the Binance hot wallets",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 6,
+      "type": "and",
+      "children": [
+        {
+          "id": 7,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "from_address",
+          "operator": "in",
+          "value": {
+            "addresses": [
+              "0x28c6c06298d514db089934071355e5743bf21d60",
+              "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+              "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+            ],
+            "name": "Binance hot wallets"
+          }
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 3,
+    "name": "ETH sends over 10 ETH",
+    "tag": "ETH-10",
+    "glyph": "target",
+    "sentence": "Transactions sending more than 10 ETH",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 8,
+      "type": "and",
+      "children": [
+        {
+          "id": 9,
+          "type": "comparison",
+          "source": "transaction",
+          "field": "value",
+          "operator": "gt",
+          "value": "10"
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 4,
+    "name": "Transfers on unrecognised contracts",
+    "tag": "UNKNOWN-TKN",
+    "glyph": "square",
+    "sentence": "Transfers on contracts the token catalog does not recognise",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 10,
+      "type": "and",
+      "children": [
+        {
+          "id": 11,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "token_recognised",
+          "operator": "eq",
+          "value": false
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 5,
+    "name": "PEPE moves over 1B",
+    "tag": "PEPE-1B",
+    "glyph": "star",
+    "sentence": "PEPE transfers over 1 billion",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 12,
+      "type": "and",
+      "children": [
+        {
+          "id": 13,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "token",
+          "operator": "eq",
+          "value": {
+            "chain": 1,
+            "address": "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+          }
+        },
+        {
+          "id": 14,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "amount",
+          "operator": "gt",
+          "value": "1000000000"
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 6,
+    "name": "Any transfer over 1M tokens",
+    "tag": "ANY-1M",
+    "glyph": "bars",
+    "sentence": "Any token transfer over 1,000,000 tokens",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 15,
+      "type": "and",
+      "children": [
+        {
+          "id": 16,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "amount",
+          "operator": "gt",
+          "value": "1000000"
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 7,
+    "name": "LINK sent to Binance",
+    "tag": "LINK-BNB",
+    "glyph": "chevron",
+    "sentence": "LINK transfers to Binance hot wallets",
+    "enabled": false,
+    "revision": 1,
+    "condition": {
+      "id": 17,
+      "type": "and",
+      "children": [
+        {
+          "id": 18,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "token",
+          "operator": "eq",
+          "value": {
+            "chain": 1,
+            "address": "0x514910771af9ca656af840dff83e8264ecf986ca"
+          }
+        },
+        {
+          "id": 19,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "to_address",
+          "operator": "in",
+          "value": {
+            "addresses": [
+              "0x28c6c06298d514db089934071355e5743bf21d60",
+              "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+              "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+            ],
+            "name": "Binance hot wallets"
+          }
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  },
+  {
+    "id": 8,
+    "name": "Sizable outflows from Binance hot wallets",
+    "tag": "BNB-OUT",
+    "glyph": "bolt",
+    "sentence": "Anything leaving the Binance hot wallets: USDT or USDC of 250 or more, PEPE over 1M, or more than 1 ETH",
+    "enabled": true,
+    "revision": 1,
+    "condition": {
+      "id": 20,
+      "type": "and",
+      "children": [
+        {
+          "id": 21,
+          "type": "or",
+          "children": [
+            {
+              "id": 22,
+              "type": "comparison",
+              "source": "transaction",
+              "field": "from_address",
+              "operator": "in",
+              "value": {
+                "addresses": [
+                  "0x28c6c06298d514db089934071355e5743bf21d60",
+                  "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+                  "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+                ],
+                "name": "Binance hot wallets"
+              }
+            },
+            {
+              "id": 23,
+              "type": "comparison",
+              "source": "token_transfer",
+              "field": "from_address",
+              "operator": "in",
+              "value": {
+                "addresses": [
+                  "0x28c6c06298d514db089934071355e5743bf21d60",
+                  "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+                  "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+                ],
+                "name": "Binance hot wallets"
+              }
+            }
+          ]
+        },
+        {
+          "id": 24,
+          "type": "or",
+          "children": [
+            {
+              "id": 25,
+              "type": "and",
+              "children": [
+                {
+                  "id": 26,
+                  "type": "or",
+                  "children": [
+                    {
+                      "id": 27,
+                      "type": "comparison",
+                      "source": "token_transfer",
+                      "field": "token",
+                      "operator": "eq",
+                      "value": {
+                        "chain": 1,
+                        "address": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+                      }
+                    },
+                    {
+                      "id": 28,
+                      "type": "comparison",
+                      "source": "token_transfer",
+                      "field": "token",
+                      "operator": "eq",
+                      "value": {
+                        "chain": 1,
+                        "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": 29,
+                  "type": "comparison",
+                  "source": "token_transfer",
+                  "field": "amount",
+                  "operator": "gte",
+                  "value": "250"
+                }
+              ]
+            },
+            {
+              "id": 30,
+              "type": "and",
+              "children": [
+                {
+                  "id": 31,
+                  "type": "comparison",
+                  "source": "token_transfer",
+                  "field": "token",
+                  "operator": "eq",
+                  "value": {
+                    "chain": 1,
+                    "address": "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+                  }
+                },
+                {
+                  "id": 32,
+                  "type": "comparison",
+                  "source": "token_transfer",
+                  "field": "amount",
+                  "operator": "gt",
+                  "value": "1000000"
+                }
+              ]
+            },
+            {
+              "id": 33,
+              "type": "comparison",
+              "source": "transaction",
+              "field": "value",
+              "operator": "gt",
+              "value": "1"
+            }
+          ]
+        }
+      ]
+    },
+    "created_at": "2026-09-24T12:00:00Z",
+    "updated_at": "2026-09-24T12:00:00Z"
+  }
+]

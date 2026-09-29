@@ -1,226 +1,206 @@
-"""The ``conditions`` payload contract: its schema and the on-chain vocabulary.
+"""The condition tree contract: the console's ``ConditionNode`` shape and its vocabulary.
 
 Pure — no database. What is stored here is what the evaluator must resolve, so
 anything this accepts is a promise and anything it rejects never reaches a row.
 """
 
+import json
+import os
+
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
 from project.app.rules import utils
+from project.app.tests.condition_trees import addresses, and_, gate, or_, token, transfer, tx
 
-TX = utils._cond("from_address", "==", "0x" + "a1" * 20, source="transaction")
-TRANSFER = utils._cond("token", "==", "0x" + "b0" * 20, source="token_transfer")
-BLOCK = utils._cond("number", ">=", 18_000_000, source="block")
-WITHDRAWAL = utils._cond("amount", ">", 32_000_000_000, source="withdrawal")
+ALICE = "0x" + "a1" * 20
+BOB = "0x" + "b0" * 20
+USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+CIRCUITS = os.path.join(settings.BASE_DIR, "raw_data", "circuits.json")
+VOCABULARY = os.path.join(
+    settings.BASE_DIR, "frontend", "src", "console", "api", "demo", "fixtures", "vocabulary.json"
+)
 
 
-def _payload(*conditions, operator="all_of", version=utils.SCHEMA_VERSION):
-    return {"version": version, "operator": operator, "conditions": list(conditions)}
+def _load(path):
+    with open(path, encoding="utf-8") as source:
+        return json.load(source)
 
 
-class ValidPayloadTests(SimpleTestCase):
-    def test_the_builders_produce_a_payload_the_validator_accepts(self):
-        utils.validate_conditions(utils._all_of(TX))
+class ValidTreeTests(SimpleTestCase):
+    def test_every_demo_circuit_is_accepted(self):
+        for circuit in _load(CIRCUITS):
+            with self.subTest(tag=circuit["tag"]):
+                utils.validate_condition(circuit["condition"])
 
-    def test_the_seeded_shapes_of_condition_are_accepted(self):
-        utils.validate_conditions(
-            _payload(
-                TX,
-                TRANSFER,
-                BLOCK,
-                utils._cond("input", "contains", "0xa9059cbb", source="transaction"),
-                utils._cond("to_address", "absent", source="transaction"),
-                utils._cond("timestamp", ">=", "2023-08-26", source="block"),
-                utils._cond("raw_value", "in", [1, 2**255], source="token_transfer"),
-                {"operator": "any_of", "conditions": [TX, TRANSFER]},
-            )
+    def test_every_field_is_nameable_with_each_of_its_operators(self):
+        values = {
+            "address": ALICE,
+            "token": token(USDT),
+            "signature": "transfer",
+            "native_amount": "0.5",
+            "amount": "250",
+            "bool": False,
+        }
+        for source in utils.VOCABULARY["sources"]:
+            for field in source["fields"]:
+                for operator in field["operators"]:
+                    value = addresses(ALICE) if operator == "in" else values[field["type"]]
+                    with self.subTest(source=source["key"], field=field["key"], operator=operator):
+                        utils.validate_condition(
+                            and_(gate(source["key"], field["key"], operator, value))
+                        )
+
+    def test_groups_nest_to_any_depth_and_ids_are_ignored(self):
+        leaf = {**tx("value", "gt", "1"), "id": 99}
+        utils.validate_condition({**or_(and_(or_(and_(leaf)))), "id": "anything"})
+
+    def test_an_in_list_may_carry_a_display_name(self):
+        utils.validate_condition(
+            and_(tx("from_address", "in", addresses(ALICE, BOB, name="Binance hot wallets")))
         )
-
-    def test_a_lone_leaf_under_any_of_is_accepted(self):
-        utils.validate_conditions(_payload(TX, operator="any_of"))
-
-    def test_every_field_is_nameable(self):
-        for source, fields in utils.ONCHAIN_FIELDS.items():
-            for field in fields:
-                with self.subTest(source=source, field=field):
-                    utils.validate_conditions(_payload(utils._cond(field, "exists", source=source)))
-
-    def test_a_uint256_threshold_is_accepted_and_a_numeric_string_is_not(self):
-        utils.validate_conditions(
-            _payload(utils._cond("value", ">", 2**256 - 1, source="transaction"))
-        )
-        with self.assertRaisesMessage(ValidationError, "expected a number"):
-            utils.validate_conditions(
-                _payload(utils._cond("value", ">", "1000", source="transaction"))
-            )
 
 
 class VocabularyTests(SimpleTestCase):
-    def test_the_fields_are_exactly_these(self):
-        self.assertEqual(
-            utils.ONCHAIN_FIELDS,
-            {
-                "transaction": {
-                    "from_address": utils.TEXT,
-                    "to_address": utils.TEXT,
-                    "value": utils.NUMBER,
-                    "input": utils.TEXT,
-                },
-                "token_transfer": {
-                    "token": utils.TEXT,
-                    "from_address": utils.TEXT,
-                    "to_address": utils.TEXT,
-                    "raw_value": utils.NUMBER,
-                },
-                "block": {"number": utils.NUMBER, "timestamp": utils.DATE, "miner": utils.TEXT},
-                "withdrawal": {"address": utils.TEXT, "amount": utils.NUMBER},
-            },
+    def test_the_vocabulary_is_the_consoles(self):
+        # Served as it is, so it has to read as the console's fixture does once
+        # serialized: tuples become lists.
+        self.assertEqual(json.loads(json.dumps(utils.VOCABULARY)), _load(VOCABULARY))
+
+    def test_every_type_has_a_comparison(self):
+        types = {
+            field["type"] for source in utils.VOCABULARY["sources"] for field in source["fields"]
+        }
+        self.assertEqual(types, set(utils.COMPARES))
+
+    def test_a_field_type_is_looked_up_by_source_and_key(self):
+        self.assertEqual(utils.field_type("token_transfer", "amount"), "amount")
+        self.assertEqual(utils.field_type("transaction", "value"), "native_amount")
+        self.assertIsNone(utils.field_type("token_transfer", "raw_value"))
+        self.assertIsNone(utils.field_type("block", "number"))
+
+
+class LowercaseTests(SimpleTestCase):
+    def test_address_and_token_values_are_lowercased_and_nothing_else_is(self):
+        mixed = "0x" + "aB" * 20
+        tree = and_(
+            tx("from_address", "eq", mixed),
+            transfer("to_address", "in", addresses(mixed, name="Mixed Case")),
+            transfer("token", "eq", token(mixed)),
+            tx("method", "eq", "transferFrom"),
+            or_(transfer("amount", "gte", "250")),
         )
 
-    def test_the_sources_a_payload_names_are_read_from_its_leaves(self):
         self.assertEqual(
-            utils.payload_sources(
-                _payload(BLOCK, {"operator": "any_of", "conditions": [TRANSFER, TX]})
+            utils.lowercase_thresholds(tree),
+            and_(
+                tx("from_address", "eq", mixed.lower()),
+                transfer("to_address", "in", addresses(mixed.lower(), name="Mixed Case")),
+                transfer("token", "eq", token(mixed.lower())),
+                tx("method", "eq", "transferFrom"),
+                or_(transfer("amount", "gte", "250")),
             ),
-            {"block", "token_transfer", "transaction"},
-        )
-        for malformed in ("yes", None, {"conditions": [1, {"field": "x"}]}):
-            with self.subTest(payload=malformed):
-                self.assertEqual(utils.payload_sources(malformed), frozenset())
-
-    def test_address_and_calldata_thresholds_are_lowercased_and_nothing_else_is(self):
-        mixed = "0xAbCdEf" + "0" * 34
-        payload = _payload(
-            utils._cond("from_address", "==", mixed, source="transaction"),
-            utils._cond("input", "==", "0xA9059CBB", source="transaction"),
-            utils._cond("value", ">", 10**18, source="transaction"),
-            {
-                "operator": "any_of",
-                "conditions": [
-                    utils._cond("token", "in", [mixed, mixed.upper()], source="token_transfer"),
-                    utils._cond("miner", "exists", source="block"),
-                ],
-            },
         )
 
-        lowered = utils.lowercase_thresholds(payload)
-
-        self.assertEqual(lowered["conditions"][0]["threshold"], mixed.lower())
-        self.assertEqual(lowered["conditions"][1]["threshold"], "0xa9059cbb")
-        self.assertEqual(lowered["conditions"][2]["threshold"], 10**18)
+    def test_a_method_selector_is_lowercased_and_a_method_name_keeps_its_case(self):
+        # The evaluator reads a transaction's selector in lowercase, so
+        # "0xA9059CBB" as written would never hold.
         self.assertEqual(
-            lowered["conditions"][3]["conditions"][0]["threshold"], [mixed.lower()] * 2
-        )
-        self.assertNotIn("threshold", lowered["conditions"][3]["conditions"][1])
-        self.assertEqual(payload["conditions"][0]["threshold"], mixed)
-
-
-class SchemaRejectionTests(SimpleTestCase):
-    def _refused(self, payload, message=""):
-        with self.assertRaisesMessage(ValidationError, message):
-            utils.validate_conditions(payload)
-
-    def test_payloads_that_are_not_a_versioned_object_are_refused(self):
-        for payload in ("yes", [1, 2, 3], 42, None, {}, {"lol": 1}):
-            with self.subTest(payload=payload):
-                self._refused(payload)
-
-    def test_a_future_schema_version_is_refused(self):
-        self._refused(_payload(TX, version=utils.SCHEMA_VERSION + 1), "conditions.version")
-
-    def test_an_unknown_group_operator_is_refused(self):
-        self._refused(_payload(TX, operator="xor"), "must be 'all_of' or 'any_of'")
-
-    def test_an_empty_condition_list_is_refused(self):
-        self._refused(_payload(), "non-empty list")
-
-    def test_groups_nest_one_level_only(self):
-        self._refused(
-            _payload(
-                TX,
-                {
-                    "operator": "any_of",
-                    "conditions": [{"operator": "all_of", "conditions": [TX]}],
-                },
+            utils.lowercase_thresholds(
+                and_(tx("method", "eq", "0xA9059CBB"), tx("method", "ne", "transferFrom"))
             ),
-            "groups nest one level only",
+            and_(tx("method", "eq", "0xa9059cbb"), tx("method", "ne", "transferFrom")),
         )
 
-    def test_an_unknown_source_is_refused(self):
-        # The lead sources included: a rule reads blocks and nothing else.
-        for source in ("vibes", "lead", "derived", "notes", "events"):
+
+class RejectionTests(SimpleTestCase):
+    def assertRefused(self, tree, message):
+        with self.assertRaises(ValidationError) as ctx:
+            utils.validate_condition(tree)
+        self.assertEqual(len(ctx.exception.messages), 1)
+        self.assertIn(message, ctx.exception.messages[0])
+
+    def test_a_field_the_source_does_not_carry_is_refused_by_its_path(self):
+        self.assertRefused(
+            and_(tx("value", "gt", "1"), or_(transfer("amont", "gt", "1"))),
+            "condition.children[1].children[0].field: 'token_transfer' has no field 'amont'",
+        )
+
+    def test_a_root_that_is_not_a_group_is_refused(self):
+        self.assertRefused(tx("value", "gt", "1"), "condition.type must be 'and' or 'or'")
+        self.assertRefused([], "condition must be an object.")
+
+    def test_an_empty_group_is_refused(self):
+        self.assertRefused(and_(or_()), "condition.children[0].children must be a non-empty list.")
+
+    def test_an_unknown_node_type_is_refused(self):
+        self.assertRefused(
+            and_({"id": None, "type": "not", "children": []}),
+            "condition.children[0].type must be 'and', 'or' or 'comparison', got 'not'.",
+        )
+
+    def test_a_tree_nested_past_the_limit_is_refused(self):
+        tree = tx("value", "gt", "1")
+        for _ in range(utils.MAX_DEPTH):
+            tree = and_(tree)
+        self.assertRefused(tree, f"groups nest at most {utils.MAX_DEPTH} deep")
+
+    def test_an_unknown_key_is_refused(self):
+        self.assertRefused(
+            and_({**tx("value", "gt", "1"), "threshold": "1"}),
+            "condition.children[0] has unknown key(s): 'threshold'.",
+        )
+        self.assertRefused(
+            and_(transfer("token", "eq", {**token(USDT), "symbol": "USDT"})),
+            "condition.children[0].value has unknown key(s): 'symbol'.",
+        )
+
+    def test_the_sources_outside_the_vocabulary_are_refused(self):
+        for source in ("block", "withdrawal", "outreach"):
             with self.subTest(source=source):
-                self._refused(
-                    _payload(utils._cond("number", ">", 1, source=source)),
-                    "source must be one of",
+                self.assertRefused(
+                    and_(gate(source, "number", "gt", "1")),
+                    "condition.children[0].source must be one of 'token_transfer', 'transaction'",
                 )
 
-    def test_a_field_the_source_does_not_carry_is_refused(self):
-        for leaf in (
-            utils._cond("gas", ">", 1, source="transaction"),
-            utils._cond("deals_closed", ">", 1, source="block"),
-            utils._cond("token", "==", "0x", source="transaction"),
-        ):
-            with self.subTest(leaf=leaf):
-                self._refused(_payload(leaf), "has no field")
-
-    def test_an_unknown_key_on_a_condition_is_refused(self):
-        self._refused(_payload(dict(TX, sneaky="payload")), "unknown key(s): 'sneaky'")
-
-    def test_an_operator_that_does_not_apply_to_the_field_is_refused(self):
-        for leaf in (
-            utils._cond("value", "contains", "100", source="transaction"),
-            utils._cond("timestamp", "contains", "2023", source="block"),
-            utils._cond("timestamp", "in", ["2023-08-26"], source="block"),
-        ):
-            with self.subTest(leaf=leaf):
-                self._refused(_payload(leaf), "does not apply")
-
-    def test_a_threshold_of_the_wrong_type_is_refused(self):
-        for leaf in (
-            utils._cond("value", ">", "twenty", source="transaction"),
-            utils._cond("value", ">", True, source="transaction"),
-            utils._cond("timestamp", ">", "last tuesday", source="block"),
-            utils._cond("from_address", "==", 5, source="transaction"),
-        ):
-            with self.subTest(leaf=leaf):
-                self._refused(_payload(leaf))
-
-    def test_a_missing_or_surplus_threshold_is_refused(self):
-        self._refused(
-            _payload({"field": "value", "operator": ">", "source": "transaction"}),
-            "needs a threshold",
+    def test_an_operator_the_field_does_not_take_is_refused(self):
+        self.assertRefused(
+            and_(transfer("token", "gt", token(USDT))),
+            "condition.children[0].operator: 'gt' does not apply to 'token'; known: 'eq', 'ne'.",
         )
-        self._refused(
-            _payload(
-                {
-                    "field": "timestamp",
-                    "operator": "exists",
-                    "source": "block",
-                    "threshold": "2023-08-26",
-                }
+        self.assertRefused(and_(tx("value", ">=", "1")), "'>=' does not apply to 'value'")
+
+    def test_a_value_of_the_wrong_type_is_refused(self):
+        cases = [
+            (tx("value", "gt", 10), "expected a decimal string"),
+            (tx("value", "gt", "1e18"), "expected a decimal string"),
+            (transfer("amount", "gt", "-1"), "expected a decimal string"),
+            (tx("from_address", "eq", "0x1234"), "expected a 0x address of 40 hex digits"),
+            (transfer("token", "eq", USDT), 'expected {"chain", "address"}'),
+            (transfer("token", "eq", token(USDT, chain=12345)), ".value.chain must be one of"),
+            (
+                transfer("token", "eq", {"chain": True, "address": USDT}),
+                ".value.chain must be one of",
             ),
-            "takes no threshold",
-        )
-        self._refused(
-            _payload(utils._cond("value", "in", [], source="transaction")),
-            "'in' needs a non-empty list threshold",
-        )
+            (transfer("token_recognised", "eq", "false"), "expected true or false"),
+            (tx("method", "eq", "  "), "expected a method name or selector"),
+            (tx("from_address", "in", [ALICE]), "'in' needs {\"addresses\": [...]}"),
+            (tx("from_address", "in", addresses()), ".value.addresses must be a non-empty list."),
+            (
+                tx("from_address", "in", addresses(ALICE, "0x12")),
+                ".value.addresses[1]: expected a 0x",
+            ),
+            (
+                tx("from_address", "in", {"addresses": [ALICE], "name": 7}),
+                ".value.name must be text",
+            ),
+        ]
+        for tree, message in cases:
+            with self.subTest(message=message, value=tree["value"]):
+                self.assertRefused(and_(tree), message)
 
-    def test_a_phrase_too_short_to_mean_anything_is_refused(self):
-        self._refused(
-            _payload(utils._cond("input", "contains", "0x", source="transaction")),
-            "at least 3 characters",
-        )
-        self._refused(
-            _payload(utils._cond("input", "contains", "   ", source="transaction")),
-            "needs a phrase",
-        )
-
-    def test_withdrawals_cannot_be_read_with_transactions_or_their_transfers(self):
-        for other in (TX, TRANSFER):
-            with self.subTest(other=other["source"]):
-                self._refused(_payload(WITHDRAWAL, other), "'withdrawal' together with")
-        utils.validate_conditions(_payload(WITHDRAWAL, BLOCK))
-        utils.validate_conditions(_payload(TX, TRANSFER, BLOCK))
+    def test_a_comparison_without_a_value_is_refused(self):
+        leaf = tx("value", "gt", "1")
+        del leaf["value"]
+        self.assertRefused(and_(leaf), "condition.children[0].value is missing.")
