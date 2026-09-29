@@ -1,9 +1,12 @@
 """Bootstrap Django and create the demo rules from raw_data/ for one account.
 
 Run after `manage.py migrate`, and before `manage.py evaluate_rules`: a block is
-evaluated once, against the rules there are then. The file is a JSON list of
-rules, each a name, tag, glyph, sentence and v1 ``conditions`` payload, written
-through the rules catalog's write path as the API writes one. --username and --password are the
+evaluated once, against the rules there are then. The file is the console's
+demo circuits (a copy of ``frontend/src/console/api/demo/fixtures/circuits.json``):
+a JSON list of rules in the console's ``Rule`` shape. Each one's name, tag,
+glyph, sentence, enabled flag and ``condition`` tree are written through the
+rules catalog's write path as the API writes one; its ids, revision, times and
+stats are the demo's and are ignored. --username and --password are the
 username/password account the rules belong to, so signing in with them shows
 the rules: the account is created if it does not exist yet, and its password is
 set either way. Idempotent: an owner and a name are one demo rule, so a re-run
@@ -31,7 +34,9 @@ from django.contrib.auth import get_user_model  # noqa: E402
 from project.app.rules import services  # noqa: E402
 from project.app.services import accounts  # noqa: E402
 
-DEFAULT_PATH = os.path.join(PROJECT_ROOT, "raw_data", "demo_rules.json")
+DEFAULT_PATH = os.path.join(PROJECT_ROOT, "raw_data", "circuits.json")
+# What a circuit in the file stores; the rest (ids, revision, times) the catalog assigns.
+STORED_FIELDS = ("name", "tag", "glyph", "sentence", "enabled", "condition")
 
 
 def create_demo_rules(username, password, path=DEFAULT_PATH):
@@ -54,7 +59,7 @@ def create_demo_rules(username, password, path=DEFAULT_PATH):
     user.set_password(password)
     user.save(update_fields=["password"])
     for entry in entries:
-        fields = {key: entry[key] for key in ("name", "tag", "glyph", "sentence", "conditions")}
+        fields = {key: entry[key] for key in STORED_FIELDS}
         rule = services.rules_for(user).filter(name=entry["name"]).first()
         if rule is None:
             services.create_rule(user, fields)
@@ -77,7 +82,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--path",
         default=DEFAULT_PATH,
-        help="JSON list of rules (default raw_data/demo_rules.json).",
+        help="JSON list of circuits (default raw_data/circuits.json).",
     )
     args = parser.parse_args()
     # Checked here as well, so a refused username is a usage error, not a traceback.

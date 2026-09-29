@@ -20,17 +20,12 @@ from project.app.rules import utils
 class Rule(models.Model):
     """A user-authored rule: a predicate that either holds or does not.
 
-    The predicate is a tree of :class:`Condition` rows, read and written as the
-    structured, versioned ``conditions`` payload of
-    :mod:`project.app.rules.utils` (:meth:`conditions_payload`, and
-    ``rules.services`` on write). The console reads the same tree in its own
-    shape (:meth:`console_condition`), and names the rule by its :attr:`tag`
-    and :attr:`glyph`.
+    The predicate is a tree of :class:`Condition` rows, read and written in
+    the console's ``ConditionNode`` shape (:meth:`console_condition`, and
+    ``rules.services`` on write); its vocabulary, validator and conversion
+    live in :mod:`project.app.rules.utils`. The console names the rule by its
+    :attr:`tag` and :attr:`glyph`.
     """
-
-    # The ``conditions`` schema, its vocabulary, its validator and its tree
-    # conversion all live in utils.
-    CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="rules"
@@ -63,22 +58,12 @@ class Rule(models.Model):
             ),
         ]
 
-    def conditions_payload(self):
-        """This rule's tree as its v1 ``conditions`` payload; ``{}`` when it has none.
-
-        Reads ``all_conditions`` once and assembles the tree in memory, so a
-        queryset that prefetches ``all_conditions`` renders every rule free.
-        An unsaved rule has no rows yet.
-        """
-        if self.pk is None:
-            return {}
-        return utils.render_tree(self.all_conditions.all())
-
     def console_condition(self):
         """This rule's tree in the console's ``ConditionNode`` shape; ``None`` when it has none.
 
-        One read of ``all_conditions``, as :meth:`conditions_payload` makes, so
-        a prefetched catalog renders free (:func:`utils.render_condition`).
+        Reads ``all_conditions`` once and assembles the tree in memory, so a
+        queryset that prefetches ``all_conditions`` renders every rule free
+        (:func:`utils.render_condition`). An unsaved rule has no rows yet.
         """
         if self.pk is None:
             return None
@@ -108,7 +93,8 @@ class Condition(models.Model):
     GROUP_TYPES = (TYPE_AND, TYPE_OR)
 
     # The record a comparison reads its field from: one of a stored block's
-    # rows (``rules.utils.ONCHAIN_SOURCES``).
+    # rows. The vocabulary (``rules.utils.VOCABULARY``) names only transactions
+    # and token transfers.
     SOURCE_BLOCK = utils.SOURCE_BLOCK
     SOURCE_TRANSACTION = utils.SOURCE_TRANSACTION
     SOURCE_WITHDRAWAL = utils.SOURCE_WITHDRAWAL
@@ -137,7 +123,9 @@ class Condition(models.Model):
     type = models.CharField(max_length=16, choices=TYPE_CHOICES, default=TYPE_COMPARISON)
     # The comparison's parts; "" on groups, which compare nothing themselves.
     field_name = models.CharField(max_length=255, blank=True, default="")
-    operator = models.CharField(max_length=50, blank=True, default="")  # e.g. "gt", "exact"
+    operator = models.CharField(max_length=50, blank=True, default="")  # "gte", "in"
+    # The console's value as written: "250", {"chain": 1, "address": "0x…"},
+    # {"addresses": ["0x…"], "name": "Binance hot wallets"}, true.
     value = models.JSONField(null=True, blank=True)
     source = models.CharField(max_length=32, choices=SOURCE_CHOICES, blank=True, default="")
 

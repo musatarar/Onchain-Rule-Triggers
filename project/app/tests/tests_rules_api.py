@@ -1,18 +1,24 @@
-"""The rules-catalog API: CRUD over the signed-in user's rules, the engine status, and the journal.
+"""The rules-catalog API: CRUD over the signed-in user's rules, the condition
+vocabulary, the engine status, and the journal.
 
 Pins owner scoping (foreign rows read as 404, owner bound server-side),
 model-backed validation surfacing as 400s, and paginated lists; then a rule
-in the console's shape: its exact JSON, how its tree and thresholds read,
-and which recorded matches its stats count; then the engine status's exact
-JSON, and which recorded matches it counts; then the journal: a row's exact
-JSON, the order and the cursors, and which recorded matches it lists; then
-one match's detail: its exact JSON, the transaction and transfer facts, the
-other rules it names, and which matches it reads.
+in the console's shape: its exact JSON, how its ``condition`` tree is written
+and read back, and which recorded matches its stats count; then the
+vocabulary the gate editor offers; then the engine status's exact JSON, and
+which recorded matches it counts; then the journal: a row's exact JSON, the
+order and the cursors, and which recorded matches it lists; then one match's
+detail: its exact JSON, the transaction and transfer facts, the other rules
+it names, and which matches it reads.
 """
 
+import copy
 import io
+import json
 import unittest
+from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.management import call_command
@@ -20,42 +26,56 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
+from project.app.constants import NEEDS_CONDITION
 from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
-from project.app.evm.block.models import DecodeStatus
+from project.app.evm.block.models import Block, DecodeStatus, Withdrawal
 from project.app.evm.chains import ChainId
 from project.app.evm.function_signatures import FunctionSignatureCreateSchema
 from project.app.evm.tokens import TokenCreateSchema
-from project.app.models import MatchedRule, Rule, TokenTransfer, Transaction
+from project.app.models import Condition, MatchedRule, Rule, TokenTransfer, Transaction
 from project.app.rules import services as rules_services
 from project.app.rules import utils
-from project.app.rules.utils import _all_of, _any_of, _cond
+from project.app.rules.utils import without_ids
+from project.app.tests.condition_trees import (
+    addresses,
+    and_,
+    gate,
+    or_,
+    token,
+    transfer,
+    tx,
+)
 from project.app.tests.tests_evm_block import (
+    BLOCK_HASH,
     DYNAMIC_FEE_HASH,
     LEGACY_HASH,
     block,
     dynamic_fee_transaction,
     legacy_transaction,
 )
-from project.app.tests.tests_rules_evaluation import NEXT_BLOCK_HASH, built_by_the_sample_miner
+from project.app.tests.tests_rules_evaluation import NEXT_BLOCK_HASH
 from project.app.tests.tests_rules_onchain import (
     ALICE,
     BOB,
     DYNAMIC_FROM,
     DYNAMIC_TO,
     LEGACY_FROM,
-    MINER,
     REORGED_BLOCK_HASH,
     USDC,
     USDT,
-    WITHDRAWAL_ADDRESS,
-    transfer,
-    tx,
 )
 
 RULES_URL = "/api/rules/"
+VOCABULARY_URL = "/api/conditions/vocabulary/"
 ENGINE_STATUS_URL = "/api/engine/status/"
 MATCHES_URL = "/api/matches/"
+# The demo circuits, as the console's demo mode and scripts/create_demo_rules.py read them.
+CIRCUITS = Path(settings.BASE_DIR, "raw_data", "circuits.json")
+# The vocabulary the console's demo mode serves in place of the API's.
+VOCABULARY_FIXTURE = Path(
+    settings.BASE_DIR, "frontend", "src", "console", "api", "demo", "fixtures", "vocabulary.json"
+)
 # A block on a second chain, carrying nothing.
 POLYGON_BLOCK_HASH = "0x" + "b1" * 32
 # A transaction from the sample block's first sender, in the block after it.
@@ -72,16 +92,34 @@ UNKNOWN_TOKEN = "0x" + "7e" * 20
 # selector of the function it calls there, swapExactTokensForETH.
 LEGACY_TO = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
 LEGACY_SELECTOR = "0x18cbafe5"
+# USDT's and Alice's addresses as a checksummed address writes them: mixed case.
+USDT_CHECKSUMMED = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+ALICE_MIXED = "0x" + "A1a1" * 10
 
 
-def _conditions():
-    return {
-        "version": Rule.CONDITIONS_SCHEMA_VERSION,
-        "operator": "all_of",
-        "conditions": [
-            {"field": "value", "operator": ">", "threshold": 10**18, "source": "transaction"}
-        ],
-    }
+def _condition():
+    """Transactions sending more than 1 ETH."""
+    return and_(tx("value", "gt", "1"))
+
+
+def _bnb_out():
+    """The BNB-OUT demo circuit as raw_data/circuits.json holds it, ids and all."""
+    circuits = json.loads(CIRCUITS.read_text())
+    return next(circuit for circuit in circuits if circuit["tag"] == "BNB-OUT")
+
+
+def _nodes(node):
+    """``node`` and every node under it, parent first."""
+    yield node
+    for child in node.get("children", []):
+        yield from _nodes(child)
+
+
+def _depth(node):
+    """How many groups deep ``node`` nests: 1 for a group holding only comparisons."""
+    if node["type"] == "comparison":
+        return 0
+    return 1 + max(_depth(child) for child in node["children"])
 
 
 def _later_block():
@@ -124,9 +162,9 @@ class RulesApiTestCase(TestCase):
     def _rule(self, owner=None, **kwargs):
         kwargs.setdefault("owner", owner or self.user)
         kwargs.setdefault("name", "Large transfers")
-        conditions = kwargs.pop("conditions", _conditions())
+        condition = kwargs.pop("condition", _condition())
         rule = Rule.objects.create(**kwargs)
-        utils.build_tree(rule, conditions)
+        utils.build_tree(rule, condition)
         return rule
 
     def _store(self, raw, chain=ChainId.ETHEREUM):
@@ -134,7 +172,25 @@ class RulesApiTestCase(TestCase):
 
     def _every_transaction(self, owner=None):
         """An enabled rule matching both of the sample block's transactions."""
-        return self._rule(owner, name="every transaction", conditions=_all_of(tx("value", ">=", 0)))
+        return self._rule(owner, name="every transaction", condition=and_(tx("value", "gte", "0")))
+
+    def _off_the_journal(self):
+        """Two enabled rules matching no transaction, each with a match the journal leaves out.
+
+        Before #44 a withdrawal rule recorded a withdrawal and a block-only
+        rule the block itself. No tree in the vocabulary records either now,
+        so the sample block's first withdrawal and the block are recorded here
+        directly. Answers the rules: ``withdrawn``, then ``built``.
+        """
+        sample = Block.objects.get(hash=BLOCK_HASH)
+        nobody = and_(tx("from_address", "eq", ALICE))
+        withdrawn = self._rule(name="withdrawn", condition=nobody)
+        built = self._rule(name="built", condition=nobody)
+        MatchedRule.objects.create(
+            rule=withdrawn, block=sample, withdrawal=Withdrawal.objects.order_by("index").first()
+        )
+        MatchedRule.objects.create(rule=built, block=sample)
+        return withdrawn, built
 
     def _token(self, address=USDT, name="Tether", *, decimals=None):
         """``address`` in the token catalog, its decimals as if read from the contract."""
@@ -172,22 +228,21 @@ class RuleApiTests(RulesApiTestCase):
     def test_creating_updating_and_deleting_a_rule_round_trips(self):
         created = self.client.post(
             RULES_URL,
-            {
-                "name": "Large transfers",
-                "conditions": _conditions(),
-            },
+            {"name": "Large transfers", "condition": _condition()},
             content_type="application/json",
         )
         self.assertEqual(created.status_code, 201)
         rule_id = created.json()["id"]
         self.assertEqual(Rule.objects.get(pk=rule_id).owner, self.user)
-        # Stored as a tree, answered in the payload's own shape.
-        self.assertEqual(created.json()["conditions"], _conditions())
+        # Stored as rows, answered as the tree it was written as.
+        self.assertEqual(without_ids(created.json()["condition"]), without_ids(_condition()))
         self.assertEqual(
-            self.client.get(f"{RULES_URL}{rule_id}/").json()["conditions"], _conditions()
+            self.client.get(f"{RULES_URL}{rule_id}/").json()["condition"],
+            created.json()["condition"],
         )
         self.assertEqual(
-            self.client.get(RULES_URL).json()["results"][0]["conditions"], _conditions()
+            self.client.get(RULES_URL).json()["results"][0]["condition"],
+            created.json()["condition"],
         )
 
         patched = self.client.patch(
@@ -195,20 +250,21 @@ class RuleApiTests(RulesApiTestCase):
         )
         self.assertEqual(patched.status_code, 200)
         self.assertEqual(patched.json()["name"], "Renamed")
-        self.assertEqual(patched.json()["conditions"], _conditions())
+        # A write leaving the tree out keeps it, rows and ids alike.
+        self.assertEqual(patched.json()["condition"], created.json()["condition"])
 
         deleted = self.client.delete(f"{RULES_URL}{rule_id}/")
         self.assertEqual(deleted.status_code, 204)
         self.assertFalse(Rule.objects.filter(pk=rule_id).exists())
 
-    def test_a_rule_neither_takes_nor_returns_a_kind_or_an_inference_prompt(self):
+    def test_a_rule_neither_takes_nor_returns_a_kind_an_inference_prompt_or_conditions(self):
         created = self.client.post(
             RULES_URL,
             {
                 "name": "Large transfers",
                 "kind": "inference",
                 "inference_prompt": "ask the model",
-                "conditions": _conditions(),
+                "condition": _condition(),
             },
             content_type="application/json",
         )
@@ -224,111 +280,117 @@ class RuleApiTests(RulesApiTestCase):
                 "enabled",
                 "revision",
                 "condition",
-                "conditions",
                 "created_at",
                 "updated_at",
                 "stats",
             },
         )
         listed = self.client.get(RULES_URL).json()["results"][0]
-        self.assertNotIn("kind", listed)
-        self.assertNotIn("inference_prompt", listed)
+        detail = self.client.get(f"{RULES_URL}{created.json()['id']}/").json()
+        for read in (listed, detail):
+            self.assertNotIn("kind", read)
+            self.assertNotIn("inference_prompt", read)
+            # The v1 payload is gone: `condition` is the only tree a rule has.
+            self.assertNotIn("conditions", read)
 
-    def test_address_thresholds_are_read_back_lowercased(self):
-        conditions = {
-            "version": Rule.CONDITIONS_SCHEMA_VERSION,
-            "operator": "all_of",
-            "conditions": [
-                {
-                    "field": "token",
-                    "operator": "==",
-                    "threshold": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-                    "source": "token_transfer",
+    def test_a_rule_still_needs_its_condition(self):
+        refusal = {"code": "validation_error", "detail": f"condition: {NEEDS_CONDITION}"}
+        for body in (
+            {"name": "No predicate at all"},
+            # A v1 payload is an unknown key now, so the write names no tree.
+            {
+                "name": "Old shape",
+                "conditions": {
+                    "version": 1,
+                    "operator": "all_of",
+                    "conditions": [
+                        {"field": "value", "operator": ">", "threshold": 1, "source": "transaction"}
+                    ],
                 },
-                {
-                    "field": "raw_value",
-                    "operator": ">",
-                    "threshold": 10**30,
-                    "source": "token_transfer",
-                },
-            ],
-        }
+            },
+        ):
+            with self.subTest(body=body):
+                response = self.client.post(RULES_URL, body, content_type="application/json")
 
-        created = self.client.post(
+                self.assertEqual((response.status_code, response.json()), (400, refusal))
+        # A null tree is refused by the field before the write path sees it.
+        null = self.client.post(
             RULES_URL,
-            {"name": "Big USDT moves", "conditions": conditions},
+            {"name": "Null predicate", "condition": None},
             content_type="application/json",
         )
-
-        self.assertEqual(created.status_code, 201)
         self.assertEqual(
-            created.json()["conditions"]["conditions"][0]["threshold"],
-            "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            (null.status_code, null.json()),
+            (400, {"code": "validation_error", "detail": "condition: This field may not be null."}),
         )
-        self.assertEqual(created.json()["conditions"]["conditions"][1]["threshold"], 10**30)
-
-    def test_conditions_on_a_lead_source_are_rejected(self):
-        lead = {"field": "deals_closed", "operator": ">", "threshold": 20, "source": "lead"}
-        for leaves in ([lead], _conditions()["conditions"] + [lead]):
-            with self.subTest(leaves=leaves):
-                response = self.client.post(
-                    RULES_URL,
-                    {"name": "Leads", "conditions": dict(_conditions(), conditions=leaves)},
-                    content_type="application/json",
-                )
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(response.json()["code"], "validation_error")
         self.assertEqual(Rule.objects.count(), 0)
 
-    def test_a_rule_still_needs_its_conditions(self):
-        response = self.client.post(
-            RULES_URL,
-            {"name": "No predicate at all"},
-            content_type="application/json",
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "validation_error")
-
-    def test_an_unevaluable_conditions_payload_is_rejected(self):
-        for payload in (
+    def test_a_condition_the_vocabulary_cannot_read_is_rejected(self):
+        leaf = tx("value", "gt", "1")
+        for condition in (
             "yes",
             [1, 2, 3],
             42,
             {"lol": 1},
-            {"version": 99, "operator": "xor", "conditions": []},
-            {
-                "version": 1,
-                "operator": "all_of",
-                "conditions": [
-                    {
-                        "field": "gas",
-                        "operator": "==",
-                        "threshold": 21000,
-                        "source": "transaction",
-                    }
-                ],
-            },
+            # The root is a group.
+            leaf,
+            {"id": None, "type": "xor", "children": [leaf]},
+            and_(),
+            and_(leaf, {"id": None, "type": "and", "children": [leaf], "extra": 1}),
+            # Sources and fields the vocabulary lacks.
+            and_(gate("lead", "deals_closed", "gt", "20")),
+            and_(gate("block", "miner", "eq", ALICE)),
+            and_(tx("gas", "eq", "21000")),
+            # Operators a field does not take.
+            and_(tx("from_address", "gt", ALICE)),
+            and_(transfer("token_recognised", "ne", True)),
+            and_(tx("input", "contains", "0xa9059cbb")),
+            # Values not of the field's type.
+            and_(tx("value", "gt", 10)),
+            and_(tx("value", "gt", "1e18")),
+            and_(tx("from_address", "eq", "alice")),
+            and_(tx("from_address", "in", [ALICE])),
+            and_(tx("from_address", "in", addresses())),
+            and_(transfer("token", "eq", USDT)),
+            and_(transfer("token", "eq", token(USDT, chain=999_999))),
+            and_(transfer("token_recognised", "eq", "yes")),
         ):
-            with self.subTest(payload=payload):
+            with self.subTest(condition=condition):
                 response = self.client.post(
                     RULES_URL,
-                    {
-                        "name": "Nonsense",
-                        "conditions": payload,
-                    },
+                    {"name": "Nonsense", "condition": condition},
                     content_type="application/json",
                 )
+
                 self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["code"], "validation_error")
+                self.assertTrue(response.json()["detail"].startswith("condition: condition"))
+        self.assertEqual(Rule.objects.count(), 0)
+
+    def test_a_misspelt_field_is_a_400_naming_the_node_and_the_source(self):
+        condition = and_(
+            tx("value", "gt", "1"),
+            or_(transfer("amont", "gte", "250"), transfer("amount", "gte", "250")),
+        )
+
+        response = self.client.post(
+            RULES_URL, {"name": "Typo", "condition": condition}, content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body["code"], "validation_error")
+        # The API files every refusal as one sentence led by the key it is filed under.
+        field, message = body["detail"].split(": ", 1)
+        self.assertEqual(field, "condition")
+        self.assertTrue(message.startswith("condition.children[1].children[0].field: "), message)
+        self.assertIn("'token_transfer' has no field 'amont'", message)
         self.assertEqual(Rule.objects.count(), 0)
 
     def test_an_owner_in_the_payload_is_ignored(self):
         response = self.client.post(
             RULES_URL,
-            {
-                "owner": self.other.pk,
-                "name": "Still mine",
-                "conditions": _conditions(),
-            },
+            {"owner": self.other.pk, "name": "Still mine", "condition": _condition()},
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 201)
@@ -365,25 +427,17 @@ class RuleApiTests(RulesApiTestCase):
 class ConsoleRuleTests(RulesApiTestCase):
     """A rule in the console's shape: its stored fields, its tree, and its match stats."""
 
-    def _leaves(self, rule):
-        """The root's comparisons as the console reads them: source, field, operator and value."""
-        condition = self.client.get(f"{RULES_URL}{rule.pk}/").json()["condition"]
-        return [
-            (leaf["source"], leaf["field"], leaf["operator"], leaf["value"])
-            for leaf in condition["children"]
-        ]
-
     def test_a_rule_is_the_contracts_json(self):
-        conditions = _all_of(
-            tx("value", ">=", 0),
-            tx("value", "<=", 50 * 10**18),
-            _any_of(
-                transfer("token", "==", USDT),
-                tx("value", ">", 10**18),
-                tx("from_address", "in", [DYNAMIC_FROM, LEGACY_FROM]),
+        condition = and_(
+            tx("value", "gte", "0"),
+            tx("value", "lte", "50"),
+            or_(
+                transfer("token", "eq", token(USDT)),
+                tx("value", "gt", "1"),
+                tx("from_address", "in", addresses(DYNAMIC_FROM, LEGACY_FROM)),
             ),
-            tx("to_address", "!=", ALICE),
-            tx("value", "<", 5 * 10**16),
+            tx("to_address", "ne", ALICE),
+            tx("value", "lt", "0.05"),
         )
         self._store(block())
         self._store(_later_block())
@@ -394,13 +448,13 @@ class ConsoleRuleTests(RulesApiTestCase):
             tag="SMALL-MOVES",
             glyph="bolt",
             sentence="Small moves from the addresses that sent the sample block",
-            conditions=conditions,
+            condition=condition,
         )
         # The same tree, someone else's: its matches are theirs.
-        self._rule(self.other, conditions=conditions)
+        self._rule(self.other, condition=condition)
         rules_services.evaluate_blocks()
         # Stored parent first, children in order: the root, two leaves, the
-        # any_of group and its three leaves, then two more leaves.
+        # or group and its three leaves, then two more leaves.
         ids = list(rule.all_conditions.values_list("pk", flat=True))
 
         response = self.client.get(f"{RULES_URL}{rule.pk}/")
@@ -484,7 +538,6 @@ class ConsoleRuleTests(RulesApiTestCase):
                         },
                     ],
                 },
-                "conditions": conditions,
                 "created_at": _utc(rule.created_at),
                 "updated_at": _utc(rule.updated_at),
                 # The two sample transactions and the later one; the latest dates it.
@@ -495,7 +548,7 @@ class ConsoleRuleTests(RulesApiTestCase):
     def test_a_created_rule_answers_in_the_consoles_shape(self):
         created = self.client.post(
             RULES_URL,
-            {"name": "Large transfers", "conditions": _conditions()},
+            {"name": "Large transfers", "condition": _condition()},
             content_type="application/json",
         )
 
@@ -528,75 +581,135 @@ class ConsoleRuleTests(RulesApiTestCase):
             {"match_count": 0, "unevaluable_count": 0, "last_match_at": None},
         )
 
-    def test_numbers_are_exact_decimal_strings_and_a_transactions_value_is_in_eth(self):
-        rule = self._rule(
-            conditions=_all_of(
-                tx("value", ">", 1.5e18),
-                tx("value", "<", 0.1),
-                tx("value", "<=", MAX_UINT256),
-                tx("value", "in", [10**18, 5 * 10**16]),
-                transfer("raw_value", ">=", MAX_UINT256),
-                transfer("raw_value", ">", 1e21),
-                transfer("raw_value", "<", 2.5e-7),
-            )
+    def test_a_demo_circuits_condition_round_trips_with_ids_of_its_own(self):
+        circuit = _bnb_out()
+        sent = circuit["condition"]
+        # Four groups deep, `in` lists with a name, token objects and decimal strings.
+        self.assertEqual(_depth(sent), 4)
+
+        created = self.client.post(
+            RULES_URL,
+            {key: circuit[key] for key in ("name", "tag", "glyph", "sentence", "condition")},
+            content_type="application/json",
         )
+        self.assertEqual(created.status_code, 201, created.content)
+        read = self.client.get(f"{RULES_URL}{created.json()['id']}/").json()
 
         self.assertEqual(
-            self._leaves(rule),
-            [
-                ("transaction", "value", "gt", "1.5"),
-                # A tenth of a wei.
-                ("transaction", "value", "lt", "0.0000000000000000001"),
-                # Every digit, where Decimal arithmetic would keep 28.
-                (
-                    "transaction",
-                    "value",
-                    "lte",
-                    "115792089237316195423570985008687907853269984665640564039457"
-                    ".584007913129639935",
-                ),
-                ("transaction", "value", "in", {"addresses": ["1", "0.05"]}),
-                # Every other number keeps its stored unit.
-                ("token_transfer", "raw_value", "gte", str(MAX_UINT256)),
-                # A float reads as its shortest repr, never in exponent notation.
-                ("token_transfer", "raw_value", "gt", "1000000000000000000000"),
-                ("token_transfer", "raw_value", "lt", "0.00000025"),
-            ],
+            {key: read[key] for key in ("name", "tag", "glyph", "sentence")},
+            {key: circuit[key] for key in ("name", "tag", "glyph", "sentence")},
         )
-
-    def test_what_the_console_has_no_word_for_passes_through(self):
-        on_chain = self._rule(
-            conditions=_all_of(
-                _cond("miner", "==", MINER, source="block"),
-                _cond("timestamp", ">=", "2023-08-26", source="block"),
-                _cond("number", "in", [18_000_000, 1.8000001e7], source="block"),
-                tx("input", "contains", "0xa9059cbb"),
-                tx("to_address", "exists"),
-                transfer("from_address", "absent"),
-                transfer("token", "contains", "dac17f958d"),
-            )
-        )
-        withdrawn = self._rule(
-            conditions=_all_of(_cond("amount", ">", 50_000_000, source="withdrawal"))
-        )
-
+        condition = read["condition"]
+        self.assertEqual(without_ids(condition), without_ids(sent))
+        # Every node has the id of the row it is stored as, whatever id the file
+        # gave it. (A pk can equal a file id by chance: Postgres keeps its
+        # sequences running across tests, so that is not checked.)
+        ids = [node["id"] for node in _nodes(condition)]
+        stored = Condition.objects.filter(rule_id=read["id"]).values_list("pk", flat=True)
+        self.assertTrue(all(type(pk) is int for pk in ids), ids)
+        self.assertEqual(sorted(ids), sorted(stored))
+        # What the vocabulary writes as more than a string comes back as written.
+        senders, transfer_senders = condition["children"][0]["children"]
+        self.assertEqual(senders["value"]["name"], "Binance hot wallets")
+        self.assertEqual(len(senders["value"]["addresses"]), 3)
+        self.assertEqual(transfer_senders["value"], senders["value"])
+        stablecoins = condition["children"][1]["children"][0]
+        usdt, usdc = stablecoins["children"][0]["children"]
         self.assertEqual(
-            self._leaves(on_chain),
-            [
-                ("block", "miner", "eq", MINER),
-                # A date as stored.
-                ("block", "timestamp", "gte", "2023-08-26"),
-                ("block", "number", "in", {"addresses": ["18000000", "18000001"]}),
-                ("transaction", "input", "contains", "0xa9059cbb"),
-                # No threshold reads "", which the console can type, never null.
-                ("transaction", "to_address", "exists", ""),
-                ("token_transfer", "from_address", "absent", ""),
-                # Part of an address, not a token.
-                ("token_transfer", "token", "contains", "dac17f958d"),
-            ],
+            [usdt["value"], usdc["value"]],
+            [{"chain": 1, "address": USDT}, {"chain": 1, "address": USDC}],
         )
-        # In gwei, as stored.
-        self.assertEqual(self._leaves(withdrawn), [("withdrawal", "amount", "gt", "50000000")])
+        self.assertEqual(stablecoins["children"][1]["value"], "250")
+        self.assertEqual(condition["children"][1]["children"][1]["children"][1]["value"], "1000000")
+
+    def test_a_patch_with_a_condition_replaces_the_tree_and_bumps_the_revision(self):
+        created = self.client.post(
+            RULES_URL,
+            {"name": "Large transfers", "condition": _condition()},
+            content_type="application/json",
+        )
+        url = f"{RULES_URL}{created.json()['id']}/"
+        replacement = or_(
+            tx("method", "eq", "transfer"),
+            and_(transfer("amount", "gte", "0.5"), transfer("token_recognised", "eq", False)),
+        )
+
+        patched = self.client.patch(
+            url, {"condition": replacement}, content_type="application/json"
+        )
+
+        self.assertEqual(patched.status_code, 200, patched.content)
+        self.assertEqual(patched.json()["revision"], 2)
+        self.assertEqual(without_ids(patched.json()["condition"]), without_ids(replacement))
+        self.assertEqual(self.client.get(url).json()["condition"], patched.json()["condition"])
+        # The old tree's rows are gone: the rule has the new tree's five and no more.
+        rule = Rule.objects.get(pk=created.json()["id"])
+        self.assertEqual(rule.all_conditions.count(), 5)
+        old_ids = {node["id"] for node in _nodes(created.json()["condition"])}
+        self.assertFalse(Condition.objects.filter(pk__in=old_ids).exists())
+
+    def test_a_patch_sending_the_same_tree_keeps_the_revision(self):
+        condition = and_(
+            tx("from_address", "eq", ALICE),
+            transfer("token", "eq", token(USDT)),
+            tx("to_address", "in", addresses(BOB, name="Bob")),
+        )
+        created = self.client.post(
+            RULES_URL,
+            {"name": "From Alice", "condition": condition},
+            content_type="application/json",
+        )
+        url = f"{RULES_URL}{created.json()['id']}/"
+        # The tree as read back, ids and all, as the console's save sends an unchanged one.
+        as_read = created.json()["condition"]
+        # The same tree with ids of its own and its addresses checksummed.
+        renumbered = copy.deepcopy(condition)
+        for index, node in enumerate(_nodes(renumbered)):
+            node["id"] = 1000 + index
+        renumbered["children"][0]["value"] = ALICE_MIXED
+        renumbered["children"][1]["value"]["address"] = USDT_CHECKSUMMED
+        renumbered["children"][2]["value"]["addresses"] = [BOB.upper().replace("0X", "0x")]
+
+        for sent in (as_read, renumbered):
+            with self.subTest(sent=sent):
+                patched = self.client.patch(
+                    url, {"condition": sent}, content_type="application/json"
+                )
+
+                self.assertEqual(patched.status_code, 200, patched.content)
+                self.assertEqual(patched.json()["revision"], 1)
+                self.assertEqual(without_ids(patched.json()["condition"]), without_ids(condition))
+
+    def test_addresses_in_a_condition_are_stored_lowercased(self):
+        condition = and_(
+            tx("from_address", "eq", ALICE_MIXED),
+            tx("to_address", "in", addresses(ALICE_MIXED, USDT_CHECKSUMMED, name="Mixed")),
+            transfer("token", "eq", token(USDT_CHECKSUMMED)),
+            # A method is not an address, so its case is kept.
+            tx("method", "eq", "swapExactTokensForETH"),
+        )
+
+        created = self.client.post(
+            RULES_URL,
+            {"name": "Big USDT moves", "condition": condition},
+            content_type="application/json",
+        )
+
+        self.assertEqual(created.status_code, 201, created.content)
+        expected = [
+            ALICE,
+            {"addresses": [ALICE, USDT], "name": "Mixed"},
+            {"chain": 1, "address": USDT},
+            "swapExactTokensForETH",
+        ]
+        self.assertEqual(
+            [leaf["value"] for leaf in created.json()["condition"]["children"]], expected
+        )
+        rule = Rule.objects.get(pk=created.json()["id"])
+        self.assertEqual(
+            list(rule.all_conditions.filter(parent__isnull=False).values_list("value", flat=True)),
+            expected,
+        )
 
     def test_a_rule_with_no_tree_has_no_condition(self):
         # Every write refuses one; a row made around the write path, as the
@@ -607,21 +720,17 @@ class ConsoleRuleTests(RulesApiTestCase):
 
     def test_a_rules_stats_count_its_transaction_matches_while_it_is_enabled(self):
         self._store(block())
-        self._rule(name="by sender", conditions=_all_of(tx("from_address", "==", DYNAMIC_FROM)))
-        self._rule(
-            name="withdrawn",
-            conditions=_all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
-        )
-        self._rule(name="built", conditions=built_by_the_sample_miner())
+        self._rule(name="by sender", condition=and_(tx("from_address", "eq", DYNAMIC_FROM)))
         switched_off = self._every_transaction()
         theirs = self._every_transaction(owner=self.other)
         rules_services.evaluate_blocks()
+        self._off_the_journal()
         rules_services.update_rule(switched_off, {"enabled": False})
 
         listed = self.client.get(RULES_URL).json()["results"]
 
-        # Every match stays recorded: one for each of the first three rules,
-        # and two for each rule matching every transaction.
+        # Every match stays recorded: one for each of by sender, withdrawn and
+        # built, and two for each rule matching every transaction.
         self.assertEqual(MatchedRule.objects.count(), 7)
         unmatched = {"match_count": 0, "unevaluable_count": 0, "last_match_at": None}
         self.assertEqual(
@@ -675,9 +784,12 @@ class ConsoleRuleTests(RulesApiTestCase):
         self.assertEqual((off.json()["enabled"], off.json()["stats"]["match_count"]), (False, 0))
         self.assertEqual((on.json()["enabled"], on.json()["stats"]["match_count"]), (True, 2))
         self.assertEqual(on.json()["condition"], off.json()["condition"])
-        self.assertEqual(on.json()["conditions"], _all_of(tx("value", ">=", 0)))
+        self.assertEqual(
+            without_ids(on.json()["condition"]), without_ids(and_(tx("value", "gte", "0")))
+        )
+        self.assertEqual(on.json()["revision"], 1)
 
-    def test_a_write_naming_a_condition_is_refused_not_dropped(self):
+    def test_the_composers_save_creates_and_replaces_a_rule(self):
         rule = self._rule()
         # What the composer's save sends.
         console_save = {
@@ -686,36 +798,24 @@ class ConsoleRuleTests(RulesApiTestCase):
             "glyph": "bolt",
             "sentence": "",
             "enabled": True,
-            "condition": {
-                "id": None,
-                "type": "and",
-                "children": [
-                    {
-                        "id": None,
-                        "type": "comparison",
-                        "source": "transaction",
-                        "field": "value",
-                        "operator": "gt",
-                        "value": "100",
-                    }
-                ],
-            },
+            "condition": and_(tx("value", "gt", "100")),
         }
 
         created = self.client.post(RULES_URL, console_save, content_type="application/json")
+        # The tag is the created rule's now, so the patch keeps the one it has.
         patched = self.client.patch(
-            f"{RULES_URL}{rule.pk}/", console_save, content_type="application/json"
+            f"{RULES_URL}{rule.pk}/",
+            {**console_save, "tag": rule.tag},
+            content_type="application/json",
         )
 
-        refusal = {
-            "code": "validation_error",
-            "detail": "condition: Circuits can't save gates from the console yet (#44).",
-        }
-        self.assertEqual((created.status_code, created.json()), (400, refusal))
-        self.assertEqual((patched.status_code, patched.json()), (400, refusal))
-        self.assertEqual(list(Rule.objects.all()), [rule])
-        stored = rules_services.rule_for(self.user, rule.pk)
-        self.assertEqual((stored.name, stored.conditions_payload()), (rule.name, _conditions()))
+        self.assertEqual((created.status_code, patched.status_code), (201, 200))
+        for response in (created, patched):
+            self.assertEqual(response.json()["name"], "Big ETH moves")
+            self.assertEqual(
+                without_ids(response.json()["condition"]), without_ids(console_save["condition"])
+            )
+        self.assertEqual((created.json()["revision"], patched.json()["revision"]), (1, 2))
 
     def test_a_rules_tag_glyph_and_sentence_are_written_and_read_back(self):
         created = self.client.post(
@@ -725,7 +825,7 @@ class ConsoleRuleTests(RulesApiTestCase):
                 "tag": "BIG-ETH",
                 "glyph": "bolt",
                 "sentence": "Transactions moving more than 1 ETH",
-                "conditions": _conditions(),
+                "condition": _condition(),
             },
             content_type="application/json",
         )
@@ -776,7 +876,7 @@ class ConsoleRuleTests(RulesApiTestCase):
                 )
         created = self.client.post(
             RULES_URL,
-            {"name": "Copy", "tag": "BNB-OUT", "conditions": _conditions()},
+            {"name": "Copy", "tag": "BNB-OUT", "condition": _condition()},
             content_type="application/json",
         )
 
@@ -794,7 +894,7 @@ class ConsoleRuleTests(RulesApiTestCase):
     def test_a_rules_revision_is_not_written_and_moves_only_with_its_tree(self):
         rule = self._rule(tag="BIG")
         url = f"{RULES_URL}{rule.pk}/"
-        new_tree = {"conditions": _all_of(tx("value", ">=", 0))}
+        new_tree = {"condition": and_(tx("value", "gte", "0"))}
 
         ignored = self.client.patch(url, {"revision": 9}, content_type="application/json")
         retree = self.client.patch(url, new_tree, content_type="application/json")
@@ -807,6 +907,24 @@ class ConsoleRuleTests(RulesApiTestCase):
             ],
             [(200, 1), (200, 2), (200, 2)],
         )
+
+
+class ConditionVocabularyTests(RulesApiTestCase):
+    """GET /api/conditions/vocabulary/: the sources, fields and operators the gate editor offers."""
+
+    def test_the_vocabulary_is_the_consoles_fixture(self):
+        response = self.client.get(VOCABULARY_URL)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), json.loads(VOCABULARY_FIXTURE.read_text()))
+
+    def test_the_vocabulary_requires_a_signed_in_session(self):
+        self.client.logout()
+
+        response = self.client.get(VOCABULARY_URL)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["code"], "not_authenticated")
 
 
 class EngineStatusTests(RulesApiTestCase):
@@ -876,12 +994,8 @@ class EngineStatusTests(RulesApiTestCase):
 
     def test_withdrawal_and_block_matches_stay_recorded_but_are_not_counted(self):
         self._store(block())
-        self._rule(name="by sender", conditions=_all_of(tx("from_address", "==", DYNAMIC_FROM)))
-        self._rule(
-            name="withdrawn",
-            conditions=_all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
-        )
-        self._rule(name="built", conditions=built_by_the_sample_miner())
+        self._rule(name="by sender", condition=and_(tx("from_address", "eq", DYNAMIC_FROM)))
+        self._off_the_journal()
         rules_services.evaluate_blocks()
 
         self.assertEqual(MatchedRule.objects.count(), 3)
@@ -955,9 +1069,7 @@ class MatchJournalTests(RulesApiTestCase):
 
     def _by_sender(self):
         """An enabled rule matching the sample block's first transaction and the later block's."""
-        return self._rule(
-            name="by sender", conditions=_all_of(tx("from_address", "==", DYNAMIC_FROM))
-        )
+        return self._rule(name="by sender", condition=and_(tx("from_address", "eq", DYNAMIC_FROM)))
 
     def _five_rows(self):
         """Two rules over the sample block and the later one, which record five matches."""
@@ -1333,11 +1445,7 @@ class MatchJournalTests(RulesApiTestCase):
     def test_withdrawal_block_and_disabled_rules_matches_are_not_listed(self):
         self._store(block())
         by_sender = self._by_sender()
-        self._rule(
-            name="withdrawn",
-            conditions=_all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
-        )
-        self._rule(name="built", conditions=built_by_the_sample_miner())
+        self._off_the_journal()
         switched_off = self._every_transaction()
         rules_services.evaluate_blocks()
         rules_services.update_rule(switched_off, {"enabled": False})
@@ -1414,7 +1522,7 @@ class MatchDetailTests(RulesApiTestCase):
         self._signature(1, "swapExactTokensForETH")
         every = self._every_transaction()
         from_caller = self._rule(
-            name="from the caller", conditions=_all_of(tx("from_address", "==", LEGACY_FROM))
+            name="from the caller", condition=and_(tx("from_address", "eq", LEGACY_FROM))
         )
         rules_services.evaluate_blocks()
         Transaction.objects.filter(hash=LEGACY_HASH).update(decode_status=DecodeStatus.DECODED)
@@ -1540,9 +1648,7 @@ class MatchDetailTests(RulesApiTestCase):
         rule = self._every_transaction()
         rules_services.evaluate_blocks()
         pk = MatchedRule.objects.get(transaction=LEGACY_HASH).pk
-        rules_services.update_rule(
-            rule, {"conditions": _all_of(tx("from_address", "==", LEGACY_FROM))}
-        )
+        rules_services.update_rule(rule, {"condition": and_(tx("from_address", "eq", LEGACY_FROM))})
 
         condition = self._detail(pk)["condition"]
 
@@ -1557,10 +1663,10 @@ class MatchDetailTests(RulesApiTestCase):
         self._store(block(transactions=[dynamic_fee_transaction()], withdrawals=[]))
         every = self._every_transaction()
         by_sender = self._rule(
-            name="by sender", conditions=_all_of(tx("from_address", "==", DYNAMIC_FROM))
+            name="by sender", condition=and_(tx("from_address", "eq", DYNAMIC_FROM))
         )
         self._every_transaction(owner=self.other)
-        switched_off = self._rule(name="switched off", conditions=_all_of(tx("value", ">=", 0)))
+        switched_off = self._rule(name="switched off", condition=and_(tx("value", "gte", "0")))
         rules_services.evaluate_blocks()
         rules_services.update_rule(switched_off, {"enabled": False})
         # Another block at the sample block's height carries its transaction
@@ -1585,11 +1691,7 @@ class MatchDetailTests(RulesApiTestCase):
     def test_a_match_the_journal_leaves_out_or_an_id_naming_none_is_a_404(self):
         self._store(block())
         theirs = self._every_transaction(owner=self.other)
-        withdrawn = self._rule(
-            name="withdrawn",
-            conditions=_all_of(_cond("address", "==", WITHDRAWAL_ADDRESS, source="withdrawal")),
-        )
-        built = self._rule(name="built", conditions=built_by_the_sample_miner())
+        withdrawn, built = self._off_the_journal()
         switched_off = self._every_transaction()
         rules_services.evaluate_blocks()
         rules_services.update_rule(switched_off, {"enabled": False})
@@ -1617,7 +1719,7 @@ class MatchDetailTests(RulesApiTestCase):
         self._signature(1, "swapExactTokensForETH")
         every = self._every_transaction()
         for index in range(3):
-            self._rule(name=f"also {index}", conditions=_all_of(tx("value", ">=", 0)))
+            self._rule(name=f"also {index}", condition=and_(tx("value", "gte", "0")))
         rules_services.evaluate_blocks()
         pk = MatchedRule.objects.get(rule=every, transaction=LEGACY_HASH).pk
 
