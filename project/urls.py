@@ -12,6 +12,7 @@ from project.app.views.frontend import (
     journal,
     register,
     signin,
+    terminal,
 )
 
 # No SPA catch-all: every React route in frontend/src/main.tsx needs an entry
@@ -27,6 +28,7 @@ urlpatterns = [
     path("circuits/", circuits),
     path("circuits/new/", circuit_new),
     path("circuits/<int:rule_id>/", circuit_edit),
+    path("terminal/", terminal),
     path("admin/", admin.site.urls),
     path("api/", include("project.app.urls")),
 ]

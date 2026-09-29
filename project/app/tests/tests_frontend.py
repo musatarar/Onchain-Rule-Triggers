@@ -14,6 +14,7 @@ SHELLS = {
     "/circuits/": "Circuits · Phosphor",
     "/circuits/new/": "New circuit · Phosphor",
     "/circuits/8/": "Edit circuit · Phosphor",
+    "/terminal/": "Service terminal · Phosphor",
 }
 
 
@@ -40,7 +41,7 @@ class PageShellTests(TestCase):
     def test_every_react_route_has_a_shell(self):
         main = Path(settings.BASE_DIR, "frontend", "src", "main.tsx").read_text()
         routes = re.findall(r'<Route path="([^"]+)"', main)
-        self.assertEqual(len(routes), 7)
+        self.assertEqual(len(routes), 8)
         for route in routes:
             with self.subTest(route=route):
                 self.assertEqual(Client().get(route.replace(":id", "8")).status_code, 200)

@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { RequireAuth } from './components/RequireAuth';
-import { CircuitsSheet, ComposerRoute, ConsoleApp, JournalSheet } from './console/ConsoleApp';
+import { CircuitsSheet, ComposerRoute, ConsoleApp, JournalSheet, TerminalRoute } from './console/ConsoleApp';
 import { ConsumePage } from './pages/ConsumePage';
 import { RegisterPage } from './pages/RegisterPage';
 import { SignInPage } from './pages/SignInPage';
@@ -23,6 +23,7 @@ createRoot(root).render(
           <Route path="/circuits/" element={<CircuitsSheet />} />
           <Route path="/circuits/new/" element={<ComposerRoute />} />
           <Route path="/circuits/:id/" element={<ComposerRoute />} />
+          <Route path="/terminal/" element={<TerminalRoute />} />
         </Route>
       </Routes>
     </BrowserRouter>
