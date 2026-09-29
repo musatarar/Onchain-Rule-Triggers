@@ -18,16 +18,18 @@ exceptions.
 import dataclasses
 import functools
 import operator
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Max, Min, Q
+from django.db.models import Count, F, Max, Min, Q
 from django.utils import timezone
 
 from project.app.constants import NEEDS_CONDITION, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
 from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.chains import ChainId
 from project.app.evm.token_transfers import TokenTransfer
+from project.app.evm.tokens import Token
 from project.app.rules import onchain, utils
 from project.app.rules.models import Condition, MatchedRule, Rule
 
@@ -59,11 +61,18 @@ def matches_for(owner):
     The console's journal row is a transaction, so a withdrawal rule's matches
     and a block-only rule's stay recorded but are neither counted nor shown.
     Nor are a disabled rule's, as the console shows what its armed circuits
-    matched; enabling the rule again brings them back. Every match count the
-    console shows reads this, and so does its journal, so they all agree.
+    matched; enabling the rule again brings them back. Nor is a match made by
+    an earlier revision of its rule's tree: a new tree deletes the rule's
+    matches, but an evaluation that read the old tree can record one after
+    that, and it would show the new tree lit by gates it never had. Every
+    match count the console shows reads this, and so does its journal, so they
+    all agree.
     """
     return MatchedRule.objects.filter(
-        rule__owner=owner, rule__enabled=True, transaction__isnull=False
+        rule__owner=owner,
+        rule__enabled=True,
+        transaction__isnull=False,
+        rule_revision=F("rule__revision"),
     )
 
 
@@ -112,10 +121,16 @@ def _save(instance, fields):
     verdict on its fields, and the condition's against the vocabulary.
     Addresses in the tree are stored lowercased, as the values they compare
     against are.
+
+    A new tree bumps the rule's revision and deletes its matches with the old
+    tree, in the same transaction, since a match's trace is keyed by the node
+    ids of the tree that made it. No copy of the old tree is kept, so every
+    match shown was made by the rule's current tree.
     """
     fields = dict(fields)
     stored = instance.console_condition()
     replacing = "condition" in fields
+    revised = False
     tree = fields.pop("condition") if replacing else stored
     for field, value in fields.items():
         setattr(instance, field, value)
@@ -129,9 +144,12 @@ def _save(instance, fields):
             # A match names the revision it ran, so only a new tree bumps it;
             # a rename, a new tag or glyph, or arming the rule does not.
             instance.revision += 1
+            revised = True
     try:
         with transaction.atomic():
             instance.save()
+            if revised:
+                MatchedRule.objects.filter(rule=instance).delete()
             if replacing:
                 Condition.objects.filter(rule=instance).delete()
                 _forget_tree(instance)
@@ -285,22 +303,31 @@ def _evaluate(block, rules, refused):
         block_rows = onchain.BlockRows(block)
         for rule in rules:
             try:
-                rows = onchain.matches_in_block(rule, block, block_rows)
+                bindings = onchain.bindings_in_block(rule, block, block_rows)
             except onchain.ConditionError as exc:
                 refused.setdefault(rule, exc)
                 continue
-            matches.extend(_match(rule, block, row) for row in rows)
+            matches.extend(_match(rule, block, binding) for binding in bindings)
         MatchedRule.objects.bulk_create(matches)
     return len(matches)
 
 
-def _match(rule, block, row):
-    """A row ``matches_in_block`` answered for ``rule`` in ``block``, as a match."""
+def _match(rule, block, binding):
+    """A binding ``bindings_in_block`` answered for ``rule`` in ``block``, as a match.
+
+    A transaction's match records the revision of the tree it ran, its trace,
+    and the transfer its gates held of.
+    """
+    match = MatchedRule(rule=rule, block=block, rule_revision=rule.revision)
+    row = binding.row
     if isinstance(row, Transaction):
-        return MatchedRule(rule=rule, block=block, transaction=row)
-    if isinstance(row, Withdrawal):
-        return MatchedRule(rule=rule, block=block, withdrawal=row)
-    return MatchedRule(rule=rule, block=block)  # a block-only rule: the block itself matched
+        match.transaction = row
+        match.trace = binding.trace
+        match.transfer = binding.transfer
+    elif isinstance(row, Withdrawal):
+        match.withdrawal = row
+    # Otherwise a block-only rule: the block itself matched.
+    return match
 
 
 # --------------------------------------------------------------------------
@@ -573,39 +600,113 @@ def match_detail(owner, pk):
     """``owner``'s match ``pk`` as the console's ``MatchDetail``; ``None`` when their journal lists no such match.
 
     The match's journal row (:func:`journal_rows`) with the transaction's own
-    fields, the transfer the row leads with, and the owner's other rules that
-    matched the same transaction. ``condition`` is the rule's tree as it is
-    now, since no copy of it is stored when a match is recorded, and ``trace``
-    is ``None``, since the evaluator records no gate's outcome: the console
-    shows such a match without its circuit. Someone else's match reads as
+    fields, the transfer the match's gates held of, its trace, and the owner's
+    other rules that matched the same transaction. ``condition`` is the rule's
+    tree as it is now, which is the tree that made the match, since a new tree
+    deletes the rule's matches. ``trace`` is the stored one (:func:`_trace`),
+    ``None`` for a match recorded without. Someone else's match reads as
     ``None``, as do the matches the journal leaves out (:func:`matches_for`).
-    Five queries at most: the match with its transaction and rule, the rule's
-    tree, the transaction's transfers, the functions its selector names in the
-    signature catalog, and the other matches.
+    Six queries at most: the match with its transaction, rule and transfer,
+    the rule's tree, the transaction's leading transfer, the functions its
+    selector names in the signature catalog, the tokens its trace observed,
+    and the other matches.
     """
-    match = matches_for(owner).filter(pk=pk).select_related("transaction", "rule").first()
+    match = (
+        matches_for(owner)
+        .filter(pk=pk)
+        .select_related("transaction", "rule", "transfer__token__contract")
+        .first()
+    )
     if match is None:
         return None
     transaction = match.transaction
-    transfer = _leading_transfers([transaction]).get(transaction.hash)
+    leading = _leading_transfers([transaction]).get(transaction.hash)
     selector = onchain.selector_of(transaction.input)
-    row = _journal_row(match, transfer)
+    method = _method(selector)
+    row = _journal_row(match, leading)
     return {
         **row,
         "condition": match.rule.console_condition(),
-        "trace": None,
+        "trace": _trace(match.trace, transaction.chain, method),
         "transaction": {
             **row["transaction"],
             "from_address": transaction.from_address,
             "to_address": transaction.to_address,  # None for a contract creation
             "value": utils.decimal_string(transaction.value),
             "input_selector": selector,
-            "method": _method(selector),
+            "method": method,
             "decode_status": transaction.decode_status,
         },
-        "transfer": None if transfer is None else _transfer_detail(transfer),
+        "transfer": None if match.transfer is None else _transfer_detail(match.transfer),
         "also_matched": _also_matched(owner, match),
     }
+
+
+def _trace(stored, chain, method):
+    """A match's ``stored`` trace as the console's ``GateTrace``s, by node id; ``None`` when none was stored.
+
+    The trace stores what each gate read raw, and what the catalog says of
+    it is read now: an ``amount`` gains its ``value`` scaled by the
+    ``decimals`` it stored, so a token's decimals changing later leaves it; a
+    ``native_amount`` its ETH ``value``; a ``token`` the rest of its
+    ``TokenRef`` from the token catalog on ``chain``; a ``method`` the
+    ``signature`` the transaction's selector names, ``method``. A token the
+    catalog no longer has reads with no symbol, name or decimals.
+    """
+    if stored is None:
+        return None
+    observed_tokens = {
+        entry["observed"]["token"]["address"]
+        for entry in stored.values()
+        if entry.get("observed", {}).get("kind") == "token"
+    }
+    tokens = {}
+    if observed_tokens:
+        tokens = {
+            token.contract.address: token
+            for token in Token.objects.filter(
+                contract__chain=chain, contract__address__in=observed_tokens
+            ).select_related("contract")
+        }
+    return {
+        node: {**entry, "observed": _observed(entry["observed"], chain, tokens, method)}
+        if "observed" in entry
+        else entry
+        for node, entry in stored.items()
+    }
+
+
+def _observed(observed, chain, tokens, method):
+    """One gate's stored ``observed`` with what the catalogs say of it now (:func:`_trace`)."""
+    kind = observed["kind"]
+    if kind == "amount":
+        decimals = observed["decimals"]
+        value = (
+            None if decimals is None else utils.decimal_string(Decimal(observed["raw"]), decimals)
+        )
+        return {**observed, "value": value}
+    if kind == "native_amount":
+        return {
+            **observed,
+            "value": utils.decimal_string(Decimal(observed["wei"]), utils.ETH_DECIMALS),
+        }
+    if kind == "token":
+        address = observed["token"]["address"]
+        token = tokens.get(address)
+        if token is None:
+            ref = {
+                "chain": chain,
+                "address": address,
+                "symbol": None,
+                "name": None,
+                "decimals": None,
+            }
+        else:
+            ref = token_ref(token)
+        return {**observed, "token": ref}
+    if kind == "method":
+        return {**observed, "signature": method}
+    return observed
 
 
 def _method(selector):

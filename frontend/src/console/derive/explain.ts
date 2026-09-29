@@ -107,22 +107,25 @@ export function explain(node: Comparison, gate: GateTrace | undefined, detail: M
   }
 
   if (node.field === 'value') {
+    const wei = seen?.kind === 'native_amount' ? seen.wei : tx.value;
     return {
       reads: 'transaction.value ÷ 10^18',
-      steps: [`value = ${groupDigits(tx.value)} wei`, `= ${formatUnits(tx.value, 18, 4)} ETH`],
-      test: test(`${formatUnits(tx.value, 18, 4)} ETH`),
+      steps: [`value = ${groupDigits(wei)} wei`, `= ${formatUnits(wei, 18, 4)} ETH`],
+      test: test(`${formatUnits(wei, 18, 4)} ETH`),
       note: '',
     };
   }
   if (node.field === 'method') {
+    const selector = seen?.kind === 'method' ? seen.selector : tx.input_selector;
+    const signature = seen?.kind === 'method' ? seen.signature : tx.method;
     return {
       reads: 'transaction.input selector → signature catalog',
-      steps: [`selector = ${tx.input_selector ?? 'none (plain transfer)'}`, `signature = ${tx.method ?? 'not in the catalog'}`],
-      test: test(tx.method ?? tx.input_selector ?? 'none'),
+      steps: [`selector = ${selector ?? 'none (plain transfer)'}`, `signature = ${signature ?? 'not in the catalog'}`],
+      test: test(signature ?? selector ?? 'none'),
       note: '',
     };
   }
-  const address = node.field === 'from_address' ? tx.from_address : tx.to_address;
+  const address = seen?.kind === 'address' ? seen.address : node.field === 'from_address' ? tx.from_address : tx.to_address;
   const label = seen?.kind === 'address' ? seen.label : null;
   return {
     reads: `transaction.${node.field}`,

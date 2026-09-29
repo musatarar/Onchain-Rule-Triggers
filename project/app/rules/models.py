@@ -14,6 +14,7 @@ from django.db.models import Q
 
 from project.app.constants import GLYPH_CHOICES
 from project.app.evm.block.models import Block, Transaction, Withdrawal
+from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import utils
 
 
@@ -241,6 +242,23 @@ class MatchedRule(models.Model):
     withdrawal = models.ForeignKey(
         Withdrawal,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="rule_matches",
+    )
+    # The rule's revision whose tree made the match. A new tree deletes the
+    # rule's matches, so a match whose revision is not the rule's was recorded
+    # by an evaluation that read the old tree, and is not shown.
+    rule_revision = models.PositiveIntegerField()
+    # Each node of the tree, by id, with whether it held and what it read raw:
+    # {"43": {"held": true, "observed": {"kind": "amount", "raw": "25000000000",
+    # "decimals": 6}}}. Null for a withdrawal or block match, which is not traced.
+    trace = models.JSONField(null=True, blank=True)
+    # The token transfer the match's gates held of; null when the tree reads no
+    # transfer, the transaction has none, or the transfer is gone.
+    transfer = models.ForeignKey(
+        TokenTransfer,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="rule_matches",
