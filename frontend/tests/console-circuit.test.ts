@@ -167,3 +167,56 @@ test('the inspector explains a gate from what it observed', async () => {
   assert.equal(observedText(detail.trace[g5.node.id!]), '397.09');
   assert.equal(gateTag(g5), 'CARRIED POWER');
 });
+
+test('a match detail as the server serves it draws the circuit and explains each gate from observed', () => {
+  // The shape `GET /api/matches/<id>/` answers: no address labels, a token ref and
+  // a method signature filled in from the catalogs when the match is read.
+  const usdt = '0xdac17f958d2ee523a2206206994597c13d831ec7';
+  const detail = {
+    condition: {
+      id: 41,
+      type: 'and',
+      children: [
+        { id: 42, type: 'comparison', source: 'token_transfer', field: 'token', operator: 'eq', value: { chain: 1, address: usdt } },
+        { id: 43, type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gte', value: '250' },
+        { id: 44, type: 'comparison', source: 'transaction', field: 'method', operator: 'eq', value: 'transfer' },
+      ],
+    },
+    trace: {
+      41: { held: true },
+      42: {
+        held: true,
+        observed: { kind: 'token', token: { chain: 1, address: usdt, symbol: 'USDT', name: 'Tether', decimals: 6 } },
+      },
+      43: { held: true, observed: { kind: 'amount', raw: '397092712', decimals: 6, value: '397.092712' } },
+      44: { held: true, observed: { kind: 'method', selector: '0xa9059cbb', signature: 'transfer' } },
+    },
+    transaction: { value: '0', input_selector: '0xa9059cbb', method: 'transfer' },
+    transfer: {
+      token: { chain: 1, address: usdt, symbol: 'USDT', name: 'Tether', decimals: 6 },
+      raw_value: '397092712',
+    },
+  } as unknown as MatchDetail;
+
+  const power = powerPath(detail.condition, detail.trace);
+  assert.equal(power.energised, true);
+  assert.deepEqual(
+    power.gates.map((g) => g.pout),
+    [true, true, true],
+  );
+  const drawn = scene(detail, 1600);
+  assert.equal(drawn.coil.lit, true);
+  // Lit gates and the coil carry the delays the power-on animation, and Replay, play.
+  assert.ok(drawn.gates.every((g) => g.pout && g.delay > 0));
+  assert.ok(drawn.coil.delay > Math.max(...drawn.gates.map((g) => g.delay)));
+  assert.deepEqual(
+    drawn.gates.map((g) => g.value),
+    ['USDT', '397.09', 'transfer'],
+  );
+
+  const [byToken, amount, method] = power.gates;
+  const read = (gate: typeof byToken) => explain(gate.node, detail.trace![gate.node.id!], detail, describer);
+  assert.deepEqual(read(byToken).steps, [`contract = ${usdt}`, 'catalog: Tether (USDT)']);
+  assert.deepEqual(read(amount).steps, ['raw_value = 397,092,712', 'token.decimals = 6 (USDT)', 'amount = 397.092712']);
+  assert.deepEqual(read(method).steps, ['selector = 0xa9059cbb', 'signature = transfer']);
+});
