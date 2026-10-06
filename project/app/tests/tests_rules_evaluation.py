@@ -391,8 +391,13 @@ class DecodingTests(EvaluationTestCase):
         stored = self._store(decoded=False)
         self._named("switched off", every_transfer(), enabled=False)
 
-        with self.assertNumQueries(4):  # the listing, the blocks, the claim, the savepoint pair
+        with CaptureQueriesContext(connection) as queries:
             run = rules_services.evaluate_blocks()
+
+        # The block is claimed, but neither its transactions nor its transfers are read.
+        read = " ".join(query["sql"] for query in queries)
+        self.assertNotIn(Transaction._meta.db_table, read)
+        self.assertNotIn("app_tokentransfer", read)
 
         self.assertEqual((run.blocks, run.matches, run.undecoded), (1, 0, 0))
         stored.refresh_from_db()
