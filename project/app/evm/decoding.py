@@ -194,6 +194,7 @@ def _store(batch, transfers):
                         block_number=tx.block_number,
                         block_hash=tx.block_hash,
                         block_timestamp=tx.block_timestamp,
+                        transaction_index=tx.transaction_index,
                         log_index=log_index,
                         token=token,
                         from_address=from_address,

@@ -64,6 +64,7 @@ from project.app.tests.tests_rules_onchain import (
     REORGED_BLOCK_HASH,
     USDC,
     USDT,
+    transfer_position,
 )
 
 RULES_URL = "/api/rules/"
@@ -209,6 +210,7 @@ class RulesApiTestCase(TestCase):
     def _transfer(self, transaction_hash, token, *, raw_value, log_index=None, verified=False):
         """A transfer of ``token`` from Alice to Bob, stored for the transaction as decoding stores one."""
         return TokenTransfer.objects.create(
+            **transfer_position(transaction_hash),
             transaction_hash=transaction_hash,
             log_index=log_index,
             token=token,
