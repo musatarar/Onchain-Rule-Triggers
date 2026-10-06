@@ -324,18 +324,18 @@ class LoadReceiptsScriptTests(TestCase):
     def test_loads_the_sample_receipts_as_ethereum(self):
         output = self.load()
 
-        self.assertEqual(output, "Loaded 973 receipt(s) from 5 block(s) on Ethereum.\n")
+        self.assertEqual(output, "Loaded 1525 receipt(s) from 5 block(s) on Ethereum.\n")
         self.assertEqual(
             list(
                 Receipt.objects.order_by("block_number")
                 .values_list("block_number", flat=True)
                 .distinct()
             ),
-            [26_009_321 + offset for offset in range(5)],
+            [26_134_828 + offset for offset in range(5)],
         )
         self.assertEqual(set(Receipt.objects.values_list("chain", flat=True)), {ChainId.ETHEREUM})
-        self.assertEqual(Log.objects.count(), 4682)
-        self.assertEqual(Topic.objects.count(), 12666)
+        self.assertEqual(Log.objects.count(), 4089)
+        self.assertEqual(Topic.objects.count(), 11074)
 
     def test_loads_another_file_as_the_chain_it_names(self):
         output = self.load([[receipt()]], chain=ChainId.GNOSIS)

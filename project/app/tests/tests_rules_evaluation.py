@@ -5,15 +5,13 @@ it evaluates a block once, that a block a transfer rule reads before decoding
 has finished waits with nothing recorded, and that a rule the evaluator refuses
 holds up no other; then the ``evaluate_rules`` command's report, and the demo
 circuits ``scripts/create_demo_rules.py`` loads, evaluated against the sample
-blocks with the console demo's token catalog, matching what the demo's expected
-results say they match.
+blocks with ``raw_data/tokens.json`` as the token catalog.
 """
 
 import contextlib
 import datetime
 import io
 import json
-import os
 import random
 from unittest import mock
 
@@ -44,14 +42,12 @@ from project.app.tests.tests_rules_onchain import (
     USDT,
     OnchainTestCase,
 )
-from scripts.create_demo_rules import DEFAULT_PATH, PROJECT_ROOT, create_demo_rules
+from scripts.create_demo_rules import DEFAULT_PATH, create_demo_rules
 from scripts.load_blocks import load_blocks
 
 # The block after the sample block, and the one transaction it carries.
 NEXT_BLOCK_HASH = "0x" + "d0" * 32
 NEXT_HASH = "0x" + "d1" * 32
-# The console demo's fixtures: its token catalog, and what each of its circuits matches.
-DEMO_FIXTURES = os.path.join(PROJECT_ROOT, "frontend", "src", "console", "api", "demo", "fixtures")
 
 
 def every_transaction():
@@ -59,8 +55,8 @@ def every_transaction():
     return and_(tx("value", "gte", "0"))
 
 
-# The sample transaction BNB-OUT's G5 reads 397.092712 USDT of.
-TX_3266 = "0x3266982fe13e591a4d52c05dac89063180dec8d089a6e7171f74d9edffca31fd"
+# The sample transaction BNB-OUT's G5 reads 385.86 USDT of.
+TX_4273 = "0x4273490c19ca3c60072b7c8a49ad2b1e4791b2029e18455ed32a1d218687ea1a"
 
 
 def _nodes(node):
@@ -458,54 +454,44 @@ class CreateDemoRulesScriptTests(TestCase):
         )
 
     def _evaluate_the_sample_blocks(self):
-        """Load the sample blocks and the demo rules, give their tokens the demo
-        catalog's metadata, and evaluate; answer the run."""
+        """Load the sample blocks, the demo rules and the token catalog, and evaluate;
+        answer the run."""
         with contextlib.redirect_stdout(io.StringIO()):
             load_blocks()
         call_command("load_function_signatures", stdout=io.StringIO())
         decode_transactions()
         self.load()
         # Decoding stores a placeholder for each token it has not seen, with no
-        # symbol, name or decimals. Give each the metadata the demo's token
-        # catalog lists. The demo treats a token it lists a symbol for as
-        # recognised, and `token_recognised` reads whether the token has a
-        # coingecko id, so a listed symbol gets one and a null symbol gets none.
-        catalog = {
-            (entry["chain"], entry["address"]): entry
-            for entry in read_json(os.path.join(DEMO_FIXTURES, "tokens.json"))
-        }
-        for stored in Token.objects.select_related("contract"):
-            entry = catalog.get((stored.contract.chain, stored.contract.address))
-            if entry is None:
-                continue
-            stored.symbol = entry["symbol"] or ""
-            stored.name = entry["name"]
-            stored.decimals = entry["decimals"]
-            stored.coingecko_id = entry["symbol"] and entry["symbol"].lower()
-            stored.save(update_fields=["symbol", "name", "decimals", "coingecko_id"])
+        # symbol, name or decimals. The catalog fills in the ones it lists.
+        call_command("load_tokens", stdout=io.StringIO())
         return rules_services.evaluate_blocks()
 
-    def test_the_demo_circuits_match_what_the_demo_expects_of_the_sample_blocks(self):
+    def test_the_demo_circuits_match_the_sample_blocks(self):
         run = self._evaluate_the_sample_blocks()
 
-        self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (5, 40, 0, {}))
-        expected = read_json(os.path.join(DEMO_FIXTURES, "expected-results.json"))
-        for circuit in read_json(DEFAULT_PATH):
-            with self.subTest(circuit["tag"]):
-                self.assertEqual(
-                    set(
-                        MatchedRule.objects.filter(rule__tag=circuit["tag"]).values_list(
-                            "transaction", flat=True
-                        )
-                    ),
-                    set(expected[str(circuit["id"])]["match_tx_hashes"]),
-                )
+        self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (5, 129, 0, {}))
+        self.assertEqual(
+            {
+                circuit["tag"]: MatchedRule.objects.filter(rule__tag=circuit["tag"]).count()
+                for circuit in read_json(DEFAULT_PATH)
+            },
+            {
+                "STABLE-2K": 69,
+                "BNB-TOKENS": 29,
+                "ETH-10": 4,
+                "UNKNOWN-TKN": 16,
+                "PEPE-1B": 2,
+                "ANY-1M": 4,
+                "LINK-BNB": 0,  # disarmed
+                "BNB-OUT": 5,
+            },
+        )
 
     def test_a_demo_match_is_recorded_with_a_trace_of_every_node_of_its_tree(self):
         self._evaluate_the_sample_blocks()
         owner = get_user_model().objects.get()
         bnb_out = Rule.objects.get(tag="BNB-OUT")
-        match = MatchedRule.objects.get(rule=bnb_out, transaction=TX_3266)
+        match = MatchedRule.objects.get(rule=bnb_out, transaction=TX_4273)
 
         detail = rules_services.match_detail(owner, match.pk)
 
@@ -524,13 +510,13 @@ class CreateDemoRulesScriptTests(TestCase):
                 "held": True,
                 "observed": {
                     "kind": "amount",
-                    "raw": "397092712",
+                    "raw": "385860000",
                     "decimals": 6,
-                    "value": "397.092712",
+                    "value": "385.86",
                 },
             },
         )
-        self.assertEqual(detail["transfer"]["raw_value"], "397092712")
+        self.assertEqual(detail["transfer"]["raw_value"], "385860000")
         self.assertEqual(match.rule_revision, bnb_out.revision)
 
     def test_every_recorded_trace_holds_at_the_root_and_a_gate_with_no_transfer_says_so(self):

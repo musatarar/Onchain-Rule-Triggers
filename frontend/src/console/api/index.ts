@@ -1,28 +1,28 @@
 import type { ConsoleApi } from './ConsoleApi.ts';
 import { DemoConsoleApi } from './demo/DemoConsoleApi.ts';
 import { HttpConsoleApi } from './http.ts';
-import { parseSources, SOURCE_OF, type Sources } from './sources.ts';
+import { type DemoApi, parseSources, type Sources } from './sources.ts';
 
 export type { ConsoleApi, MatchesQuery, TokensQuery } from './ConsoleApi.ts';
 export { ApiError, errorMessage } from '../../api/client.ts';
 
-/** Each method goes to the demo or the real API, per its key in `sources`. */
-export function routeApi(sources: Sources, demo: ConsoleApi, http: ConsoleApi): ConsoleApi {
-  const pick = <K extends keyof ConsoleApi>(method: K): ConsoleApi[K] => {
-    const target = sources[SOURCE_OF[method]] === 'http' ? http : demo;
+/** Every method goes to the real API, except propose and backtest set to demo in `sources`. */
+export function routeApi(sources: Sources, demo: DemoApi, http: ConsoleApi): ConsoleApi {
+  const pick = <K extends keyof DemoApi>(method: K): ConsoleApi[K] => {
+    const target = sources[method] === 'http' ? http : demo;
     return target[method].bind(target) as ConsoleApi[K];
   };
   return {
-    engineStatus: pick('engineStatus'),
-    vocabulary: pick('vocabulary'),
-    listRules: pick('listRules'),
-    getRule: pick('getRule'),
-    createRule: pick('createRule'),
-    updateRule: pick('updateRule'),
-    deleteRule: pick('deleteRule'),
-    matches: pick('matches'),
-    matchDetail: pick('matchDetail'),
-    tokens: pick('tokens'),
+    engineStatus: http.engineStatus.bind(http),
+    vocabulary: http.vocabulary.bind(http),
+    listRules: http.listRules.bind(http),
+    getRule: http.getRule.bind(http),
+    createRule: http.createRule.bind(http),
+    updateRule: http.updateRule.bind(http),
+    deleteRule: http.deleteRule.bind(http),
+    matches: http.matches.bind(http),
+    matchDetail: http.matchDetail.bind(http),
+    tokens: http.tokens.bind(http),
     propose: pick('propose'),
     backtest: pick('backtest'),
   };

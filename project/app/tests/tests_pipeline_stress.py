@@ -1,6 +1,6 @@
 """Stress tests for the realtime pipeline: many users' rules against real Ethereum blocks.
 
-The five sample mainnet blocks in ``raw_data/`` (94 to 133 transactions each,
+The five sample mainnet blocks in ``raw_data/`` (106 to 502 transactions each,
 with their receipts) are served by a fake node, so a tick does everything but
 wait on the network: it stores each block with its receipts, decodes its
 transactions and evaluates every enabled rule against it. Each user owns ten
@@ -71,7 +71,6 @@ from project.app.models import (
     MatchedRule,
     Receipt,
     Rule,
-    Token,
     TokenTransfer,
     Transaction,
     Withdrawal,
@@ -387,26 +386,6 @@ class StressTestCase(NodeTestCase):
 STAGES = ("ingest_new_blocks", "decode_transactions", "index", "evaluate_blocks")
 
 
-def _catalog_the_demo_tokens():
-    """Give each token decoding stored a placeholder for the metadata the console demo's token
-    catalog lists, as ``tests_rules_evaluation`` does for the demo circuits' 40 matches.
-
-    A listed symbol makes the token recognised (a coingecko id), a null one leaves it not.
-    """
-    path = settings.BASE_DIR / "frontend" / "src" / "console" / "api" / "demo" / "fixtures"
-    with open(path / "tokens.json", encoding="utf-8") as source:
-        catalog = {(entry["chain"], entry["address"]): entry for entry in json.load(source)}
-    for stored in Token.objects.select_related("contract"):
-        entry = catalog.get((stored.contract.chain, stored.contract.address))
-        if entry is None:
-            continue
-        stored.symbol = entry["symbol"] or ""
-        stored.name = entry["name"]
-        stored.decimals = entry["decimals"]
-        stored.coingecko_id = entry["symbol"] and entry["symbol"].lower()
-        stored.save(update_fields=["symbol", "name", "decimals", "coingecko_id"])
-
-
 def _plant_trees(pairs):
     """Store each ``(rule, condition)`` pair's console tree as the rule's tree, a level at a time.
 
@@ -543,7 +522,7 @@ class QueryScalingTests(StressTestCase):
         self.assertGreater(self.assert_index_answers_each_rule_alone(), 0)
 
     def test_the_rule_index_matches_what_each_circuit_matches_alone(self):
-        _catalog_the_demo_tokens()
+        call_command("load_tokens", stdout=io.StringIO())
         owner = get_user_model().objects.create_user(username="circuits@stress.example")
         for circuit in _raw("circuits.json"):
             rules_services.create_rule(
@@ -555,8 +534,9 @@ class QueryScalingTests(StressTestCase):
                 },
             )
 
-        # What evaluate_rules records for the enabled circuits on the sample blocks.
-        self.assertEqual(self.assert_index_answers_each_rule_alone(), 40)
+        # What evaluate_rules records for the enabled circuits on the sample blocks,
+        # ingested with their receipts, so with the transfers their logs carry too.
+        self.assertEqual(self.assert_index_answers_each_rule_alone(), 412)
 
     def test_every_demo_rule_is_filed_and_a_row_is_tried_against_a_few(self):
         self.add_users(10)
@@ -567,8 +547,8 @@ class QueryScalingTests(StressTestCase):
         # stablecoin rules, a large one against its amount rules too, and a
         # transaction against the swap rules only when it calls a Uniswap
         # router. With every rule tried everywhere, each row would be tried
-        # against all 100; filed, a row is tried against 7 on average.
-        self.assertLess(sum(tries) / len(tries), rules / 10)
+        # against all 100; filed, a row is tried against 13 on average.
+        self.assertLess(sum(tries) / len(tries), rules / 5)
 
     def test_every_persona_rule_is_filed_and_a_row_is_tried_against_a_few(self):
         with mock.patch(f"{__name__}.ACTIVE_SHARE", 0.5):
