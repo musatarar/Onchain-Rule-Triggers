@@ -85,31 +85,6 @@
     "updated_at": "2026-09-24T12:00:00Z"
   },
   {
-    "id": 3,
-    "name": "ETH sends over 10 ETH",
-    "tag": "ETH-10",
-    "glyph": "target",
-    "sentence": "Transactions sending more than 10 ETH",
-    "enabled": true,
-    "revision": 1,
-    "condition": {
-      "id": 8,
-      "type": "and",
-      "children": [
-        {
-          "id": 9,
-          "type": "comparison",
-          "source": "transaction",
-          "field": "value",
-          "operator": "gt",
-          "value": "10"
-        }
-      ]
-    },
-    "created_at": "2026-09-24T12:00:00Z",
-    "updated_at": "2026-09-24T12:00:00Z"
-  },
-  {
     "id": 4,
     "name": "Transfers on unrecognised contracts",
     "tag": "UNKNOWN-TKN",
@@ -243,7 +218,7 @@
     "name": "Sizable outflows from Binance hot wallets",
     "tag": "BNB-OUT",
     "glyph": "bolt",
-    "sentence": "Anything leaving the Binance hot wallets: USDT or USDC of 250 or more, PEPE over 1M, or more than 1 ETH",
+    "sentence": "Token transfers leaving the Binance hot wallets: USDT or USDC of 250 or more, or PEPE over 1M",
     "enabled": true,
     "revision": 1,
     "condition": {
@@ -251,40 +226,19 @@
       "type": "and",
       "children": [
         {
-          "id": 21,
-          "type": "or",
-          "children": [
-            {
-              "id": 22,
-              "type": "comparison",
-              "source": "transaction",
-              "field": "from_address",
-              "operator": "in",
-              "value": {
-                "addresses": [
-                  "0x28c6c06298d514db089934071355e5743bf21d60",
-                  "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
-                  "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
-                ],
-                "name": "Binance hot wallets"
-              }
-            },
-            {
-              "id": 23,
-              "type": "comparison",
-              "source": "token_transfer",
-              "field": "from_address",
-              "operator": "in",
-              "value": {
-                "addresses": [
-                  "0x28c6c06298d514db089934071355e5743bf21d60",
-                  "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
-                  "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
-                ],
-                "name": "Binance hot wallets"
-              }
-            }
-          ]
+          "id": 23,
+          "type": "comparison",
+          "source": "token_transfer",
+          "field": "from_address",
+          "operator": "in",
+          "value": {
+            "addresses": [
+              "0x28c6c06298d514db089934071355e5743bf21d60",
+              "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+              "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+            ],
+            "name": "Binance hot wallets"
+          }
         },
         {
           "id": 24,
@@ -356,14 +310,6 @@
                   "value": "1000000"
                 }
               ]
-            },
-            {
-              "id": 33,
-              "type": "comparison",
-              "source": "transaction",
-              "field": "value",
-              "operator": "gt",
-              "value": "1"
             }
           ]
         }

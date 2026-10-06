@@ -93,25 +93,10 @@
  },
  {
   "sentence": "ETH over 20",
-  "name": "ETH over 20",
-  "understood": [
-   "over 20"
-  ],
-  "tag": "ETH-20",
-  "condition": {
-   "id": null,
-   "type": "and",
-   "children": [
-    {
-     "id": null,
-     "type": "comparison",
-     "source": "transaction",
-     "field": "value",
-     "operator": "gt",
-     "value": "20"
-    }
-   ]
-  }
+  "name": "",
+  "understood": [],
+  "tag": null,
+  "condition": null
  },
  {
   "sentence": "Transfers of unknown tokens",

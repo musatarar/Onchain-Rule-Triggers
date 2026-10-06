@@ -19,8 +19,7 @@ function inferredType(node: Comparison): FieldType {
   if (typeof value === 'boolean') return 'bool';
   if (typeof value === 'object') return 'addresses' in value ? 'address' : 'token';
   if (/^0x[0-9a-f]{40}$/i.test(value)) return 'address';
-  if (/^\d+(\.\d+)?$/.test(value)) return node.source === 'transaction' ? 'native_amount' : 'amount';
-  return 'signature';
+  return 'amount';
 }
 
 export function fieldOf(vocabulary: Vocabulary | null, node: Comparison): { label: string; type: FieldType } {
@@ -33,7 +32,7 @@ const OPERATOR_TEXT: Record<Operator, string> = {
 };
 
 export function operatorText(type: FieldType, operator: Operator): string {
-  if ((type === 'amount' || type === 'native_amount') && operator === 'eq') return '=';
+  if (type === 'amount' && operator === 'eq') return '=';
   return OPERATOR_TEXT[operator];
 }
 
@@ -47,7 +46,6 @@ export function valueText(node: Comparison, describer: Describer): string {
     return short(String(value));
   }
   if (type === 'amount') return groupDigits(String(value));
-  if (type === 'native_amount') return `${groupDigits(String(value))} ETH`;
   if (type === 'bool') return value ? 'yes' : 'no';
   if (type === 'token' && typeof value === 'object' && 'address' in value) {
     return describer.tokenSymbol(value.chain, value.address) ?? short(value.address);

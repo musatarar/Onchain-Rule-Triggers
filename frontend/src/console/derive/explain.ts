@@ -3,25 +3,20 @@ import { type Comparison, type Describer, describeGate } from './describe.ts';
 import { formatUnits, groupDigits, short } from './format.ts';
 import { type GatePower, parentOf } from './power.ts';
 
-/** What a gate read on this transaction, as drawn under it: "397.09", "Binance 15". */
+/** What a gate read on this transfer, as drawn under it: "397.09", "Binance 15". */
 export function observedText(gate: GateTrace | undefined): string {
   if (!gate) return '';
-  if (gate.reason === 'no_transfer') return 'no token transfer';
   const seen = gate.observed;
   if (!seen) return '';
   switch (seen.kind) {
     case 'amount':
       return seen.decimals === null ? 'decimals unknown' : formatUnits(seen.raw, seen.decimals);
-    case 'native_amount':
-      return `${formatUnits(seen.wei, 18, 4)} ETH`;
     case 'address':
-      return seen.address === null ? 'contract creation' : seen.label || short(seen.address);
+      return seen.address === null ? 'none' : seen.label || short(seen.address);
     case 'token':
       return seen.token.symbol ?? short(seen.token.address);
     case 'bool':
       return seen.value ? 'recognised' : 'unrecognised';
-    case 'method':
-      return seen.signature ?? seen.selector ?? 'none';
   }
 }
 
@@ -37,100 +32,61 @@ function listStep(node: Comparison, address: string | null, gate: GateTrace | un
   return [seen?.label ? `on ${name} as “${seen.label}”` : `on ${name}`];
 }
 
-/** How one gate read this transaction, step by step, for the inspector. */
+/** How one gate read the matched transfer, step by step, for the inspector. */
 export function explain(node: Comparison, gate: GateTrace | undefined, detail: MatchDetail, describer: Describer): Insight {
   const text = describeGate(node, describer);
   const test = (seen: string) => `${seen} ${text.test}`;
   const seen = gate?.observed;
   const transfer = detail.transfer;
-  const tx = detail.transaction;
 
-  if (node.source === 'token_transfer') {
-    if (!transfer || gate?.reason === 'no_transfer') {
+  const token: TokenRef = seen?.kind === 'token' ? seen.token : transfer.token;
+  if (node.field === 'amount') {
+    const raw = seen?.kind === 'amount' ? seen.raw : transfer.raw_value;
+    const decimals = seen?.kind === 'amount' ? seen.decimals : token.decimals;
+    const steps = [`raw_value = ${groupDigits(raw)}`];
+    if (decimals === null) {
+      steps.push('token.decimals = unknown (not read from the contract yet)');
       return {
-        reads: `token_transfer.${node.field}`,
-        steps: ['No token transfer was decoded from this transaction'],
-        test: 'nothing to compare',
-        note: 'A token-transfer gate cannot hold on a transaction without a decoded transfer.',
+        reads: 'token_transfer.raw_value ÷ 10^token.decimals',
+        steps,
+        test: 'cannot scale the amount',
+        note: 'Unknown decimals are never guessed, so this gate reports no data instead of holding or failing.',
       };
     }
-    const token: TokenRef = seen?.kind === 'token' ? seen.token : transfer.token;
-    if (node.field === 'amount') {
-      const raw = seen?.kind === 'amount' ? seen.raw : transfer.raw_value;
-      const decimals = seen?.kind === 'amount' ? seen.decimals : token.decimals;
-      const steps = [`raw_value = ${groupDigits(raw)}`];
-      if (decimals === null) {
-        steps.push('token.decimals = unknown (not read from the contract yet)');
-        return {
-          reads: 'token_transfer.raw_value ÷ 10^token.decimals',
-          steps,
-          test: 'cannot scale the amount',
-          note: 'Unknown decimals are never guessed, so this gate reports no data instead of holding or failing.',
-        };
-      }
-      steps.push(
-        `token.decimals = ${decimals}${token.symbol ? ` (${token.symbol})` : ''}`,
-        `amount = ${formatUnits(raw, decimals, 6)}`,
-      );
-      return { reads: 'token_transfer.raw_value ÷ 10^token.decimals', steps, test: test(formatUnits(raw, decimals)), note: '' };
-    }
-    if (node.field === 'token') {
-      return {
-        reads: 'token_transfer.token → token catalog',
-        steps: [
-          `contract = ${token.address}`,
-          token.symbol ? `catalog: ${token.name ?? token.symbol} (${token.symbol})` : 'catalog: no entry for this contract',
-        ],
-        test: test(token.symbol ?? short(token.address)),
-        note: '',
-      };
-    }
-    if (node.field === 'token_recognised') {
-      return {
-        reads: 'token catalog entry for token_transfer.token',
-        steps: [
-          `contract = ${token.address}`,
-          token.symbol ? `found: ${token.name ?? token.symbol} (${token.symbol})` : 'not found in the catalog',
-        ],
-        test: test(token.symbol ? 'recognised' : 'unrecognised'),
-        note: '',
-      };
-    }
-    const address = seen?.kind === 'address' ? seen.address : node.field === 'from_address' ? transfer.from_address : transfer.to_address;
-    const label = seen?.kind === 'address' ? seen.label : null;
+    steps.push(
+      `token.decimals = ${decimals}${token.symbol ? ` (${token.symbol})` : ''}`,
+      `amount = ${formatUnits(raw, decimals, 6)}`,
+    );
+    return { reads: 'token_transfer.raw_value ÷ 10^token.decimals', steps, test: test(formatUnits(raw, decimals)), note: '' };
+  }
+  if (node.field === 'token') {
     return {
-      reads: `token_transfer.${node.field}`,
-      steps: [`${node.field} = ${address}`, ...listStep(node, address, gate)],
-      test: test(label || short(address)),
+      reads: 'token_transfer.token → token catalog',
+      steps: [
+        `contract = ${token.address}`,
+        token.symbol ? `catalog: ${token.name ?? token.symbol} (${token.symbol})` : 'catalog: no entry for this contract',
+      ],
+      test: test(token.symbol ?? short(token.address)),
       note: '',
     };
   }
-
-  if (node.field === 'value') {
-    const wei = seen?.kind === 'native_amount' ? seen.wei : tx.value;
+  if (node.field === 'token_recognised') {
     return {
-      reads: 'transaction.value ÷ 10^18',
-      steps: [`value = ${groupDigits(wei)} wei`, `= ${formatUnits(wei, 18, 4)} ETH`],
-      test: test(`${formatUnits(wei, 18, 4)} ETH`),
+      reads: 'token catalog entry for token_transfer.token',
+      steps: [
+        `contract = ${token.address}`,
+        token.symbol ? `found: ${token.name ?? token.symbol} (${token.symbol})` : 'not found in the catalog',
+      ],
+      test: test(token.symbol ? 'recognised' : 'unrecognised'),
       note: '',
     };
   }
-  if (node.field === 'method') {
-    const selector = seen?.kind === 'method' ? seen.selector : tx.input_selector;
-    const signature = seen?.kind === 'method' ? seen.signature : tx.method;
-    return {
-      reads: 'transaction.input selector → signature catalog',
-      steps: [`selector = ${selector ?? 'none (plain transfer)'}`, `signature = ${signature ?? 'not in the catalog'}`],
-      test: test(signature ?? selector ?? 'none'),
-      note: '',
-    };
-  }
-  const address = seen?.kind === 'address' ? seen.address : node.field === 'from_address' ? tx.from_address : tx.to_address;
+  const address = seen?.kind === 'address' ? seen.address : node.field === 'from_address' ? transfer.from_address : transfer.to_address;
   const label = seen?.kind === 'address' ? seen.label : null;
   return {
-    reads: `transaction.${node.field}`,
-    steps: [`${node.field} = ${address ?? 'none (contract creation)'}`, ...listStep(node, address, gate)],
-    test: test(address ? label || short(address) : 'none'),
+    reads: `token_transfer.${node.field}`,
+    steps: [`${node.field} = ${address}`, ...listStep(node, address, gate)],
+    test: test(label || short(address)),
     note: '',
   };
 }

@@ -1,8 +1,8 @@
 """Builders for condition trees in the console's ``ConditionNode`` shape, as a write sends them.
 
-``and_(tx("value", "gt", "10"))`` is the tree of a rule matching transactions
-that send more than 10 ETH. Every node's id is ``None``, as the console sends a
-new node's; the server assigns ids when it stores the tree.
+``and_(transfer("amount", "gt", "10"))`` is the tree of a rule matching token
+transfers of more than 10 whole tokens. Every node's id is ``None``, as the
+console sends a new node's; the server assigns ids when it stores the tree.
 """
 
 from project.app.evm.chains import ChainId
@@ -26,10 +26,6 @@ def gate(source, field, operator, value):
         "operator": operator,
         "value": value,
     }
-
-
-def tx(field, operator, value):
-    return gate("transaction", field, operator, value)
 
 
 def transfer(field, operator, value):
