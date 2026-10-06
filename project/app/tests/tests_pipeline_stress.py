@@ -10,10 +10,10 @@ rules, from one of two workloads:
   watching its own wallets ("more than 1M USDT leaves our hot wallet", "our
   governance token sent to an exchange"). A rule names addresses no other
   user's does, so it matches only when its desk's wallets move. A share of the
-  desks (``STRESS_ACTIVE_SHARE``, 2% by default) watch wallets that move in the
-  sample blocks, which comes to about 0.1 matches per user per block: some 700
-  alerts a day for each user, more than a desk would keep, so the matches
-  written err high;
+  desks (``STRESS_ACTIVE_SHARE``, 2% by default) watch wallets that send or
+  receive tokens in the sample blocks, which comes to about 0.02 matches per
+  user per block (measured at 3,000 users): some 165 alerts a day for each
+  user;
 - ``demo``: five demo rules and a variant of each with another threshold,
   the same for every user. Every user then matches many rows a block, so this
   is the worst case for writing matches, not a likely one.
@@ -64,6 +64,7 @@ from django.test.utils import CaptureQueriesContext
 
 from project.app import pipeline
 from project.app.evm.chains import ChainId
+from project.app.evm.decoding import TRANSFER_EVENT_TOPIC
 from project.app.models import (
     Block,
     Condition,
@@ -77,7 +78,7 @@ from project.app.models import (
 )
 from project.app.rules import onchain, utils
 from project.app.rules import services as rules_services
-from project.app.tests.condition_trees import addresses, and_, or_, token, transfer, tx
+from project.app.tests.condition_trees import addresses, and_, or_, token, transfer
 from project.app.tests.tests_evm_block import FakeNode, NodeTestCase
 
 RULES_PER_USER = 10
@@ -108,20 +109,18 @@ SAMPLE_RECEIPTS = _raw("receipts.json")  # one list per block, in block order
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-UNISWAP_ROUTERS = (
-    "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad",  # Universal Router
-    "0x7a250d5630b4cf539739df2c5dacb4c659f2488d",  # V2 Router
-)
+# The circuits of raw_data/circuits.json the demo workload uses.
+DEMO_CIRCUITS = ("STABLE-2K", "ANY-1M", "BNB-OUT", "PEPE-1B")
 
 
 def demo_rules():
     """The five demo rules, as ``(name, condition)``.
 
-    The first three are the v1 demo rules these workloads were first measured
-    with, in the console's vocabulary. The other two v1 demo rules read a
-    validator withdrawal and a block's builder, which no field of the
-    vocabulary reads, so STABLE-2K and ANY-1M from ``raw_data/circuits.json``
-    stand in for them.
+    The first is the one v1 demo rule these workloads were first measured with
+    that the console's vocabulary can say. The other four v1 demo rules read a
+    transaction's ETH value, a validator withdrawal or a block's builder,
+    which no field of the vocabulary reads, so the circuits of
+    :data:`DEMO_CIRCUITS` stand in for them.
     """
     circuits = {circuit["tag"]: circuit for circuit in _raw("circuits.json")}
     return [
@@ -129,25 +128,18 @@ def demo_rules():
             "USDT transfers of 10,000 USDT or more",
             and_(transfer("token", "eq", token(USDT)), transfer("amount", "gte", "10000")),
         ),
-        ("Transactions moving 50 ETH or more", and_(tx("value", "gte", "50"))),
-        (
-            "Uniswap swaps paying 1 ETH or more",
-            and_(
-                or_(*(tx("to_address", "eq", router) for router in UNISWAP_ROUTERS)),
-                tx("value", "gte", "1"),
-            ),
-        ),
-        *((circuits[tag]["name"], circuits[tag]["condition"]) for tag in ("STABLE-2K", "ANY-1M")),
+        *((circuits[tag]["name"], circuits[tag]["condition"]) for tag in DEMO_CIRCUITS),
     ]
 
 
 # Each demo rule's threshold, and the one its variant compares against instead.
 VARIANT_THRESHOLDS = {
     "10000": "1000",  # USDT transfers of 1,000 USDT or more
-    "50": "10",  # moving 10 ETH or more
-    "1": "0.1",  # swaps paying 0.1 ETH or more
     "2000": "500",  # stablecoin transfers of 500 or more
-    "1000000": "100000",  # transfers of 100,000 tokens or more
+    # Transfers of 100,000 tokens or more, and BNB-OUT's PEPE leg at 100,000 PEPE.
+    "1000000": "100000",
+    "250": "100",  # BNB-OUT's stablecoin leg at 100 or more
+    "1000000000": "100000000",  # PEPE transfers of 100M or more
 }
 
 
@@ -166,7 +158,7 @@ def _varied(node):
     node = {key: value for key, value in node.items() if key != "id"}
     if "children" in node:
         node["children"] = [_varied(child) for child in node["children"]]
-    elif node["field"] in ("amount", "value") and node["value"] in VARIANT_THRESHOLDS:
+    elif node["field"] == "amount" and node["value"] in VARIANT_THRESHOLDS:
         node["value"] = VARIANT_THRESHOLDS[node["value"]]
     return node
 
@@ -175,35 +167,36 @@ def _varied(node):
 # the persona workload: each desk's rules over its own wallets
 # --------------------------------------------------------------------------
 
-TRANSFER = "0xa9059cbb"  # transfer(address,uint256)'s selector
+
+def _transfer_parties(receipts):
+    """The ``(sender, recipient)`` of each token transfer in ``receipts``, lowercased, in block order.
+
+    Read from each successful receipt's Transfer logs, as decoding reads a
+    transaction stored with its receipt, which every sample transaction is.
+    """
+    for block_receipts in receipts:
+        for receipt in block_receipts:
+            if receipt["status"] != "0x1":
+                continue
+            for log in receipt["logs"]:
+                topics = [topic.lower() for topic in log["topics"]]
+                if log.get("removed") or len(topics) not in (3, 4):
+                    continue
+                if topics[0] != TRANSFER_EVENT_TOPIC:
+                    continue
+                yield "0x" + topics[1][-40:], "0x" + topics[2][-40:]
 
 
-def _moving(blocks):
-    """The addresses moving in ``blocks``, by the role a desk's wallet would play in them."""
-    roles = {role: set() for role in ("sender", "recipient", "contract")}
-    for raw in blocks:
-        for transaction in raw["transactions"]:
-            roles["sender"].add(transaction["from"])
-            if transaction["to"]:
-                roles["contract"].add(transaction["to"])
-            calldata = transaction.get("input") or ""
-            if calldata.startswith(TRANSFER) and len(calldata) >= 74:
-                roles["recipient"].add("0x" + calldata[34:74])
-    return {role: sorted(address.lower() for address in found) for role, found in roles.items()}
-
-
-MOVING = _moving(SAMPLE_BLOCKS)
+PARTIES = list(_transfer_parties(SAMPLE_RECEIPTS))
+# The addresses the sample blocks' transfers move between, by the role a desk's
+# wallet would play in them.
+MOVING = {
+    "sender": sorted({sender for sender, _ in PARTIES}),
+    "recipient": sorted({recipient for _, recipient in PARTIES}),
+}
 # Stand-ins for exchange deposit addresses, the same for every desk: the five
-# addresses the sample blocks send to most.
-EXCHANGES = [
-    address
-    for address, _ in Counter(
-        transaction["to"]
-        for raw in SAMPLE_BLOCKS
-        for transaction in raw["transactions"]
-        if transaction["to"]
-    ).most_common(5)
-]
+# addresses the sample blocks' transfers go to most.
+EXCHANGES = [address for address, _ in Counter(to for _, to in PARTIES).most_common(5)]
 
 
 def desk_wallets(desk):
@@ -225,13 +218,19 @@ def desk_wallets(desk):
         "hot": wallet("sender"),
         "cold": wallet("sender"),
         "treasury": wallet("recipient"),
-        "protocol": wallet("contract"),
         "token": "0x%040x" % chance.getrandbits(160),  # its own governance token
     }
 
 
 def persona_rules(wallets):
-    """The ten rules a desk owns over its ``wallets``, as ``(name, condition)``."""
+    """The ten rules a desk owns over its ``wallets``, as ``(name, condition)``.
+
+    Four v1 persona rules read a transaction's ETH value, the method it calls
+    or its recipient, which no field of the vocabulary reads; each has a rule
+    over the desk's wallets' token transfers in its place. "Anything touching
+    the cold wallet" reads the cold wallet's transfers where the v1 rule read
+    its transactions.
+    """
     hot, cold, treasury = wallets["hot"], wallets["cold"], wallets["treasury"]
     return [
         (
@@ -250,17 +249,19 @@ def persona_rules(wallets):
                 transfer("amount", "gt", "1000000"),
             ),
         ),
+        # In place of the v1 "More than 100 ETH leaves the hot wallet".
+        ("Any token leaves the hot wallet", and_(transfer("from_address", "eq", hot))),
         (
-            "More than 100 ETH leaves the hot wallet",
-            and_(tx("from_address", "eq", hot), tx("value", "gt", "100")),
-        ),
-        (
-            "The hot wallet approves a spender",
-            and_(tx("from_address", "eq", hot), tx("method", "eq", "approve")),
+            # In place of the v1 "The hot wallet approves a spender".
+            "An unrecognised token leaves the hot wallet",
+            and_(
+                transfer("from_address", "eq", hot),
+                transfer("token_recognised", "eq", False),
+            ),
         ),
         (
             "Anything touching the cold wallet",
-            and_(or_(tx("from_address", "eq", cold), tx("to_address", "eq", cold))),
+            and_(or_(transfer("from_address", "eq", cold), transfer("to_address", "eq", cold))),
         ),
         (
             "Our governance token sent to an exchange",
@@ -271,10 +272,16 @@ def persona_rules(wallets):
         ),
         ("Tokens into the treasury", and_(transfer("to_address", "eq", treasury))),
         (
-            "10 ETH or more into the treasury",
-            and_(tx("to_address", "eq", treasury), tx("value", "gte", "10")),
+            # In place of the v1 "10 ETH or more into the treasury".
+            "10,000 USDT or more into the treasury",
+            and_(
+                transfer("token", "eq", token(USDT)),
+                transfer("to_address", "eq", treasury),
+                transfer("amount", "gte", "10000"),
+            ),
         ),
-        ("Calls to our protocol", and_(tx("to_address", "eq", wallets["protocol"]))),
+        # In place of the v1 "Calls to our protocol".
+        ("Tokens out of the treasury", and_(transfer("from_address", "eq", treasury))),
         (
             # In place of the v1 "Withdrawals to our validators", which no field
             # of the vocabulary can say.
@@ -285,6 +292,22 @@ def persona_rules(wallets):
             ),
         ),
     ]
+
+
+def _load_tokens():
+    """Load ``raw_data/tokens.json`` into the token catalog, and on Postgres refresh the planner's statistics.
+
+    A test's rows are never committed, so autovacuum never analyzes them, and
+    the planner keeps estimating the tables at the size they were last
+    analyzed at, often empty. With the catalog's 10,000 contracts estimated at
+    one row, it reads a block's transfers by walking every contract against
+    every transaction, and one block takes seconds instead of milliseconds.
+    ``ANALYZE`` counts the rows this transaction wrote.
+    """
+    call_command("load_tokens", stdout=io.StringIO())
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("ANALYZE app_contract, app_token")
 
 
 class SampleNode(FakeNode):
@@ -318,11 +341,13 @@ class StressTestCase(NodeTestCase):
 
     @staticmethod
     def prepare(node):
-        """The function signatures decoding reads, and a cursor just before ``node``'s blocks.
+        """The function signatures decoding reads, the token catalog, and a cursor just
+        before ``node``'s blocks.
 
         The first tick on a chain stores only the head, so it starts before the first block.
         """
         call_command("load_function_signatures", stdout=io.StringIO())
+        _load_tokens()
         IngestCursor.objects.create(
             chain=ChainId.ETHEREUM, last_indexed_block=min(node.by_number) - 1
         )
@@ -433,13 +458,22 @@ class QueryScalingTests(StressTestCase):
         caches["rpc"].clear()
 
     def evaluate_again(self):
-        """Evaluate every sample block afresh; answer the queries it made and what it did."""
+        """Evaluate every sample block afresh; answer the queries it made, inserting the
+        matches aside, and what it did.
+
+        A block's matches go in one COPY on Postgres, but SQLite takes an insert
+        per 124 of them (its 999 parameters over a match's eight columns), so its
+        inserts grow with the matches. Every other query is a read, which the
+        rules must not add to.
+        """
         Block.objects.update(evaluated_at=None)
         MatchedRule.objects.all().delete()
         with CaptureQueriesContext(connection) as queries:
             run = rules_services.evaluate_blocks()
         self.assertEqual(run.blocks, len(SAMPLE_BLOCKS))
-        return len(queries), run
+        table = connection.ops.quote_name(MatchedRule._meta.db_table)
+        inserts = (f"INSERT INTO {table}", f"COPY {table}")
+        return sum(not query["sql"].startswith(inserts) for query in queries), run
 
     def assert_index_answers_each_rule_alone(self):
         rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
@@ -522,7 +556,8 @@ class QueryScalingTests(StressTestCase):
         self.assertGreater(self.assert_index_answers_each_rule_alone(), 0)
 
     def test_the_rule_index_matches_what_each_circuit_matches_alone(self):
-        call_command("load_tokens", stdout=io.StringIO())
+        # The token catalog is loaded already (prepare); loading it again would
+        # update every token in one statement.
         owner = get_user_model().objects.create_user(username="circuits@stress.example")
         for circuit in _raw("circuits.json"):
             rules_services.create_rule(
@@ -536,7 +571,10 @@ class QueryScalingTests(StressTestCase):
 
         # What evaluate_rules records for the enabled circuits on the sample blocks,
         # ingested with their receipts, so with the transfers their logs carry too.
-        self.assertEqual(self.assert_index_answers_each_rule_alone(), 412)
+        # Every circuit reads token transfers only, so the transactions moving
+        # more than 10 ETH, and those BNB-OUT matched by their sender or ETH
+        # value, no longer match.
+        self.assertEqual(self.assert_index_answers_each_rule_alone(), 405)
 
     def test_every_demo_rule_is_filed_and_a_row_is_tried_against_a_few(self):
         self.add_users(10)
@@ -544,10 +582,10 @@ class QueryScalingTests(StressTestCase):
         tries, rules = self.assert_every_rule_is_filed()
 
         # A USDT transfer is tried against each user's two USDT rules and two
-        # stablecoin rules, a large one against its amount rules too, and a
-        # transaction against the swap rules only when it calls a Uniswap
-        # router. With every rule tried everywhere, each row would be tried
-        # against all 100; filed, a row is tried against 13 on average.
+        # stablecoin rules, a PEPE transfer against the PEPE rules, one from a
+        # Binance hot wallet against the BNB-OUT rules, and a large one against
+        # its amount rules too. With every rule tried everywhere, each row would
+        # be tried against all 100; filed, a row is tried against 13 on average.
         self.assertLess(sum(tries) / len(tries), rules / 5)
 
     def test_every_persona_rule_is_filed_and_a_row_is_tried_against_a_few(self):
@@ -557,8 +595,8 @@ class QueryScalingTests(StressTestCase):
         tries, rules = self.assert_every_rule_is_filed()
 
         # Each desk's rules name its own wallets, so a row is tried against the
-        # few naming an address it carries, or the USDT and USDC thresholds it
-        # passes, out of 500.
+        # few naming an address it carries, or the token of a USDT or USDC
+        # rule filed under it, out of 500.
         self.assertLess(max(tries), rules // 10)
 
 

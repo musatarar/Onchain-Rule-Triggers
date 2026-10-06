@@ -9,7 +9,7 @@ naming anything else would be stored happily and then never fire.
 
 The vocabulary (:data:`VOCABULARY`) is the one the console's gate editor
 offers, served as it is at ``GET /api/conditions/vocabulary/``: a comparison
-reads a field of a transaction or of one of its token transfers. Each field has
+reads a field of one decoded token transfer, and nothing else. Each field has
 a type, and the type says how its threshold is written and how the evaluator
 compares it (:data:`COMPARES`). A tree is stored as the console writes it, so
 the tree a rule renders is the tree it was saved with, with ids assigned.
@@ -29,6 +29,8 @@ TEXT = "text"
 NUMBER = "number"
 BOOL = "bool"
 
+# A stored block's rows. A comparison reads only a token transfer
+# (:data:`VOCABULARY`); the evaluator binds the others around the transfer.
 SOURCE_BLOCK = "block"
 SOURCE_TRANSACTION = "transaction"
 SOURCE_WITHDRAWAL = "withdrawal"
@@ -44,31 +46,6 @@ ADDRESS = ("eq", "ne", "in")
 # offers them. Served as it is, so a key here is a key in the API.
 VOCABULARY: dict[str, list[dict[str, Any]]] = {
     "sources": [
-        {
-            "key": SOURCE_TRANSACTION,
-            "label": "Transaction",
-            "fields": [
-                {"key": "from_address", "label": "sender", "type": "address", "operators": ADDRESS},
-                {
-                    "key": "to_address",
-                    "label": "to address",
-                    "type": "address",
-                    "operators": ADDRESS,
-                },
-                {
-                    "key": "value",
-                    "label": "ETH value",
-                    "type": "native_amount",
-                    "operators": ORDERED,
-                },
-                {
-                    "key": "method",
-                    "label": "method",
-                    "type": "signature",
-                    "operators": ("eq", "ne"),
-                },
-            ],
-        },
         {
             "key": SOURCE_TOKEN_TRANSFER,
             "label": "Token transfer",
@@ -92,8 +69,6 @@ VOCABULARY: dict[str, list[dict[str, Any]]] = {
 COMPARES = {
     "address": TEXT,
     "token": TEXT,
-    "signature": TEXT,
-    "native_amount": NUMBER,
     "amount": NUMBER,
     "bool": BOOL,
 }
@@ -121,9 +96,7 @@ TOKEN_KEYS = frozenset({"chain", "address"})
 LIST_KEYS = frozenset({"addresses", "name"})
 
 ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}")
-# A function selector: "0x" and four bytes.
-SELECTOR_RE = re.compile(r"0x[0-9a-fA-F]{8}")
-# A whole-token or ETH amount: digits, and a fraction if any. "250", "0.5".
+# A whole-token amount: digits, and a fraction if any. "250", "0.5".
 DECIMAL_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 # Deeper trees are refused rather than walked: nesting is recursion, here and in the evaluator.
 MAX_DEPTH = 32
@@ -246,18 +219,13 @@ def lowercase_thresholds(node):
 
     Those fields are stored in lowercase, so a threshold written in any other
     case would never match. Runs on a validated tree: an address, each address
-    of an ``in`` list, and a token's address are lowercased. A ``method`` that
-    is a selector is lowercased too, as the evaluator reads a transaction's
-    ("0xA9059CBB" becomes "0xa9059cbb"), while a name keeps its case, since
-    "transferFrom" is not "transferfrom". Every other comparison is returned
-    as it was.
+    of an ``in`` list, and a token's address are lowercased. Every other
+    comparison is returned as it was.
     """
     if node["type"] != "comparison":
         return {**node, "children": [lowercase_thresholds(child) for child in node["children"]]}
     value = node["value"]
     kind = field_type(node["source"], node["field"])
-    if kind == "signature" and SELECTOR_RE.fullmatch(value):
-        return {**node, "value": value.lower()}
     if kind not in LOWERCASE_TYPES:
         return node
     if isinstance(value, str):
@@ -380,14 +348,11 @@ def _validate_value(value, kind, operator, path):
         _validate_address(value, path)
     elif kind == "token":
         _validate_token(value, path)
-    elif kind in ("amount", "native_amount"):
+    elif kind == "amount":
         if not isinstance(value, str) or not DECIMAL_RE.fullmatch(value):
             raise ValidationError(
                 f'{path}: expected a decimal string such as "250" or "0.5", got {value!r}.'
             )
-    elif kind == "signature":
-        if not isinstance(value, str) or not value.strip():
-            raise ValidationError(f"{path}: expected a method name or selector, got {value!r}.")
     elif kind == "bool":
         if not isinstance(value, bool):
             raise ValidationError(f"{path}: expected true or false, got {value!r}.")

@@ -61,7 +61,6 @@ function conditionProblem(node: ConditionNode, path = 'condition', root = true):
   const bad = (what: string) => `${path}.value: ${what}.`;
   switch (field.type) {
     case 'amount':
-    case 'native_amount':
       return typeof value === 'string' && DECIMAL_RE.test(value) ? null : bad('enter an amount such as 250 or 0.5');
     case 'token':
       return typeof value === 'object' && value !== null && 'address' in value && ADDRESS_RE.test(value.address)
@@ -69,8 +68,6 @@ function conditionProblem(node: ConditionNode, path = 'condition', root = true):
         : bad('pick a token');
     case 'bool':
       return typeof value === 'boolean' ? null : bad('must be true or false');
-    case 'signature':
-      return typeof value === 'string' && value.trim() ? null : bad('enter a method name or selector');
     case 'address':
       if (node.operator === 'in') {
         const list = value as { addresses?: unknown };

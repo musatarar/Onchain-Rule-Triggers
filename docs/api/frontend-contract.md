@@ -43,19 +43,20 @@ type TokenRef = {
 };
 
 // Issue #18's Condition tree. `id` is null on write for new nodes; the server assigns ids.
+// Every comparison reads one decoded token transfer; a write naming any other source is a 400.
 type ConditionNode =
   | { id: number | null; type: "and" | "or"; children: ConditionNode[] }
   | {
       id: number | null; type: "comparison";
-      source: "transaction" | "token_transfer";
+      source: "token_transfer";
       field: string;                       // one of vocabulary[source].fields[].key
       operator: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in";
       value: ComparisonValue;
     };
 
 type ComparisonValue =
-  | Uint                                   // amount (whole-token units, may carry a fraction: "250", "0.5") or ETH value
-  | string                                 // address or method signature
+  | Uint                                   // amount (whole-token units, may carry a fraction: "250", "0.5")
+  | string                                 // address
   | boolean                                // token_recognised
   | { chain: Chain; address: string }      // field "token"
   | { addresses: string[]; name?: string };  // operator "in"; `name` is an optional display name (see "Deferred": watchlists)
@@ -69,8 +70,8 @@ Feeds the header's WINDOW and ENGINE line.
 {
   "chains": [{ "chain": 1, "name": "Ethereum", "first_block": 18000000, "last_block": 18000004,
                "last_block_at": "2023-08-26T16:22:23Z" }],
-  "rules": { "total": 8, "enabled": 7 },
-  "match_count": 40
+  "rules": { "total": 7, "enabled": 6 },
+  "match_count": 34
 }
 ```
 
@@ -79,11 +80,6 @@ What the composer can offer. The server owns this list, and it is the same one `
 ```json
 {
   "sources": [
-    { "key": "transaction", "label": "Transaction", "fields": [
-      { "key": "from_address", "label": "sender",    "type": "address",      "operators": ["eq", "ne", "in"] },
-      { "key": "to_address",   "label": "to address", "type": "address",     "operators": ["eq", "ne", "in"] },
-      { "key": "value",        "label": "ETH value", "type": "native_amount", "operators": ["gt", "gte", "lt", "lte", "eq"] },
-      { "key": "method",       "label": "method",    "type": "signature",    "operators": ["eq", "ne"] } ] },
     { "key": "token_transfer", "label": "Token transfer", "fields": [
       { "key": "token",            "label": "token",            "type": "token",   "operators": ["eq", "ne"] },
       { "key": "amount",           "label": "amount",           "type": "amount",  "operators": ["gt", "gte", "lt", "lte", "eq"] },
@@ -121,13 +117,13 @@ type Rule = {
 Turns a sentence into a tree through the LLM seam. Nothing is saved.
 ```json
 // request
-{ "sentence": "Anything leaving the Binance hot wallets: USDT or USDC of 250 or more, PEPE over 1M, or more than 1 ETH" }
+{ "sentence": "Token transfers leaving the Binance hot wallets: USDT or USDC of 250 or more, or PEPE over 1M" }
 // 200
 { "condition": { "id": null, "type": "and", "children": [ ... ] },
   "name": "Sizable outflows from Binance hot wallets",
   "tag": "BNB-OUT",            // suggestion, already unique for this owner
   "glyph": "bolt",             // suggestion: the first glyph this owner hasn't used
-  "understood": ["from 3 addresses", "USDT or USDC", "≥ 250", "PEPE", "> 1,000,000", "> 1 ETH"] }
+  "understood": ["from 3 addresses", "USDT or USDC", "≥ 250", "PEPE", "> 1,000,000"] }
 // 422
 { "detail": "Couldn't turn that into conditions.", "code": "not_understood" }
 ```
@@ -197,7 +193,7 @@ type GateTrace = {
     | { kind: "method"; selector: string | null; signature: string | null };
 };
 ```
-The FE derives everything else from the snapshot and the `held` values: the power path (a gate is live when power reaches it and it holds), the animation order, the "Step 2 of 3 in series" wiring line, and the inspector's *Reads / This tx / Test* lines. Example for gate `G5` of BNB-OUT (`amount ≥ 250`) on tx `0x3266…31fd`:
+The FE derives everything else from the snapshot and the `held` values: the power path (a gate is live when power reaches it and it holds), the animation order, the "Step 2 of 3 in series" wiring line, and the inspector's *Reads / This tx / Test* lines. Example for gate `G4` of BNB-OUT (`amount ≥ 250`) on tx `0x3266…31fd`:
 ```json
 { "held": true, "observed": { "kind": "amount", "raw": "397092712", "decimals": 6, "value": "397.092712" } }
 ```

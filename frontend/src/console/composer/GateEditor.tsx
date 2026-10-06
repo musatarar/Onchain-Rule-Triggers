@@ -215,7 +215,7 @@ export function GateEditor({
         }
       />
     );
-  } else if (type === 'amount' || type === 'native_amount') {
+  } else if (type === 'amount') {
     control = (
       <input
         id={`${id}-value`}
@@ -238,7 +238,7 @@ export function GateEditor({
       />
     );
   }
-  const unit = type === 'amount' ? ' (whole tokens)' : type === 'native_amount' ? ' (ETH)' : '';
+  const unit = type === 'amount' ? ' (whole tokens)' : '';
 
   return (
     <div className="editor" aria-label="Condition editor">

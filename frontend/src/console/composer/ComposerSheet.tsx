@@ -212,10 +212,7 @@ export function ComposerSheet() {
 
   const addGate = (kind: 'and' | 'or') => {
     if (!condition || draft.selected === null || !selectedNode || selectedNode.type !== 'comparison') return;
-    const fresh: Comparison =
-      selectedNode.source === 'token_transfer'
-        ? { id: draftId(), type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gte', value: '' }
-        : { id: draftId(), type: 'comparison', source: 'transaction', field: 'value', operator: 'gte', value: '' };
+    const fresh: Comparison = { id: draftId(), type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gte', value: '' };
     update({ condition: addSibling(condition, draft.selected, kind, fresh, draftId), selected: fresh.id });
     window.setTimeout(() => document.querySelector<HTMLElement>('.editor [id$="-value"]')?.focus(), 0);
   };

@@ -1,6 +1,7 @@
 """The realtime pipeline: one tick ingests new blocks, decodes them and evaluates every enabled rule."""
 
 import io
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
@@ -14,23 +15,54 @@ from project.app.evm.block.models import DecodeStatus
 from project.app.evm.chains import ChainId
 from project.app.models import Block, IngestCursor, MatchedRule, Rule, Transaction
 from project.app.rules import services as rules_services
-from project.app.tests.condition_trees import and_, tx
-from project.app.tests.tests_evm_block import HEAD, NodeTestCase
+from project.app.tests import tests_evm_block
+from project.app.tests.condition_trees import and_, transfer
+from project.app.tests.tests_evm_block import (
+    HEAD,
+    NodeTestCase,
+    block_hash,
+    numbered_receipts,
+    transaction_hash,
+)
+from project.app.tests.tests_evm_receipt import log
 
-# Every transaction sends 0 ETH or more, so this tree matches each block's one transaction.
-EVERY_TRANSACTION = and_(tx("value", "gte", "0"))
+# No sample transfer is a burn, so this tree matches the one transfer each block makes.
+EVERY_TRANSFER = and_(transfer("to_address", "ne", "0x" + "00" * 20))
+
+
+def receipts_with_a_transfer(number):
+    """The fake node's receipts for block ``number``, its one transaction emitting one Transfer log."""
+    receipts = numbered_receipts(number)
+    for receipt in receipts:
+        receipt["logs"] = [
+            log(
+                transactionHash=transaction_hash(number),
+                transactionIndex="0x0",
+                blockHash=block_hash(number),
+                blockNumber=hex(number),
+            )
+        ]
+    return receipts
 
 
 class PipelineTestCase(NodeTestCase):
     def setUp(self):
         super().setUp()
         self.owner = get_user_model().objects.create_user(username="watcher@lockedin.example")
+        # A rule reads only token transfers, so each block's transaction makes one.
+        patcher = mock.patch.object(
+            tests_evm_block, "numbered_receipts", side_effect=receipts_with_a_transfer
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def rule(self, condition=EVERY_TRANSACTION, name="watch"):
+    def rule(self, condition=EVERY_TRANSFER, name="watch"):
         return rules_services.create_rule(self.owner, {"name": name, "condition": condition})
 
     def matched_blocks(self):
-        return [match.block.number for match in MatchedRule.objects.select_related("block")]
+        return [
+            match.transfer.block_number for match in MatchedRule.objects.select_related("transfer")
+        ]
 
 
 class RunTickTests(PipelineTestCase):
@@ -44,7 +76,7 @@ class RunTickTests(PipelineTestCase):
         self.assertFalse(Transaction.objects.filter(decode_status=DecodeStatus.INGESTED).exists())
         self.assertEqual((result.evaluation.blocks, result.evaluation.matches), (1, 1))
         match = MatchedRule.objects.get()
-        self.assertEqual((match.rule, match.block.number), (rule, HEAD))
+        self.assertEqual((match.rule, match.transfer.block_number), (rule, HEAD))
         self.assertIsNotNone(Block.objects.get().evaluated_at)
         self.assertIsNone(result.ingest_error)
 
@@ -102,7 +134,7 @@ class RunPipelineCommandTests(PipelineTestCase):
 
         self.assertEqual(
             out.getvalue(),
-            "ingested 1 block(s); decoded 0 transfer(s), 1 without one; "
+            "ingested 1 block(s); decoded 1 transfer(s), 0 without one; "
             "evaluated 1 block(s) and recorded 1 match(es); 0 block(s) wait for decoding\n",
         )
         self.assertEqual(err.getvalue(), "")
@@ -117,4 +149,5 @@ class RunPipelineCommandTests(PipelineTestCase):
 
         self.assertIn("ingestion failed, resuming next tick: RPCError", err.getvalue())
         self.assertIn(f"rule {broken.pk} 'no tree' could not be evaluated: ", err.getvalue())
-        self.assertTrue(out.getvalue().startswith("ingestion failed; decoded 0 transfer(s)"))
+        # The block stored before the failure was decoded: its one transaction made a transfer.
+        self.assertTrue(out.getvalue().startswith("ingestion failed; decoded 1 transfer(s)"))

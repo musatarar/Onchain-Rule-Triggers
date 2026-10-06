@@ -77,7 +77,8 @@ function assertCondition(condition: ConditionNode) {
   for (const node of nodes(condition)) {
     if (node.type !== 'comparison') continue;
     const value = node.value;
-    if (node.field === 'amount' || node.field === 'value') assert.match(value as string, DECIMAL, 'amounts are decimal strings');
+    assert.equal(node.source, 'token_transfer', 'every gate reads a token transfer');
+    if (node.field === 'amount') assert.match(value as string, DECIMAL, 'amounts are decimal strings');
     if (node.field === 'token') assert.match((value as { address: string }).address, ADDRESS);
     if (node.operator === 'in') for (const address of (value as { addresses: string[] }).addresses) assert.match(address, ADDRESS);
   }

@@ -34,5 +34,5 @@ test('a leading "tune", "ch" or "channel" is ignored, and every word must match'
 });
 
 test('an empty query lists every circuit: armed by id, then the disarmed ones', () => {
-  assert.deepEqual(tags(''), ['STABLE-2K', 'BNB-TOKENS', 'ETH-10', 'UNKNOWN-TKN', 'PEPE-1B', 'ANY-1M', 'BNB-OUT', 'LINK-BNB']);
+  assert.deepEqual(tags(''), ['STABLE-2K', 'BNB-TOKENS', 'UNKNOWN-TKN', 'PEPE-1B', 'ANY-1M', 'BNB-OUT', 'LINK-BNB']);
 });

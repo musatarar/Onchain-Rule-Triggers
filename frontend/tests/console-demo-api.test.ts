@@ -19,7 +19,7 @@ const demo = () => new DemoConsoleApi({ latency: [0, 0] });
 test('backtesting every armed demo circuit matches the oracle: counts, unevaluable counts and tx hashes', async () => {
   const api = demo();
   const armed = circuits.filter((circuit) => oracle[circuit.id].enabled);
-  assert.equal(armed.length, 7);
+  assert.equal(armed.length, 6);
   for (const circuit of armed) {
     const want = oracle[circuit.id];
     const result = await api.backtest(circuit.condition);
@@ -43,11 +43,17 @@ test('a backtest is validated like the server, and returns at most 50 rows', asy
     api.backtest({ id: null, type: 'and', children: [{ id: null, type: 'comparison', source: 'token_transfer', field: 'amont', operator: 'gt', value: '1' }] }),
     { status: 400, message: /^condition: .*has no field 'amont'/ },
   );
+  // A rule reads only token transfers, so a gate on a transaction is refused.
+  await assert.rejects(
+    api.backtest({ id: null, type: 'and', children: [{ id: null, type: 'comparison', source: 'transaction' as 'token_transfer', field: 'value', operator: 'gte', value: '0' }] }),
+    { status: 400, message: /^condition: .*source: unknown source 'transaction'/ },
+  );
+  // No demo transfer is a burn, so this holds of each of the 68 transfers among the 613 transactions.
   const everything = await api.backtest({
     id: null,
     type: 'and',
-    children: [{ id: null, type: 'comparison', source: 'transaction', field: 'value', operator: 'gte', value: '0' }],
+    children: [{ id: null, type: 'comparison', source: 'token_transfer', field: 'to_address', operator: 'ne', value: `0x${'0'.repeat(40)}` }],
   });
-  assert.equal(everything.match_count, 613);
+  assert.equal(everything.match_count, 68);
   assert.equal(everything.matches.length, 50);
 });
