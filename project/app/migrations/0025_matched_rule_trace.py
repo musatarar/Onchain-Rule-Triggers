@@ -20,7 +20,7 @@ def delete_matches(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("app", "0023_delete_v1_rules"),
+        ("app", "0024_matched_rule_indexes"),
     ]
 
     operations = [
@@ -42,10 +42,19 @@ class Migration(migrations.Migration):
             name="transfer",
             field=models.ForeignKey(
                 blank=True,
+                db_index=False,
                 null=True,
                 on_delete=django.db.models.deletion.SET_NULL,
                 related_name="rule_matches",
                 to="app.tokentransfer",
+            ),
+        ),
+        migrations.AddIndex(
+            model_name="matchedrule",
+            index=models.Index(
+                condition=models.Q(("transfer__isnull", False)),
+                fields=["transfer"],
+                name="matchedrule_transfer_idx",
             ),
         ),
     ]

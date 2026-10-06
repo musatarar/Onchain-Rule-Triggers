@@ -34,8 +34,8 @@ from project.app.evm.chains import ChainId
 from project.app.evm.function_signatures import FunctionSignatureCreateSchema
 from project.app.evm.tokens import TokenCreateSchema
 from project.app.models import Condition, MatchedRule, Rule, TokenTransfer, Transaction
+from project.app.rules import onchain, utils
 from project.app.rules import services as rules_services
-from project.app.rules import utils
 from project.app.rules.utils import without_ids
 from project.app.tests.condition_trees import (
     addresses,
@@ -1811,7 +1811,7 @@ class MatchDetailTests(RulesApiTestCase):
         stale = list(Rule.objects.filter(pk=rule.pk).prefetch_related("all_conditions"))
         rules_services.update_rule(rule, {"condition": and_(tx("value", "gte", "1"))})
 
-        rules_services._evaluate(Block.objects.get(), stale, {})
+        rules_services._evaluate(Block.objects.get(), onchain.RuleIndex(stale))
 
         self.assertEqual(
             set(MatchedRule.objects.values_list("rule_revision", flat=True)), {rule.revision - 1}

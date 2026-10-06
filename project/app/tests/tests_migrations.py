@@ -5,7 +5,7 @@ rows seeded just before it.
 lowercases stored addresses and the thresholds that compare against them; a
 contract case clash stops it rather than losing a row. 0017 deletes the rules
 that read a lead source and drops the lead, event and shape tables. 0018
-lowercases the receipt and log addresses 0011 never reached. 0024 deletes
+lowercases the receipt and log addresses 0011 never reached. 0025 deletes
 the matches recorded without a trace.
 """
 
@@ -407,8 +407,8 @@ class ReceiptAddressFieldsMigrationTests(TransactionTestCase):
 
 
 class MatchedRuleTraceMigrationTests(TransactionTestCase):
-    BEFORE = [("app", "0023_delete_v1_rules")]
-    AFTER = [("app", "0024_matched_rule_trace")]
+    BEFORE = [("app", "0024_matched_rule_indexes")]
+    AFTER = [("app", "0025_matched_rule_trace")]
 
     def setUp(self):
         super().setUp()
@@ -421,7 +421,7 @@ class MatchedRuleTraceMigrationTests(TransactionTestCase):
         super().tearDown()
 
     def test_the_matches_recorded_before_it_are_deleted_and_their_rule_and_block_kept(self):
-        # The block tables are the same at 0023, so the sample block is stored as today.
+        # The block tables are the same at 0024, so the sample block is stored as today.
         block_services.store_blocks([block()], ChainId.ETHEREUM)
         owner = get_user_model().objects.create_user(username="planner@lockedin.example")
         rule = self.before.get_model("app", "Rule").objects.create(owner_id=owner.pk, name="r")
