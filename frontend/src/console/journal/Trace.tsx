@@ -257,8 +257,8 @@ export function TraceView({
           <div className="note">
             <Icon name="info" />
             <span>
-              <b>No trace for this match.</b> The engine doesn't record which gates carried power yet, so the circuit
-              isn't drawn.
+              <b>No trace for this match.</b> It was recorded without which gates carried power, so the circuit isn't
+              drawn.
             </span>
           </div>
         </div>

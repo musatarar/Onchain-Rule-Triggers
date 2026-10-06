@@ -46,6 +46,12 @@ for a token with unknown decimals, where a guessed 18 would misjudge a
 6-decimal token. Quantities are compared exactly, as ``Decimal``: a uint256
 is past what a float holds.
 
+A match is recorded with its binding (:class:`Binding`): the transfer its
+gates held of, and its trace, each node of the tree keyed by id with whether
+it held and what each gate read (:func:`trace_tree`). BNB-OUT's ``amount gte
+250`` gate on a transfer of 397.092712 USDT reads ``{"held": true,
+"observed": {"kind": "amount", "raw": "397092712", "decimals": 6}}``.
+
 The block's rows are read once, whatever the number of transactions:
 :func:`matches_in_block` runs one query for the transactions (or withdrawals),
 one for their token transfers when the tree reads them, and none for a tree
@@ -58,6 +64,7 @@ comparison costs one query a block, however many transactions it reads.
 """
 
 import bisect
+import dataclasses
 import functools
 import operator
 from collections import Counter
@@ -123,6 +130,23 @@ class BlockRows:
         return method_names(selector_of(transaction.input) for transaction in self.transactions)
 
 
+@dataclasses.dataclass
+class Binding:
+    """One row of a block that satisfied a rule, with what its gates read.
+
+    ``transfer`` is the token transfer the gates held of: the first of the
+    transaction's transfers, in log order, with which the tree holds; ``None``
+    when the tree reads no transfer or the transaction has none. ``trace`` is
+    the tree's :func:`trace_tree` of that binding, by node id; ``None`` for a
+    withdrawal or the block, whose matches the console does not show, and
+    when the binding was asked for untraced.
+    """
+
+    row: object
+    transfer: TokenTransfer | None = None
+    trace: dict | None = None
+
+
 def matches_in_block(rule, block, rows=None):
     """The rows of ``block`` that satisfy ``rule``, in the order the block holds them.
 
@@ -139,29 +163,46 @@ def matches_in_block(rule, block, rows=None):
     It tries the rule against every row, where :class:`RuleIndex` tries it
     only against the rows it could match; the two judge a row alike.
     """
+    return [binding.row for binding in bindings_in_block(rule, block, rows, traced=False)]
+
+
+def bindings_in_block(rule, block, rows=None, *, traced=True):
+    """The :class:`Binding` of each row of ``block`` that satisfies ``rule``, in block order.
+
+    The rows are the ones :func:`matches_in_block` answers, and it raises what
+    that raises. A transaction's binding names the first transfer, in log
+    order, its tree holds with, and when ``traced`` the trace of that pairing.
+    A row the rule does not match is never traced.
+    """
     rows = rows or BlockRows(block)
     nodes = list(rule.all_conditions.all())
     sources = utils.tree_sources(nodes)
-    predicate = _compiled(rule, nodes)[2]
+    root, children, predicate = _compiled(rule, nodes)
+    tracer = _compile_trace(root, children) if traced else None
 
-    def holds(**bound):
-        return predicate({ROWS: rows, utils.SOURCE_BLOCK: block, **bound})
+    def bind(**bound):
+        return {ROWS: rows, utils.SOURCE_BLOCK: block, **bound}
 
     if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
         transfers = rows.transfers if utils.SOURCE_TOKEN_TRANSFER in sources else {}
-        return [
-            transaction
-            for transaction in rows.transactions
-            if any(
-                holds(transaction=transaction, token_transfer=transfer)
-                # No transfer is bound only when the transaction has none, so a
-                # transfer comparison reads nothing and holds of no operator.
-                for transfer in transfers.get(transaction.hash) or [None]
-            )
-        ]
+        bindings = []
+        for transaction in rows.transactions:
+            # No transfer is bound only when the transaction has none, so a
+            # transfer comparison reads nothing and holds of no operator.
+            for transfer in transfers.get(transaction.hash) or [None]:
+                bound = bind(transaction=transaction, token_transfer=transfer)
+                if predicate(bound):
+                    trace = tracer(bound)[1] if tracer else None
+                    bindings.append(Binding(transaction, transfer, trace))
+                    break
+        return bindings
     if utils.SOURCE_WITHDRAWAL in sources:
-        return [withdrawal for withdrawal in rows.withdrawals if holds(withdrawal=withdrawal)]
-    return [block] if holds() else []
+        return [
+            Binding(withdrawal)
+            for withdrawal in rows.withdrawals
+            if predicate(bind(withdrawal=withdrawal))
+        ]
+    return [Binding(block)] if predicate(bind()) else []
 
 
 class RuleIndex:
@@ -202,6 +243,7 @@ class RuleIndex:
         """Index ``rules``; ``trees`` maps a rule's id to its tree's nodes, read from each rule when not given."""
         self._rules = {}  # rule id -> the rule, in the order they were first put
         self._predicates = {}  # rule id -> its compiled tree
+        self._tracers = {}  # rule id -> its compiled tree's trace (_compile_trace)
         self._refused = {}  # rule id -> (the rule, the ConditionError refusing it)
         self._filings = {}  # rule id -> how _file filed it, for _unfile
         self._transfer_readers = set()  # ids of the rules comparing token transfers
@@ -257,6 +299,7 @@ class RuleIndex:
             self._unfile(rule.pk)
         self._rules[rule.pk] = rule
         self._predicates[rule.pk] = predicate
+        self._tracers[rule.pk] = _compile_trace(root, children)
         sources = utils.tree_sources(nodes)
         if not sources.isdisjoint(utils.TRANSACTION_SOURCES):
             self._file(rule.pk, utils.SOURCE_TRANSACTION, root, children)
@@ -273,7 +316,7 @@ class RuleIndex:
         self._refused.pop(rule_id, None)
         if rule_id in self._filings:
             self._unfile(rule_id)
-            del self._rules[rule_id], self._predicates[rule_id]
+            del self._rules[rule_id], self._predicates[rule_id], self._tracers[rule_id]
 
     def _file(self, rule_id, rows_source, root, children):
         keys = _key(root, children, self._crowding(rows_source))
@@ -366,6 +409,10 @@ class RuleIndex:
         """Whether the rule ``rule_id`` holds of the rows ``bound`` by source, the block's included."""
         return self._predicates[rule_id](bound)
 
+    def trace(self, rule_id, bound):
+        """The trace of the rule ``rule_id`` on the rows ``bound`` by source, as :func:`trace_tree` answers it."""
+        return self._tracers[rule_id](bound)[1]
+
 
 class _Range:
     """Rules filed by one number field's threshold, kept sorted by it and then by rule id."""
@@ -410,13 +457,29 @@ def matches_for_rules(index, block, rows=None):
     :class:`NotDecodedError` when a rule reads token transfers before
     decoding has finished with the block.
     """
+    return {
+        rule: [binding.row for binding in bindings]
+        for rule, bindings in bindings_for_rules(index, block, rows, traced=False).items()
+    }
+
+
+def bindings_for_rules(index, block, rows=None, *, traced=True):
+    """The :class:`Binding` of each row of ``block`` the rules of ``index`` match, by rule.
+
+    The rules and rows are the ones :func:`matches_for_rules` answers, and it
+    raises what that raises. A transaction's binding names the first of its
+    transfers, in log order, a rule holds with, as :func:`bindings_in_block`
+    names it, and when ``traced`` the trace of that pairing. Only a pairing
+    that matched is traced, so the rows a rule does not match cost what they
+    did untraced.
+    """
     rows = rows or BlockRows(block)
-    matched = {}  # rule id -> the rows it matched
+    matched = {}  # rule id -> its bindings
     holds = index.holds
     transfers = rows.transfers if index.reads_transfers else {}
     if index.tries(utils.SOURCE_TRANSACTION):
         for transaction in rows.transactions:
-            held = set()
+            held = {}  # rule id -> its binding of this transaction
             # No transfer is bound only when there is none to bind, as matches_in_block binds them.
             for transfer in transfers.get(transaction.hash) or [None]:
                 bound = {
@@ -426,21 +489,24 @@ def matches_for_rules(index, block, rows=None):
                     utils.SOURCE_TOKEN_TRANSFER: transfer,
                 }
                 for rule_id in index.candidates(utils.SOURCE_TRANSACTION, bound):
+                    # The transfers come in log order, so the first that holds is kept.
                     if rule_id not in held and holds(rule_id, bound):
-                        held.add(rule_id)
-            for rule_id in held:
-                matched.setdefault(rule_id, []).append(transaction)
+                        trace = index.trace(rule_id, bound) if traced else None
+                        held[rule_id] = Binding(transaction, transfer, trace)
+            # By rule id, so a transaction's matches are written in one order whatever held first.
+            for rule_id in sorted(held):
+                matched.setdefault(rule_id, []).append(held[rule_id])
     if index.tries(utils.SOURCE_WITHDRAWAL):
         for withdrawal in rows.withdrawals:
             bound = {ROWS: rows, utils.SOURCE_BLOCK: block, utils.SOURCE_WITHDRAWAL: withdrawal}
             # A set, as a rule filed under two fields can be answered twice.
             for rule_id in set(index.candidates(utils.SOURCE_WITHDRAWAL, bound)):
                 if holds(rule_id, bound):
-                    matched.setdefault(rule_id, []).append(withdrawal)
+                    matched.setdefault(rule_id, []).append(Binding(withdrawal))
     bound = {ROWS: rows, utils.SOURCE_BLOCK: block}
     for rule_id in index.candidates(utils.SOURCE_BLOCK, bound):
         if holds(rule_id, bound):
-            matched.setdefault(rule_id, []).append(block)
+            matched.setdefault(rule_id, []).append(Binding(block))
     return {index.rule(rule_id): found for rule_id, found in matched.items()}
 
 
@@ -687,6 +753,137 @@ def _compile_leaf(node):
         return value is not None and compare(value, threshold)
 
     return compared
+
+
+def trace_tree(nodes, bound):
+    """What every node of a tree read of one binding, and whether it held: ``(held, trace)``.
+
+    ``nodes`` is every node of one rule's tree, as :func:`utils.render_condition`
+    takes them, and ``bound`` the rows the binding binds by source, with the
+    :class:`BlockRows` they came from under :data:`ROWS`, as
+    :func:`bindings_in_block` binds them. The tree is walked whole, with no
+    short-circuit, so a gate an ``AND`` never needed still has an entry.
+    ``trace`` has one entry per node, keyed by the node's id as a string, the
+    way a JSON object keys it:
+
+        {"held": true, "observed": {"kind": "amount", "raw": "397092712", "decimals": 6}}
+
+    ``held`` is the verdict the rule's compiled tree reaches for that node,
+    since each gate is compiled by :func:`_compile_leaf` as it is for
+    matching. ``reason`` says why a gate had nothing to compare
+    (:func:`_reason`), and ``observed`` what a comparison read, raw
+    (:func:`_observed`); a group has neither. Raises :class:`ConditionError`
+    for a tree the evaluator cannot judge.
+    """
+    root, children = utils.root_and_children(nodes)
+    if root is None:
+        raise ConditionError("A tree with no nodes has no trace.")
+    return _compile_trace(root, children)(bound)
+
+
+def _compile_trace(root, children):
+    """The tree under ``root`` as a function of the rows bound by source, answering
+    :func:`trace_tree`'s ``(held, trace)``.
+
+    Compiled once per rule, beside its predicate (:func:`_compile`), and
+    called only for a binding that matched.
+    """
+    walk = _compile_trace_node(root, children)
+
+    def trace(bound):
+        entries = {}
+        return walk(bound, entries), entries
+
+    return trace
+
+
+def _compile_trace_node(node, children):
+    key = str(node.pk)
+    if node.type == utils.TREE_TYPE_COMPARISON:
+        holds = _compile_leaf(node)
+        # What the gate's entry reads of the node, so the index keeps no node.
+        source, field = node.source, node.field_name
+        listed = frozenset(node.value["addresses"]) if node.operator == "in" else None
+
+        def leaf(bound, entries):
+            held = holds(bound)
+            entry = {"held": held}
+            reason = _reason(source, field, bound)
+            if reason is not None:
+                entry["reason"] = reason
+            # A gate with no row bound read nothing, so it observed nothing.
+            if bound.get(source) is not None:
+                observed = _observed(source, field, listed, bound)
+                if observed is not None:
+                    entry["observed"] = observed
+            entries[key] = entry
+            return held
+
+        return leaf
+    if node.type not in GROUP_CHECKS:
+        raise ConditionError(f"Unknown group type {node.type!r}.")
+    group = children.get(node.pk)
+    if not group:
+        raise ConditionError(f"A {node.type} group with no conditions has no verdict.")
+    check = GROUP_CHECKS[node.type]
+    parts = tuple(_compile_trace_node(child, children) for child in group)
+
+    def grouped(bound, entries):
+        # A list, not a generator: every child is walked, whatever the first ones held.
+        held = check([part(bound, entries) for part in parts])
+        entries[key] = {"held": held}
+        return held
+
+    return grouped
+
+
+def _reason(source, field, bound):
+    """Why a gate had nothing to compare, as the console's ``GateTrace.reason`` names it; ``None`` when it had something.
+
+    ``no_transfer`` for a transfer gate on a transaction with no token
+    transfer, and ``no_to_address`` for a transaction's ``to_address`` on a
+    contract creation, which sends to none. The gate holds of no operator
+    there, so it reads ``{"held": false, "reason": "no_transfer"}``, and the
+    contract creation's gate also observes its ``address`` as ``None``.
+    """
+    row = bound.get(source)
+    if source == utils.SOURCE_TOKEN_TRANSFER and row is None:
+        return "no_transfer"
+    if source == utils.SOURCE_TRANSACTION and field == "to_address":
+        return "no_to_address" if row.to_address is None else None
+    return None
+
+
+def _observed(source, field, listed, bound):
+    """What a comparison of ``source``'s ``field`` read of its bound row, raw; ``None`` for a ``bool`` field, which has no reading.
+
+    ``kind`` is the field's type in :data:`utils.VOCABULARY`, but a
+    ``signature`` is observed as the ``method`` selector. Only raw values are
+    stored, so a match reads the same after the catalog changes: an ``amount``
+    keeps the ``decimals`` it was scaled by, a ``token`` only its address, a
+    ``method`` only its selector. ``list_hit`` is whether an ``in`` gate's
+    addresses, ``listed``, hold the address, and ``None`` for ``eq`` and ``ne``,
+    whose ``listed`` is ``None``.
+    """
+    row = bound[source]
+    kind = utils.field_type(source, field)
+    if kind == "amount":
+        return {
+            "kind": kind,
+            "raw": utils.decimal_string(row.raw_value),
+            "decimals": row.token.decimals,
+        }
+    if kind == "native_amount":
+        return {"kind": kind, "wei": utils.decimal_string(row.value)}
+    if kind == "token":
+        return {"kind": kind, "token": {"address": row.token.contract.address}}
+    if kind == "signature":
+        return {"kind": "method", "selector": selector_of(row.input)}
+    if kind == "address":
+        address = getattr(row, field)
+        list_hit = None if listed is None else address in listed
+        return {"kind": kind, "address": address, "list_hit": list_hit}
+    return None
 
 
 @functools.cache

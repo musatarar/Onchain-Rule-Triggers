@@ -5,7 +5,8 @@ rows seeded just before it.
 lowercases stored addresses and the thresholds that compare against them; a
 contract case clash stops it rather than losing a row. 0017 deletes the rules
 that read a lead source and drops the lead, event and shape tables. 0018
-lowercases the receipt and log addresses 0011 never reached.
+lowercases the receipt and log addresses 0011 never reached. 0025 deletes
+the matches recorded without a trace.
 """
 
 import datetime
@@ -15,6 +16,10 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
+
+from project.app.evm.block import services as block_services
+from project.app.evm.chains import ChainId
+from project.app.tests.tests_evm_block import block
 
 BEFORE = [("app", "0010_contracts")]
 AFTER = [("app", "0011_remove_rule_kinds_and_inference")]
@@ -399,3 +404,35 @@ class ReceiptAddressFieldsMigrationTests(TransactionTestCase):
 
         self.assertNotEqual(writer(MIXED_HASH), mixed_writer)
         self.assertEqual(writer(LOWER_HASH), lower_writer)
+
+
+class MatchedRuleTraceMigrationTests(TransactionTestCase):
+    BEFORE = [("app", "0024_matched_rule_indexes")]
+    AFTER = [("app", "0025_matched_rule_trace")]
+
+    def setUp(self):
+        super().setUp()
+        self.before = _migrate(self.BEFORE)
+
+    def tearDown(self):
+        # Every test after this one expects every migration applied.
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+    def test_the_matches_recorded_before_it_are_deleted_and_their_rule_and_block_kept(self):
+        # The block tables are the same at 0024, so the sample block is stored as today.
+        block_services.store_blocks([block()], ChainId.ETHEREUM)
+        owner = get_user_model().objects.create_user(username="planner@lockedin.example")
+        rule = self.before.get_model("app", "Rule").objects.create(owner_id=owner.pk, name="r")
+        stored = self.before.get_model("app", "Block").objects.get()
+        transaction = self.before.get_model("app", "Transaction").objects.first()
+        self.before.get_model("app", "MatchedRule").objects.create(
+            rule=rule, block=stored, transaction=transaction
+        )
+
+        after = _migrate(self.AFTER)
+
+        self.assertFalse(after.get_model("app", "MatchedRule").objects.exists())
+        self.assertTrue(after.get_model("app", "Rule").objects.filter(pk=rule.pk).exists())
+        self.assertTrue(after.get_model("app", "Block").objects.filter(pk=stored.pk).exists())

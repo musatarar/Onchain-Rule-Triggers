@@ -59,6 +59,17 @@ def every_transaction():
     return and_(tx("value", "gte", "0"))
 
 
+# The sample transaction BNB-OUT's G5 reads 397.092712 USDT of.
+TX_3266 = "0x3266982fe13e591a4d52c05dac89063180dec8d089a6e7171f74d9edffca31fd"
+
+
+def _nodes(node):
+    """``node`` and every node under it, parent first."""
+    yield node
+    for child in node.get("children", []):
+        yield from _nodes(child)
+
+
 def read_json(path):
     with open(path, encoding="utf-8") as source:
         return json.load(source)
@@ -446,7 +457,9 @@ class CreateDemoRulesScriptTests(TestCase):
             without_ids(and_(tx("value", "gt", "10"))),
         )
 
-    def test_the_demo_circuits_match_what_the_demo_expects_of_the_sample_blocks(self):
+    def _evaluate_the_sample_blocks(self):
+        """Load the sample blocks and the demo rules, give their tokens the demo
+        catalog's metadata, and evaluate; answer the run."""
         with contextlib.redirect_stdout(io.StringIO()):
             load_blocks()
         call_command("load_function_signatures", stdout=io.StringIO())
@@ -470,8 +483,10 @@ class CreateDemoRulesScriptTests(TestCase):
             stored.decimals = entry["decimals"]
             stored.coingecko_id = entry["symbol"] and entry["symbol"].lower()
             stored.save(update_fields=["symbol", "name", "decimals", "coingecko_id"])
+        return rules_services.evaluate_blocks()
 
-        run = rules_services.evaluate_blocks()
+    def test_the_demo_circuits_match_what_the_demo_expects_of_the_sample_blocks(self):
+        run = self._evaluate_the_sample_blocks()
 
         self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (5, 40, 0, {}))
         expected = read_json(os.path.join(DEMO_FIXTURES, "expected-results.json"))
@@ -485,3 +500,56 @@ class CreateDemoRulesScriptTests(TestCase):
                     ),
                     set(expected[str(circuit["id"])]["match_tx_hashes"]),
                 )
+
+    def test_a_demo_match_is_recorded_with_a_trace_of_every_node_of_its_tree(self):
+        self._evaluate_the_sample_blocks()
+        owner = get_user_model().objects.get()
+        bnb_out = Rule.objects.get(tag="BNB-OUT")
+        match = MatchedRule.objects.get(rule=bnb_out, transaction=TX_3266)
+
+        detail = rules_services.match_detail(owner, match.pk)
+
+        nodes = list(_nodes(detail["condition"]))
+        self.assertTrue(all(node["id"] is not None for node in nodes))
+        self.assertEqual(set(detail["trace"]), {str(node["id"]) for node in nodes})
+        self.assertEqual(detail["trace"][str(detail["condition"]["id"])], {"held": True})
+        g5 = [node for node in nodes if node["type"] == "comparison"][4]
+        self.assertEqual(
+            (g5["source"], g5["field"], g5["operator"], g5["value"]),
+            ("token_transfer", "amount", "gte", "250"),
+        )
+        self.assertEqual(
+            detail["trace"][str(g5["id"])],
+            {
+                "held": True,
+                "observed": {
+                    "kind": "amount",
+                    "raw": "397092712",
+                    "decimals": 6,
+                    "value": "397.092712",
+                },
+            },
+        )
+        self.assertEqual(detail["transfer"]["raw_value"], "397092712")
+        self.assertEqual(match.rule_revision, bnb_out.revision)
+
+    def test_every_recorded_trace_holds_at_the_root_and_a_gate_with_no_transfer_says_so(self):
+        self._evaluate_the_sample_blocks()
+
+        no_transfer = []
+        for match in MatchedRule.objects.select_related("rule"):
+            condition = match.rule.console_condition()
+            with self.subTest(rule=match.rule.tag, transaction=match.transaction_id):
+                self.assertEqual(set(match.trace), {str(node["id"]) for node in _nodes(condition)})
+                self.assertIs(match.trace[str(condition["id"])]["held"], True)
+            if match.transfer_id is None:
+                no_transfer.extend(
+                    match.trace[str(node["id"])]
+                    for node in _nodes(condition)
+                    if node.get("source") == "token_transfer"
+                )
+        # Some demo circuit matches a transaction with no transfer through a
+        # branch that reads none, and its transfer gates had nothing to read.
+        self.assertTrue(no_transfer)
+        for entry in no_transfer:
+            self.assertEqual(entry, {"held": False, "reason": "no_transfer"})
