@@ -23,14 +23,16 @@ class TokenTransfer(models.Model):
     """
 
     transaction_hash = models.CharField(max_length=66)  # "0x" and 32 bytes of hex
-    # The chain and block the transaction is in, and the block's time, copied
-    # from it so a block's transfers are found without joining through the
-    # token. None on rows stored before these were kept, and a hash of None
-    # also when the transaction was stored without one.
-    chain = models.IntegerField(choices=ChainId.choices, null=True, blank=True)
-    block_number = models.BigIntegerField(null=True, blank=True)
+    # The chain, block and index the transaction is at, and the block's time,
+    # copied from it when decoding stores the transfer, so a block's transfers
+    # are found, and a transfer is ordered and dated, without reading the
+    # transaction. The hash is None when the transaction was stored without
+    # one.
+    chain = models.IntegerField(choices=ChainId.choices)
+    block_number = models.BigIntegerField()
     block_hash = models.CharField(max_length=HASH_LENGTH, null=True, blank=True)
-    block_timestamp = models.DateTimeField(null=True, blank=True)
+    block_timestamp = models.DateTimeField()
+    transaction_index = models.BigIntegerField()
     # The index in its block of the Transfer log it was read from; None for a
     # transfer read from calldata, the transaction having no receipt stored.
     log_index = models.PositiveIntegerField(null=True, blank=True)

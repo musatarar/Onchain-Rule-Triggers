@@ -2,6 +2,7 @@
 exact or ``in`` lookup finds it whatever case it is looked up in."""
 
 from django.test import TestCase
+from django.utils import timezone
 
 from project.app.evm.block import services as block_services
 from project.app.evm.chains import ChainId
@@ -18,6 +19,10 @@ class AddressFieldTests(TestCase):
         contract = Contract.objects.create(chain=ChainId.ETHEREUM, address=CHECKSUMMED)
         transfer = TokenTransfer.objects.create(
             transaction_hash="0x" + "ab" * 32,
+            chain=ChainId.ETHEREUM,
+            block_number=1,
+            block_timestamp=timezone.now(),
+            transaction_index=0,
             token=Token.objects.create(contract=contract),
             from_address=CHECKSUMMED,
             to_address=CHECKSUMMED,

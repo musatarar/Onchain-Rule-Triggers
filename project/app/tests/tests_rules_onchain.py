@@ -69,6 +69,13 @@ def _mixed_case(address):
     )
 
 
+def transfer_position(transaction_hash):
+    """Where a transfer of the stored transaction ``transaction_hash`` sits, as decoding copies it."""
+    return Transaction.objects.values(
+        "chain", "block_number", "block_hash", "block_timestamp", "transaction_index"
+    ).get(hash=transaction_hash)
+
+
 class OnchainTestCase(TestCase):
     def setUp(self):
         super().setUp()
@@ -97,7 +104,9 @@ class OnchainTestCase(TestCase):
         )
 
     def _transfer(self, transaction_hash, token, log_index, *, sender, recipient, raw_value=1):
+        """A transfer of the stored transaction ``transaction_hash``, placed where decoding places one."""
         return TokenTransfer.objects.create(
+            **transfer_position(transaction_hash),
             transaction_hash=transaction_hash,
             log_index=log_index,
             token=token,
