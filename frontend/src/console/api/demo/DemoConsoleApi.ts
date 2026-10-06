@@ -19,7 +19,7 @@ import type {
   Vocabulary,
 } from '../types.ts';
 import { DECIMAL_RE, scaled } from './decimal.ts';
-import { evaluate, type FixtureTransaction, type Lookup } from './evaluate.ts';
+import { evaluate, type FixtureTransaction, type Lookup, madeTransfer, type TransferTransaction } from './evaluate.ts';
 import { freeGlyph, GLYPHS, leaves, parseSentence, suggestTag, type ParserCatalog } from './parse.ts';
 import labelsFixture from './fixtures/address-labels.json' with { type: 'json' };
 import blocksFixture from './fixtures/blocks.json' with { type: 'json' };
@@ -73,7 +73,6 @@ function conditionProblem(node: ConditionNode, path = 'condition', root = true):
   const bad = (what: string) => `${path}.value: ${what}.`;
   switch (field.type) {
     case 'amount':
-    case 'native_amount':
       return typeof value === 'string' && DECIMAL_RE.test(value) ? null : bad('enter an amount such as 250 or 0.5');
     case 'token':
       return typeof value === 'object' && value !== null && 'address' in value && ADDRESS_RE.test(value.address)
@@ -81,8 +80,6 @@ function conditionProblem(node: ConditionNode, path = 'condition', root = true):
         : bad('pick a token');
     case 'bool':
       return typeof value === 'boolean' ? null : bad('must be true or false');
-    case 'signature':
-      return typeof value === 'string' && value.trim() ? null : bad('enter a method name or selector');
     case 'address':
       if (node.operator === 'in') {
         const list = value as { addresses?: unknown };
@@ -182,6 +179,7 @@ export class DemoConsoleApi implements ConsoleApi {
       let count = 0;
       if (rule.enabled) {
         for (const [ordinal, tx] of TRANSACTIONS.entries()) {
+          if (!madeTransfer(tx)) continue;
           const trace: Record<number, GateTrace> = {};
           const held = evaluate(rule.condition, tx, this.lookup, trace);
           if (held === null) unevaluable++;
@@ -201,13 +199,13 @@ export class DemoConsoleApi implements ConsoleApi {
     return clone({ ...rule, stats: this.stats.get(rule.id)! });
   }
 
-  private rowBase(tx: FixtureTransaction): Omit<JournalRow, 'id' | 'rule' | 'rule_revision'> {
+  private rowBase(tx: TransferTransaction): Omit<JournalRow, 'id' | 'rule' | 'rule_revision'> {
     const transfer = tx.transfer;
-    const token = transfer ? this.lookup.token(tx.chain, transfer.token_address) : null;
-    const from = transfer ? transfer.from_address : tx.from_address;
-    const to = transfer ? transfer.to_address : tx.to_address;
-    const raw = transfer ? transfer.raw_value : tx.value;
-    const decimals = token ? token.decimals : 18;
+    const token = this.lookup.token(tx.chain, transfer.token_address);
+    const from = transfer.from_address;
+    const to = transfer.to_address;
+    const raw = transfer.raw_value;
+    const decimals = token.decimals;
     return {
       matched_at: tx.block_timestamp,
       transaction: {
@@ -218,18 +216,18 @@ export class DemoConsoleApi implements ConsoleApi {
         block_timestamp: tx.block_timestamp,
       },
       headline: {
-        kind: transfer ? 'token_transfer' : 'native',
+        kind: 'token_transfer',
         from_address: from,
         to_address: to,
         from_label: this.lookup.label(from),
-        to_label: to ? this.lookup.label(to) : null,
+        to_label: this.lookup.label(to),
         amount: { raw, decimals, value: decimals === null ? null : scaled(raw, decimals) },
         token,
       },
       flags: {
-        token_unrecognised: token !== null && token.symbol === null,
-        decimals_unknown: token !== null && token.decimals === null,
-        verified: transfer ? transfer.verified : false,
+        token_unrecognised: token.symbol === null,
+        decimals_unknown: token.decimals === null,
+        verified: transfer.verified,
       },
     };
   }
@@ -239,7 +237,7 @@ export class DemoConsoleApi implements ConsoleApi {
       id: hit.id,
       rule: refOf(hit.rule),
       rule_revision: hit.rule.revision,
-      ...this.rowBase(TRANSACTIONS[hit.ordinal]),
+      ...this.rowBase(TRANSACTIONS[hit.ordinal] as TransferTransaction),
     };
   }
 
@@ -368,7 +366,7 @@ export class DemoConsoleApi implements ConsoleApi {
     await this.wait();
     const hit = this.byId.get(id);
     if (!hit) fail(404, { detail: 'Not found.', code: 'not_found' });
-    const tx = TRANSACTIONS[hit.ordinal];
+    const tx = TRANSACTIONS[hit.ordinal] as TransferTransaction;
     const row = this.journalRow(hit);
     const transfer = tx.transfer;
     return clone({
@@ -384,17 +382,15 @@ export class DemoConsoleApi implements ConsoleApi {
         method: tx.method,
         decode_status: tx.decode_status,
       },
-      transfer: transfer
-        ? {
-            token: this.lookup.token(tx.chain, transfer.token_address),
-            from_address: transfer.from_address,
-            to_address: transfer.to_address,
-            raw_value: transfer.raw_value,
-            log_index: transfer.log_index,
-            source: transfer.source,
-            verified: transfer.verified,
-          }
-        : null,
+      transfer: {
+        token: this.lookup.token(tx.chain, transfer.token_address),
+        from_address: transfer.from_address,
+        to_address: transfer.to_address,
+        raw_value: transfer.raw_value,
+        log_index: transfer.log_index,
+        source: transfer.source,
+        verified: transfer.verified,
+      },
       also_matched: this.hits
         .filter((other) => other.ordinal === hit.ordinal && other.id !== hit.id)
         .sort((a, b) => a.rule.id - b.rule.id)
@@ -441,6 +437,7 @@ export class DemoConsoleApi implements ConsoleApi {
     let unevaluable = 0;
     const matches: BacktestRow[] = [];
     for (const tx of TRANSACTIONS) {
+      if (!madeTransfer(tx)) continue;
       const trace: Record<number, GateTrace> = {};
       const held = evaluate(condition, tx, this.lookup, trace);
       if (held === null) unevaluable++;

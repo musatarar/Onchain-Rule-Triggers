@@ -27,7 +27,6 @@ const idParam = (value: string | null): number | null => (value && /^\d+$/.test(
 /** The amount a journal row leads with. An amount with unknown decimals is never scaled. */
 function rowAmount(row: JournalRow): { amount: string; unit: string | null } {
   const { headline } = row;
-  if (headline.kind === 'native') return { amount: formatUnits(headline.amount.raw, 18, 4), unit: 'ETH' };
   const { raw, decimals } = headline.amount;
   return {
     amount: decimals === null ? `${rawMagnitude(raw)} raw` : formatUnits(raw, decimals),

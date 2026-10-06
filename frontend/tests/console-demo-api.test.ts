@@ -41,11 +41,11 @@ test('every demo circuit matches the oracle: counts, unevaluable counts and tx h
   }
 });
 
-test('BNB-OUT has 7 matches, ANY-1M 3 and 9 unevaluable, and disarmed LINK-BNB none', async () => {
+test('BNB-OUT has 5 matches, ANY-1M 3 and 9 unevaluable, and disarmed LINK-BNB none', async () => {
   const rules = (await demo().listRules()).results;
   const byTag = Object.fromEntries(rules.map((rule) => [rule.tag, rule]));
   assert.equal(byTag['BNB-OUT'].id, 8);
-  assert.equal(byTag['BNB-OUT'].stats.match_count, 7);
+  assert.equal(byTag['BNB-OUT'].stats.match_count, 5);
   assert.equal(byTag['ANY-1M'].stats.match_count, 3);
   assert.equal(byTag['ANY-1M'].stats.unevaluable_count, 9);
   assert.equal(byTag['LINK-BNB'].enabled, false);
@@ -54,8 +54,8 @@ test('BNB-OUT has 7 matches, ANY-1M 3 and 9 unevaluable, and disarmed LINK-BNB n
 
 test('the engine status counts armed circuits and their matches over the five blocks', async () => {
   const status = await demo().engineStatus();
-  assert.deepEqual(status.rules, { total: 8, enabled: 7 });
-  assert.equal(status.match_count, 40);
+  assert.deepEqual(status.rules, { total: 7, enabled: 6 });
+  assert.equal(status.match_count, 34);
   assert.deepEqual(
     status.chains.map((c) => [c.chain, c.name, c.first_block, c.last_block]),
     [[1, 'Ethereum', 18_000_000, 18_000_004]],
@@ -64,7 +64,7 @@ test('the engine status counts armed circuits and their matches over the five bl
 
 test('the journal is newest first: block desc, then tx index desc, then circuit id', async () => {
   const rows = await allRows(demo());
-  assert.equal(rows.length, 40);
+  assert.equal(rows.length, 34);
   for (let i = 1; i < rows.length; i++) {
     const a = rows[i - 1];
     const b = rows[i];
@@ -79,7 +79,7 @@ test('the journal is newest first: block desc, then tx index desc, then circuit 
 test('journal pages chain through the cursor at 50 by default, and after=head is empty', async () => {
   const api = demo();
   const first = await api.matches({});
-  assert.equal(first.results.length, 40);
+  assert.equal(first.results.length, 34);
   assert.equal(first.next, null);
   const newer = await api.matches({ after: first.head });
   assert.deepEqual(newer.results, []);
@@ -100,9 +100,9 @@ test('disarming a circuit drops its matches and re-arming brings them back', asy
   const api = demo();
   await api.updateRule(8, { enabled: false });
   assert.equal((await api.matches({ rule: 8 })).results.length, 0);
-  assert.equal((await api.engineStatus()).match_count, 33);
+  assert.equal((await api.engineStatus()).match_count, 29);
   const rearmed = await api.updateRule(8, { enabled: true });
-  assert.equal(rearmed.stats.match_count, 7);
+  assert.equal(rearmed.stats.match_count, 5);
   assert.equal(rearmed.revision, 1, 'arming does not bump the revision');
 });
 

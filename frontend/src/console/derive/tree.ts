@@ -88,14 +88,11 @@ export function isComplete(node: ConditionNode, vocabulary: Vocabulary | null): 
   const value = node.value;
   switch (fieldOf(vocabulary, node).type) {
     case 'amount':
-    case 'native_amount':
       return typeof value === 'string' && DECIMAL_RE.test(value);
     case 'token':
       return typeof value === 'object' && 'address' in value && ADDRESS_RE.test(value.address);
     case 'bool':
       return typeof value === 'boolean';
-    case 'signature':
-      return typeof value === 'string' && value.trim() !== '';
     case 'address':
       if (node.operator !== 'in') return typeof value === 'string' && ADDRESS_RE.test(value);
       return (

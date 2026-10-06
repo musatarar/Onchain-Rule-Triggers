@@ -20,19 +20,20 @@ export type TokenRef = {
 };
 
 // Issue #18's Condition tree. `id` is null on write for new nodes; the server assigns ids.
+// Every comparison reads one decoded token transfer.
 export type ConditionNode =
   | { id: number | null; type: "and" | "or"; children: ConditionNode[] }
   | {
       id: number | null; type: "comparison";
-      source: "transaction" | "token_transfer";
+      source: "token_transfer";
       field: string;                       // one of vocabulary[source].fields[].key
       operator: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in";
       value: ComparisonValue;
     };
 
 export type ComparisonValue =
-  | Uint                                   // amount (whole-token units, may carry a fraction: "250", "0.5") or ETH value
-  | string                                 // address or method signature
+  | Uint                                   // amount (whole-token units, may carry a fraction: "250", "0.5")
+  | string                                 // address
   | boolean                                // token_recognised
   | { chain: Chain; address: string }      // field "token"
   | { addresses: string[]; name?: string };  // operator "in"; `name` is an optional display name (see "Deferred": watchlists)
@@ -53,6 +54,7 @@ export type Rule = {
   };
 };
 
+// One rule's match of one token transfer: a transaction with two matching transfers is two rows.
 export type JournalRow = {
   id: number;
   rule: RuleRef;
@@ -60,11 +62,11 @@ export type JournalRow = {
   matched_at: string;
   transaction: { chain: Chain; hash: string; block_number: number; transaction_index: number; block_timestamp: string };
   headline: {
-    kind: "token_transfer" | "native";
+    kind: "token_transfer";
     from_address: string; to_address: string | null;
     from_label?: string | null; to_label?: string | null;              // optional until address labels land
     amount: { raw: Uint; decimals: number | null; value: string | null };  // value null when decimals unknown
-    token: TokenRef | null;                                                 // null for kind "native"
+    token: TokenRef;
   };
   flags: { token_unrecognised: boolean; decimals_unknown: boolean; verified: boolean };
 };
@@ -78,24 +80,22 @@ export type MatchDetail = JournalRow & {
     input_selector: string | null; method: string | null;               // signature text when catalogued
     decode_status: "INGESTED" | "PROCESSING" | "DECODED" | "UNABLE_TO_DECODE";
   };
-  transfer: null | {
+  transfer: {                              // the transfer the match's gates held of
     token: TokenRef; from_address: string; to_address: string;
     raw_value: Uint; log_index: number | null;
     source: "calldata" | "log"; verified: boolean;
   };
-  also_matched: { match_id: number; rule: RuleRef }[];
+  also_matched: { match_id: number; rule: RuleRef }[];   // other rules that matched the same transfer
 };
 
 export type GateTrace = {
   held: boolean | null;                    // null = no data (the "?" gate)
-  reason?: "no_transfer" | "decimals_unknown" | "no_to_address";        // set when held is null or false for lack of data
+  reason?: "decimals_unknown";             // set when held is null or false for lack of data
   observed?:                               // comparison nodes only: what the gate read
     | { kind: "amount"; raw: Uint; decimals: number | null; value: string | null }
-    | { kind: "native_amount"; wei: Uint; value: string }
     | { kind: "address"; address: string | null; list_hit: boolean | null; label?: string | null }
     | { kind: "token"; token: TokenRef }
-    | { kind: "bool"; value: boolean }
-    | { kind: "method"; selector: string | null; signature: string | null };
+    | { kind: "bool"; value: boolean };
 };
 
 // ===== Shapes the contract gives as JSON examples ==========================
@@ -108,12 +108,12 @@ export type EngineStatus = {
 };
 
 export type Operator = Extract<ConditionNode, { type: "comparison" }>["operator"];
-export type FieldType = "address" | "native_amount" | "signature" | "token" | "amount" | "bool";
+export type FieldType = "address" | "token" | "amount" | "bool";
 
 /** `GET /api/conditions/vocabulary/` */
 export type Vocabulary = {
   sources: {
-    key: "transaction" | "token_transfer";
+    key: "token_transfer";
     label: string;
     fields: { key: string; label: string; type: FieldType; operators: Operator[] }[];
   }[];

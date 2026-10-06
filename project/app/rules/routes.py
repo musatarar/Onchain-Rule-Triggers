@@ -28,8 +28,8 @@ from project.app.rules.models import Rule
 JOURNAL_PAGE_SIZE = 50
 JOURNAL_MAX_PAGE_SIZE = 100
 PAGE_SIZE_OUT_OF_RANGE = f"Use a page size from 1 to {JOURNAL_MAX_PAGE_SIZE}."
-# A journal cursor: a row's position, "<block>.<index>.<rule id>.<match id>".
-CURSOR_RE = re.compile(r"[0-9]+(?:\.[0-9]+){3}")
+# A journal cursor: a row's position, "<block>.<index>.<transfer id>.<rule id>.<match id>".
+CURSOR_RE = re.compile(r"[0-9]+(?:\.[0-9]+){4}")
 
 
 class CatalogPagination(PageNumberPagination):
@@ -205,10 +205,10 @@ class JournalCursorField(serializers.CharField):
     """A journal cursor, read as the position it names (``services.journal_page``).
 
     The console passes a page's ``next`` back as ``cursor`` and its ``head`` as
-    ``after``, and reads neither. A cursor is readable all the same, as the
-    console's demo data writes one: the row's block number, transaction index
-    and rule id, and then its match id, which keeps two matches of one rule and
-    transaction apart.
+    ``after``, and reads neither. A cursor is readable all the same: the row's
+    block number and transaction index, the matched transfer's id, which keeps
+    two transfers of one transaction apart, the rule id, and then the match
+    id, which keeps two matches of one rule and transfer apart.
     """
 
     default_error_messages = {"malformed": "Not a cursor from this journal."}

@@ -26,6 +26,11 @@ export type FixtureTransaction = {
   };
 };
 
+/** A fixture transaction that made a token transfer: the only rows a rule reads. */
+export type TransferTransaction = FixtureTransaction & { transfer: NonNullable<FixtureTransaction['transfer']> };
+
+export const madeTransfer = (tx: FixtureTransaction): tx is TransferTransaction => tx.transfer !== null;
+
 export type Lookup = {
   token(chain: number, address: string): TokenRef;
   label(address: string): string | null;
@@ -60,61 +65,37 @@ function addressGate(node: Comparison, address: string | null, lookup: Lookup): 
   return { held, observed: { kind: 'address', address, list_hit: null, label } };
 }
 
-/** One gate against one transaction: whether it held, and what it read. */
-export function evaluateComparison(node: Comparison, tx: FixtureTransaction, lookup: Lookup): GateTrace {
-  if (node.source === 'token_transfer') {
-    const transfer = tx.transfer;
-    if (!transfer) return { held: false, reason: 'no_transfer' };
-    const token = lookup.token(tx.chain, transfer.token_address);
-    switch (node.field) {
-      case 'token': {
-        const want = node.value as { chain: number; address: string };
-        const same = want.chain === token.chain && want.address.toLowerCase() === token.address;
-        return { held: equality(node.operator, same), observed: { kind: 'token', token } };
-      }
-      case 'amount': {
-        const raw = transfer.raw_value;
-        if (token.decimals === null) {
-          return {
-            held: null,
-            reason: 'decimals_unknown',
-            observed: { kind: 'amount', raw, decimals: null, value: null },
-          };
-        }
-        return {
-          held: ordered(node.operator, compareScaled(raw, token.decimals, String(node.value))),
-          observed: { kind: 'amount', raw, decimals: token.decimals, value: scaled(raw, token.decimals) },
-        };
-      }
-      case 'from_address':
-        return addressGate(node, transfer.from_address, lookup);
-      case 'to_address':
-        return addressGate(node, transfer.to_address, lookup);
-      case 'token_recognised': {
-        const recognised = token.symbol !== null;
-        return { held: equality(node.operator, recognised === node.value), observed: { kind: 'bool', value: recognised } };
-      }
+/** One gate against the transfer a transaction made: whether it held, and what it read. */
+export function evaluateComparison(node: Comparison, tx: TransferTransaction, lookup: Lookup): GateTrace {
+  const transfer = tx.transfer;
+  const token = lookup.token(tx.chain, transfer.token_address);
+  switch (node.field) {
+    case 'token': {
+      const want = node.value as { chain: number; address: string };
+      const same = want.chain === token.chain && want.address.toLowerCase() === token.address;
+      return { held: equality(node.operator, same), observed: { kind: 'token', token } };
     }
-  } else {
-    switch (node.field) {
-      case 'value':
+    case 'amount': {
+      const raw = transfer.raw_value;
+      if (token.decimals === null) {
         return {
-          held: ordered(node.operator, compareScaled(tx.value, 18, String(node.value))),
-          observed: { kind: 'native_amount', wei: tx.value, value: scaled(tx.value, 18) },
-        };
-      case 'from_address':
-        return addressGate(node, tx.from_address, lookup);
-      case 'to_address': {
-        const gate = addressGate(node, tx.to_address, lookup);
-        return tx.to_address === null && gate.held === false ? { ...gate, reason: 'no_to_address' } : gate;
-      }
-      case 'method': {
-        const actual = tx.method ?? tx.input_selector ?? 'none';
-        return {
-          held: equality(node.operator, actual === String(node.value)),
-          observed: { kind: 'method', selector: tx.input_selector, signature: tx.method },
+          held: null,
+          reason: 'decimals_unknown',
+          observed: { kind: 'amount', raw, decimals: null, value: null },
         };
       }
+      return {
+        held: ordered(node.operator, compareScaled(raw, token.decimals, String(node.value))),
+        observed: { kind: 'amount', raw, decimals: token.decimals, value: scaled(raw, token.decimals) },
+      };
+    }
+    case 'from_address':
+      return addressGate(node, transfer.from_address, lookup);
+    case 'to_address':
+      return addressGate(node, transfer.to_address, lookup);
+    case 'token_recognised': {
+      const recognised = token.symbol !== null;
+      return { held: equality(node.operator, recognised === node.value), observed: { kind: 'bool', value: recognised } };
     }
   }
   throw new Error(`No field ${node.source}.${node.field}`);
@@ -126,7 +107,7 @@ export function evaluateComparison(node: Comparison, tx: FixtureTransaction, loo
  */
 export function evaluate(
   node: ConditionNode,
-  tx: FixtureTransaction,
+  tx: TransferTransaction,
   lookup: Lookup,
   trace: Record<number, GateTrace>,
 ): boolean | null {

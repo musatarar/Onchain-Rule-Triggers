@@ -46,7 +46,6 @@ type Run = { status: 'idle' | 'loading' | 'error'; error: string };
 
 function rowAmount(row: BacktestRow): { amount: string; unit: string } {
   const { headline } = row;
-  if (headline.kind === 'native') return { amount: formatUnits(headline.amount.raw, 18, 4), unit: 'ETH' };
   const { raw, decimals } = headline.amount;
   return {
     amount: decimals === null ? `${rawMagnitude(raw)} raw` : formatUnits(raw, decimals),
@@ -212,10 +211,7 @@ export function ComposerSheet() {
 
   const addGate = (kind: 'and' | 'or') => {
     if (!condition || draft.selected === null || !selectedNode || selectedNode.type !== 'comparison') return;
-    const fresh: Comparison =
-      selectedNode.source === 'token_transfer'
-        ? { id: draftId(), type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gte', value: '' }
-        : { id: draftId(), type: 'comparison', source: 'transaction', field: 'value', operator: 'gte', value: '' };
+    const fresh: Comparison = { id: draftId(), type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gte', value: '' };
     update({ condition: addSibling(condition, draft.selected, kind, fresh, draftId), selected: fresh.id });
     window.setTimeout(() => document.querySelector<HTMLElement>('.editor [id$="-value"]')?.focus(), 0);
   };
