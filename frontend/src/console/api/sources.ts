@@ -1,40 +1,18 @@
 import type { ConsoleApi } from './ConsoleApi.ts';
 
-export const SOURCE_KEYS = [
-  'engineStatus',
-  'vocabulary',
-  'rules',
-  'matches',
-  'matchDetail',
-  'tokens',
-  'propose',
-  'backtest',
-] as const;
+/** The methods the server has no endpoint for yet, which can still run on demo data. */
+export const SOURCE_KEYS = ['propose', 'backtest'] as const;
 
 export type SourceKey = (typeof SOURCE_KEYS)[number];
 export type Source = 'demo' | 'http';
 export type Sources = Record<SourceKey, Source>;
-
-/** Which source key decides each method; `rules` covers the list and CRUD. */
-export const SOURCE_OF: Record<keyof ConsoleApi, SourceKey> = {
-  engineStatus: 'engineStatus',
-  vocabulary: 'vocabulary',
-  listRules: 'rules',
-  getRule: 'rules',
-  createRule: 'rules',
-  updateRule: 'rules',
-  deleteRule: 'rules',
-  matches: 'matches',
-  matchDetail: 'matchDetail',
-  tokens: 'tokens',
-  propose: 'propose',
-  backtest: 'backtest',
-};
+export type DemoApi = Pick<ConsoleApi, SourceKey>;
 
 /**
- * Parses `VITE_CONSOLE_SOURCES`, e.g. "rules=http,matches=http". Unlisted keys are
- * `demo`, and an unset or blank value is all demo. Unknown keys and values throw, so
- * a typo fails the build's first page load instead of silently staying on demo.
+ * Parses `VITE_CONSOLE_SOURCES`, e.g. "propose=http". Unlisted keys are `demo`, and
+ * an unset or blank value is all demo. Unknown keys and values throw, so a typo, or
+ * a key for an endpoint that is always on the real API, fails the build's first
+ * page load instead of being silently ignored.
  */
 export function parseSources(raw: string | undefined): Sources {
   const sources = Object.fromEntries(SOURCE_KEYS.map((key) => [key, 'demo'])) as Sources;

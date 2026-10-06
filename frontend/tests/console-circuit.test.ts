@@ -1,21 +1,25 @@
 /**
  * What the UI works out from `condition` + `trace` + `observed`: which gates carried
  * power, how a wide circuit folds, when each element lights, and how the inspector
- * explains a gate. The demo adapter supplies real match details to derive from.
+ * explains a gate. The demo backtest supplies real traces to derive from.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { DemoConsoleApi } from '../src/console/api/demo/DemoConsoleApi.ts';
+import type { FixtureTransaction } from '../src/console/api/demo/evaluate.ts';
+import circuits from '../src/console/api/demo/fixtures/circuits.json' with { type: 'json' };
+import tokens from '../src/console/api/demo/fixtures/tokens.json' with { type: 'json' };
+import transactions from '../src/console/api/demo/fixtures/transactions.json' with { type: 'json' };
 import vocabulary from '../src/console/api/demo/fixtures/vocabulary.json' with { type: 'json' };
-import type { MatchDetail, TokenRef, Vocabulary } from '../src/console/api/types.ts';
+import type { ConditionNode, MatchDetail, Rule, TokenRef, Vocabulary } from '../src/console/api/types.ts';
 import { type Comparison, describeGate, type Describer } from '../src/console/derive/describe.ts';
 import { explain, gateTag, observedText, powerText, wiringText } from '../src/console/derive/explain.ts';
 import { HOLD, layoutCircuit, SPEED } from '../src/console/derive/layout.ts';
 import { powerPath } from '../src/console/derive/power.ts';
 
 const api = new DemoConsoleApi({ latency: [0, 0] });
-const BNB_OUT = 8;
+const BNB_OUT = (circuits as Omit<Rule, 'stats'>[]).find((circuit) => circuit.tag === 'BNB-OUT')!.condition;
 const TX_3266 = '0x3266982fe13e591a4d52c05dac89063180dec8d089a6e7171f74d9edffca31fd';
 
 const symbols = new Map<string, string | null>();
@@ -23,14 +27,44 @@ const describer: Describer = {
   vocabulary: vocabulary as Vocabulary,
   tokenSymbol: (_chain, address) => symbols.get(address) ?? null,
 };
-for (const token of (await api.tokens({ q: '' })).results as TokenRef[]) symbols.set(token.address, token.symbol);
+for (const token of tokens as TokenRef[]) symbols.set(token.address, token.symbol);
 
-async function matchOf(rule: number, predicate: (detail: MatchDetail) => boolean): Promise<MatchDetail> {
-  for (const row of (await api.matches({ rule, page_size: 100 })).results) {
-    const detail = await api.matchDetail(row.id);
+/** A match detail as the server would serve it, from a backtest row of `condition` and its transaction. */
+function detailOf(condition: ConditionNode, row: Awaited<ReturnType<typeof api.backtest>>['matches'][number]): MatchDetail {
+  const tx = (transactions as unknown as FixtureTransaction[]).find((candidate) => candidate.hash === row.transaction.hash)!;
+  return {
+    ...row,
+    id: 0,
+    rule: { id: 0, name: '', tag: '', glyph: 'circle' },
+    condition,
+    transaction: {
+      ...row.transaction,
+      from_address: tx.from_address,
+      to_address: tx.to_address,
+      value: tx.value,
+      input_selector: tx.input_selector,
+      method: tx.method,
+      decode_status: tx.decode_status,
+    },
+    transfer: tx.transfer && {
+      token: row.headline.token!,
+      from_address: tx.transfer.from_address,
+      to_address: tx.transfer.to_address,
+      raw_value: tx.transfer.raw_value,
+      log_index: tx.transfer.log_index,
+      source: tx.transfer.source,
+      verified: tx.transfer.verified,
+    },
+    also_matched: [],
+  };
+}
+
+async function matchOf(condition: ConditionNode, predicate: (detail: MatchDetail) => boolean): Promise<MatchDetail> {
+  for (const row of (await api.backtest(condition)).matches) {
+    const detail = detailOf(condition, row);
     if (predicate(detail)) return detail;
   }
-  throw new Error(`no match of rule ${rule} fits`);
+  throw new Error('no backtest match fits');
 }
 
 const scene = (detail: Pick<MatchDetail, 'condition' | 'trace'> | { condition: MatchDetail['condition']; trace: null }, maxWidth: number) =>
@@ -57,22 +91,15 @@ test('on BNB-OUT at 0x3266…31fd, G1, G2, G3 and G5 are live, G4 and G6–G8 st
 
 test('a gate with unknown decimals is no data: power arrives there and stops', async () => {
   // Beside a gate that holds, a no-data gate still lets its OR energise the coil.
-  const created = await api.createRule({
-    name: 'Big or recognised',
-    tag: 'NODATA-T',
-    glyph: 'circle',
-    sentence: '',
-    enabled: true,
-    condition: {
-      id: null,
-      type: 'or',
-      children: [
-        { id: null, type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gt', value: '1000000' },
-        { id: null, type: 'comparison', source: 'token_transfer', field: 'token_recognised', operator: 'eq', value: true },
-      ],
-    },
-  });
-  const detail = await matchOf(created.id, (d) => d.transfer?.token.symbol === 'CUBE');
+  const condition: ConditionNode = {
+    id: 1,
+    type: 'or',
+    children: [
+      { id: 2, type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gt', value: '1000000' },
+      { id: 3, type: 'comparison', source: 'token_transfer', field: 'token_recognised', operator: 'eq', value: true },
+    ],
+  };
+  const detail = await matchOf(condition, (d) => d.transfer?.token.symbol === 'CUBE');
   assert.equal(detail.transfer!.token.decimals, null);
   const power = powerPath(detail.condition, detail.trace);
   const [amount, recognised] = power.gates;
@@ -87,7 +114,6 @@ test('a gate with unknown decimals is no data: power arrives there and stops', a
   assert.equal(drawn.gates[0].state, 'unk');
   assert.equal(drawn.gates[0].value, 'decimals unknown');
   assert.equal(explain(amount.node, detail.trace[amount.node.id!], detail, describer).test, 'cannot scale the amount');
-  await api.deleteRule(created.id);
 });
 
 test('an AND blocked early leaves its later steps without power', async () => {
