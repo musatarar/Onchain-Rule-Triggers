@@ -70,7 +70,8 @@ export function parseSentence(sentence: string, catalog: ParserCatalog): Parsed 
   if (/\b(stablecoins?|stables)\b/i.test(s)) {
     for (const symbol of ['USDT', 'USDC']) if (bySymbol.has(symbol) && !found.includes(symbol)) found.push(symbol);
   }
-  const isEth = /\b(eth|ether)\b/i.test(s) && !found.length;
+  // Native ETH moves with no token transfer, which is all a rule reads.
+  if (/\b(eth|ether)\b/i.test(s) && !found.length) return { condition: null, name: '', understood };
   if (/\b(unrecogni[sz]ed|unknown)\b/i.test(s)) {
     parts.push(C('token_transfer', 'token_recognised', 'eq', false));
     understood.push('unrecognised token');
@@ -88,14 +89,12 @@ export function parseSentence(sentence: string, catalog: ParserCatalog): Parsed 
     const value = shiftDecimal(amount[2].replace(/,/g, ''), POWER[amount[3] ?? ''] ?? 0);
     const operator =
       SYMBOL_OPERATORS[amount[1]] ?? WORD_OPERATORS.find(([re]) => re.test(amount[1]))?.[1] ?? 'gt';
-    parts.push(isEth ? C('transaction', 'value', operator, value) : C('token_transfer', 'amount', operator, value));
+    parts.push(C('token_transfer', 'amount', operator, value));
     understood.push(amount[0].trim());
-  } else if (isEth) {
-    parts.push(C('transaction', 'value', 'gt', '0'));
-    understood.push('ETH sent');
   }
 
-  const source = isEth ? 'transaction' : found.length || /transfer|token/i.test(s) ? 'token_transfer' : 'transaction';
+  // A rule reads only token transfers, so every address gate is a transfer's.
+  const source = 'token_transfer';
   const binance = catalog.lists.find((list) => /binance/i.test(list.name ?? ''));
   if (binance) {
     const list = { addresses: [...binance.addresses], name: binance.name };
@@ -176,14 +175,12 @@ export function suggestTag(condition: ConditionNode | null, taken: string[], sym
     parts.push('IN');
   }
   const amount = all.find((node) => node.field === 'amount' && node.value !== '');
-  const eth = all.find((node) => node.source === 'transaction' && node.field === 'value' && node.value !== '');
-  if (eth && !tokens.length) parts.push('ETH', compact(String(eth.value)));
-  else if (amount) parts.push(compact(String(amount.value)));
+  if (amount) parts.push(compact(String(amount.value)));
 
   const join = (ps: string[]) => ps.filter(Boolean).join('-').replace(/-+/g, '-');
   let ps = parts.filter(Boolean);
   let tag = join(ps);
-  if (tag.length > 12 && (amount || eth)) {
+  if (tag.length > 12 && amount) {
     ps = ps.slice(0, -1);
     tag = join(ps);
   }

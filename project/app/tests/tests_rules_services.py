@@ -15,12 +15,12 @@ from project.app.constants import NEEDS_CONDITION
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
 from project.app.rules.utils import without_ids
-from project.app.tests.condition_trees import addresses, and_, gate, or_, token, transfer, tx
+from project.app.tests.condition_trees import addresses, and_, gate, or_, token, transfer
 
-# Transactions sending more than one ether.
-WHALES = and_(tx("value", "gt", "1"))
-# A field no source in the vocabulary carries.
-GAS = and_(tx("gas", "eq", "21000"))
+# Token transfers of more than one whole token.
+WHALES = and_(transfer("amount", "gt", "1"))
+# A field a token transfer does not carry.
+GAS = and_(transfer("gas", "eq", "21000"))
 
 
 def _ids(node):
@@ -79,7 +79,7 @@ class ValidatedWriteTests(RulesServiceTestCase):
         self.assertIn("source must be one of", ctx.exception.message_dict["condition"][0])
 
     def test_a_misspelt_field_is_refused_by_its_path(self):
-        condition = and_(tx("value", "gt", "1"), transfer("amont", "gte", "250"))
+        condition = and_(transfer("amount", "gt", "1"), transfer("amont", "gte", "250"))
         with self.assertRaises(ValidationError) as ctx:
             services.create_rule(self.user, {"name": "Typo", "condition": condition})
         self.assertTrue(
@@ -116,14 +116,14 @@ class ConditionTreeTests(RulesServiceTestCase):
         self.assertEqual(root.type, Condition.TYPE_AND)
         self.assertEqual(
             [(c.type, c.field_name, c.operator, c.value, c.source) for c in root.children.all()],
-            [(Condition.TYPE_COMPARISON, "value", "gt", "1", Condition.SOURCE_TRANSACTION)],
+            [(Condition.TYPE_COMPARISON, "amount", "gt", "1", Condition.SOURCE_TOKEN_TRANSFER)],
         )
 
     def test_a_nested_tree_keeps_its_order_and_renders_the_stored_ids(self):
         condition = and_(
-            tx("value", "gt", "2"),
+            transfer("amount", "gt", "2"),
             or_(
-                tx("method", "eq", "transfer"),
+                transfer("from_address", "eq", "0x" + "2" * 40),
                 transfer("to_address", "in", addresses("0x" + "1" * 40, name="Hot wallets")),
             ),
             transfer("token_recognised", "eq", False),
@@ -291,10 +291,10 @@ class RevisionTests(RulesServiceTestCase):
     def test_resending_an_address_in_another_case_leaves_the_revision(self):
         # The stored threshold is lowercased, so a checksummed resend is the same tree.
         mixed = "0xDAC17F958d2ee523a2206206994597C13D831ec7"
-        rule = self._created(and_(tx("to_address", "eq", mixed)))
-        services.update_rule(rule, {"condition": and_(tx("to_address", "eq", mixed.lower()))})
+        rule = self._created(and_(transfer("to_address", "eq", mixed)))
+        services.update_rule(rule, {"condition": and_(transfer("to_address", "eq", mixed.lower()))})
         services.update_rule(
-            rule, {"condition": and_(tx("to_address", "eq", "0x" + mixed[2:].upper()))}
+            rule, {"condition": and_(transfer("to_address", "eq", "0x" + mixed[2:].upper()))}
         )
         self.assertEqual(self._revision(rule), 1)
 
@@ -314,12 +314,12 @@ class LowercaseWriteTests(RulesServiceTestCase):
 
     def test_address_token_and_list_thresholds_are_stored_lowercased(self):
         condition = and_(
-            tx("from_address", "eq", self.MIXED),
+            transfer("from_address", "eq", self.MIXED),
             transfer("token", "eq", token(self.MIXED)),
             transfer("from_address", "in", addresses(self.MIXED, self.OTHER, name="Binance")),
             or_(
                 transfer("to_address", "ne", self.MIXED),
-                tx("to_address", "in", addresses(self.OTHER)),
+                transfer("to_address", "in", addresses(self.OTHER)),
             ),
         )
 
@@ -332,7 +332,7 @@ class LowercaseWriteTests(RulesServiceTestCase):
                 for c in stored.all_conditions.filter(type="COMPARISON").order_by("pk")
             ],
             [
-                ("transaction", "from_address", self.MIXED.lower()),
+                ("token_transfer", "from_address", self.MIXED.lower()),
                 ("token_transfer", "token", {"chain": 1, "address": self.MIXED.lower()}),
                 (
                     "token_transfer",
@@ -341,13 +341,12 @@ class LowercaseWriteTests(RulesServiceTestCase):
                     {"addresses": [self.MIXED.lower(), self.OTHER.lower()], "name": "Binance"},
                 ),
                 ("token_transfer", "to_address", self.MIXED.lower()),
-                ("transaction", "to_address", {"addresses": [self.OTHER.lower()]}),
+                ("token_transfer", "to_address", {"addresses": [self.OTHER.lower()]}),
             ],
         )
 
     def test_other_thresholds_are_stored_as_written(self):
         condition = and_(
-            tx("method", "eq", "transferFrom"),
             transfer("amount", "gte", "0.5"),
             transfer("token_recognised", "eq", True),
         )

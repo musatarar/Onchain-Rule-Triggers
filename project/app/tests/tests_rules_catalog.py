@@ -15,7 +15,7 @@ from project.app.constants import NEEDS_CONDITION
 from project.app.models import Condition, Rule
 from project.app.rules import services, utils
 from project.app.rules.utils import without_ids
-from project.app.tests.condition_trees import and_, gate, tx
+from project.app.tests.condition_trees import and_, gate, transfer
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 
@@ -25,8 +25,8 @@ def _user(username="planner@lockedin.example"):
 
 
 def _example_condition():
-    """A worked example: a transaction moving more than one ether."""
-    return and_(tx("value", "gt", "1"))
+    """A worked example: a token transfer of more than one whole token."""
+    return and_(transfer("amount", "gt", "1"))
 
 
 class RuleTests(TestCase):
@@ -58,15 +58,15 @@ class RuleTests(TestCase):
     def test_a_rule_naming_a_field_its_source_does_not_carry_is_refused(self):
         with self.assertRaises(ValidationError) as ctx:
             services.create_rule(
-                self.user, {"name": "reads gas", "condition": and_(tx("gas", "gt", "21000"))}
+                self.user, {"name": "reads gas", "condition": and_(transfer("gas", "gt", "21000"))}
             )
         self.assertIn(
-            "condition.children[0].field: 'transaction' has no field 'gas'",
+            "condition.children[0].field: 'token_transfer' has no field 'gas'",
             ctx.exception.message_dict["condition"][0],
         )
 
     def test_a_rule_reading_a_source_outside_the_vocabulary_is_refused(self):
-        for source in ("lead", "block", "withdrawal", "events"):
+        for source in ("transaction", "lead", "block", "withdrawal", "events"):
             with self.subTest(source=source):
                 with self.assertRaises(ValidationError) as ctx:
                     services.create_rule(
@@ -102,10 +102,10 @@ class ConditionTests(TestCase):
         return Condition.objects.create(rule=rule or self.rule, parent=parent, type=type, **kwargs)
 
     def _comparison(self, parent, **kwargs):
-        kwargs.setdefault("field_name", "value")
+        kwargs.setdefault("field_name", "amount")
         kwargs.setdefault("operator", "gt")
         kwargs.setdefault("value", "1")
-        kwargs.setdefault("source", Condition.SOURCE_TRANSACTION)
+        kwargs.setdefault("source", Condition.SOURCE_TOKEN_TRANSFER)
         return Condition.objects.create(
             rule=parent.rule, parent=parent, type=Condition.TYPE_COMPARISON, **kwargs
         )
@@ -117,7 +117,7 @@ class ConditionTests(TestCase):
 
     def test_an_and_root_with_two_comparisons_round_trips(self):
         root = self._group()
-        self._comparison(root, field_name="value", operator="gt", value="1")
+        self._comparison(root, field_name="amount", operator="gt", value="1")
         self._comparison(
             root,
             field_name="to_address",
@@ -133,7 +133,7 @@ class ConditionTests(TestCase):
         self.assertEqual(
             [(c.type, c.field_name, c.operator, c.value, c.source) for c in root.children.all()],
             [
-                ("COMPARISON", "value", "gt", "1", "transaction"),
+                ("COMPARISON", "amount", "gt", "1", "token_transfer"),
                 ("COMPARISON", "to_address", "eq", USDT, "token_transfer"),
             ],
         )
@@ -147,16 +147,20 @@ class ConditionTests(TestCase):
 
     def test_a_group_carrying_comparison_parts_is_refused(self):
         for parts in (
-            {"field_name": "value"},
+            {"field_name": "amount"},
             {"operator": "gt"},
-            {"source": Condition.SOURCE_TRANSACTION},
+            {"source": Condition.SOURCE_TOKEN_TRANSFER},
             {"value": "0"},
         ):
             with self.subTest(parts=parts):
                 self._refused(Condition(rule=self.rule, type=Condition.TYPE_OR, **parts), "type")
 
     def test_a_comparison_missing_a_part_is_refused(self):
-        whole = {"field_name": "value", "operator": "gt", "source": Condition.SOURCE_TRANSACTION}
+        whole = {
+            "field_name": "amount",
+            "operator": "gt",
+            "source": Condition.SOURCE_TOKEN_TRANSFER,
+        }
         for missing, field in (
             ("field_name", "field_name"),
             ("operator", "field_name"),
@@ -175,9 +179,9 @@ class ConditionTests(TestCase):
             rule=self.rule,
             parent=foreign_root,
             type=Condition.TYPE_COMPARISON,
-            field_name="value",
+            field_name="amount",
             operator="gt",
-            source=Condition.SOURCE_TRANSACTION,
+            source=Condition.SOURCE_TOKEN_TRANSFER,
         )
         self._refused(condition, "parent")
 
@@ -213,15 +217,17 @@ class ConditionTests(TestCase):
 
     def test_the_database_refuses_an_unknown_type_or_source(self):
         root = self._group()
-        for bad in ({"type": "XOR"}, {"source": "mempool"}, {"source": "lead"}):
+        # A transaction, a withdrawal or the block is no source a rule reads any more.
+        bad_sources = ("transaction", "withdrawal", "block", "mempool", "lead")
+        for bad in ({"type": "XOR"}, *({"source": source} for source in bad_sources)):
             with self.subTest(bad=bad):
                 fields = {
                     "rule": self.rule,
                     "parent": root,
                     "type": Condition.TYPE_COMPARISON,
-                    "field_name": "value",
+                    "field_name": "amount",
                     "operator": "gt",
-                    "source": Condition.SOURCE_TRANSACTION,
+                    "source": Condition.SOURCE_TOKEN_TRANSFER,
                     **bad,
                 }
                 with self.assertRaises(IntegrityError), transaction.atomic():

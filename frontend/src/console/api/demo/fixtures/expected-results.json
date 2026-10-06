@@ -33,17 +33,6 @@
       "0x3e4394f59e1698234943584360afeba304cc67cb5a780d2cda188f64397e0c82"
     ]
   },
-  "3": {
-    "enabled": true,
-    "match_count": 4,
-    "unevaluable_count": 0,
-    "match_tx_hashes": [
-      "0x8bd66e08dbe4a169dc82834cc382976ee80f39012e028195aa7f092929d96af5",
-      "0xc214997a04bcbddc60988ea5749440a0a29c7ed6c1d181db75a3cfc851ac2d7f",
-      "0xbee8304fb70e3a76644396e165dfa119c392482f18a94e563c60e62adbd01f37",
-      "0xf54bf6bfa5ec33fc7ba58fdcde27bc5987b48a8ca6b0ca49c8e9d7e42738e42d"
-    ]
-  },
   "4": {
     "enabled": true,
     "match_count": 5,
@@ -82,14 +71,12 @@
   },
   "8": {
     "enabled": true,
-    "match_count": 7,
+    "match_count": 5,
     "unevaluable_count": 0,
     "match_tx_hashes": [
       "0x73ee5f2594e154c73590ba8339e69a553b14ccce29b5a976b2725885cf86e185",
       "0x831b4c265b7b03bf169e3760afad30b985632dad46826e3b76705bda64579f96",
       "0xf428eab3386d37e0dec00dd168da9f797bce93d87628f8b25120efde041c663a",
-      "0x02796739c427ebe7c2c453bc59812cbe005b294ea057e4a18912f634a68ba66a",
-      "0xbee8304fb70e3a76644396e165dfa119c392482f18a94e563c60e62adbd01f37",
       "0x7b46a74fd8caaa94ab10346ee54ed0aad862e0a71d832f94dc23a6e1416dc4b6",
       "0x3266982fe13e591a4d52c05dac89063180dec8d089a6e7171f74d9edffca31fd"
     ]

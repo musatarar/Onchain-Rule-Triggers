@@ -20,19 +20,20 @@ export type TokenRef = {
 };
 
 // Issue #18's Condition tree. `id` is null on write for new nodes; the server assigns ids.
+// Every comparison reads one decoded token transfer.
 export type ConditionNode =
   | { id: number | null; type: "and" | "or"; children: ConditionNode[] }
   | {
       id: number | null; type: "comparison";
-      source: "transaction" | "token_transfer";
+      source: "token_transfer";
       field: string;                       // one of vocabulary[source].fields[].key
       operator: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in";
       value: ComparisonValue;
     };
 
 export type ComparisonValue =
-  | Uint                                   // amount (whole-token units, may carry a fraction: "250", "0.5") or ETH value
-  | string                                 // address or method signature
+  | Uint                                   // amount (whole-token units, may carry a fraction: "250", "0.5")
+  | string                                 // address
   | boolean                                // token_recognised
   | { chain: Chain; address: string }      // field "token"
   | { addresses: string[]; name?: string };  // operator "in"; `name` is an optional display name (see "Deferred": watchlists)
@@ -108,12 +109,12 @@ export type EngineStatus = {
 };
 
 export type Operator = Extract<ConditionNode, { type: "comparison" }>["operator"];
-export type FieldType = "address" | "native_amount" | "signature" | "token" | "amount" | "bool";
+export type FieldType = "address" | "token" | "amount" | "bool";
 
 /** `GET /api/conditions/vocabulary/` */
 export type Vocabulary = {
   sources: {
-    key: "transaction" | "token_transfer";
+    key: "token_transfer";
     label: string;
     fields: { key: string; label: string; type: FieldType; operators: Operator[] }[];
   }[];

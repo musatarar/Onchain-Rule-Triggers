@@ -33,18 +33,20 @@ test('propose suggests STABLE… for USDT + USDC and BNB-…-OUT for a from-list
   assert.match(stable.tag, /^STABLE/);
   const leaving = await api.propose('Stablecoins leaving Binance over 300');
   assert.equal(leaving.tag, 'BNB-STAB-OUT');
-  const eth = await api.propose('ETH over 20');
-  assert.equal(eth.tag, 'ETH-20');
-  for (const tag of [stable.tag, leaving.tag, eth.tag]) assert.ok(tag.length <= 12, tag);
-  assert.equal(leaving.glyph, 'hexagon', 'the first glyph no circuit uses');
+  for (const tag of [stable.tag, leaving.tag]) assert.ok(tag.length <= 12, tag);
+  assert.equal(leaving.glyph, 'target', 'the first glyph no circuit uses');
 });
 
 test('a suggested tag another circuit already has gets a counter', () => {
   const condition: ConditionNode = {
     id: null,
     type: 'and',
-    children: [{ id: null, type: 'comparison', source: 'transaction', field: 'value', operator: 'gt', value: '10' }],
+    children: [
+      { id: null, type: 'comparison', source: 'token_transfer', field: 'token', operator: 'eq', value: { chain: 1, address: '0xdac17f958d2ee523a2206206994597c13d831ec7' } },
+      { id: null, type: 'comparison', source: 'token_transfer', field: 'amount', operator: 'gt', value: '10' },
+    ],
   };
-  assert.equal(suggestTag(condition, [], () => null), 'ETH-10');
-  assert.equal(suggestTag(condition, ['ETH-10'], () => null), 'ETH-10-2');
+  const symbol = () => 'USDT';
+  assert.equal(suggestTag(condition, [], symbol), 'STABLE-10');
+  assert.equal(suggestTag(condition, ['STABLE-10'], symbol), 'STABLE-10-2');
 });

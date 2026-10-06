@@ -1,10 +1,10 @@
 """User-defined rules catalog: the rules that watch the chain.
 
 A rule is its conditions: a tree of :class:`Condition` rows comparing the
-fields of a stored block's rows (the block, its transactions, withdrawals and
-token transfers) against thresholds. :mod:`project.app.rules.onchain`
-evaluates a rule against a stored block, and a :class:`MatchedRule` records
-each row a rule matched when a block was evaluated.
+fields of a decoded token transfer against thresholds.
+:mod:`project.app.rules.onchain` evaluates a rule against a stored block, and
+a :class:`MatchedRule` records each row a rule matched when a block was
+evaluated.
 """
 
 from django.conf import settings
@@ -93,19 +93,10 @@ class Condition(models.Model):
     ]
     GROUP_TYPES = (TYPE_AND, TYPE_OR)
 
-    # The record a comparison reads its field from: one of a stored block's
-    # rows. The vocabulary (``rules.utils.VOCABULARY``) names only transactions
-    # and token transfers.
-    SOURCE_BLOCK = utils.SOURCE_BLOCK
-    SOURCE_TRANSACTION = utils.SOURCE_TRANSACTION
-    SOURCE_WITHDRAWAL = utils.SOURCE_WITHDRAWAL
+    # The record a comparison reads its field from: a decoded token transfer,
+    # the only source the vocabulary (``rules.utils.VOCABULARY``) names.
     SOURCE_TOKEN_TRANSFER = utils.SOURCE_TOKEN_TRANSFER
-    SOURCE_CHOICES = [
-        (SOURCE_BLOCK, "Block"),
-        (SOURCE_TRANSACTION, "Transaction"),
-        (SOURCE_WITHDRAWAL, "Withdrawal"),
-        (SOURCE_TOKEN_TRANSFER, "Token transfer"),
-    ]
+    SOURCE_CHOICES = [(SOURCE_TOKEN_TRANSFER, "Token transfer")]
 
     rule = models.ForeignKey(
         "Rule",
@@ -148,15 +139,7 @@ class Condition(models.Model):
             ),
             # "" is a group's source: groups read no record.
             models.CheckConstraint(
-                check=Q(
-                    source__in=(
-                        "",
-                        "block",
-                        "transaction",
-                        "withdrawal",
-                        "token_transfer",
-                    )
-                ),
+                check=Q(source__in=("", "token_transfer")),
                 name="cond_source_known",
             ),
         ]
