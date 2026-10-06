@@ -142,7 +142,7 @@ Runs an unsaved tree over the ingested window. It shares the evaluator used for 
 ```
 
 ### `GET /api/matches/`
-The journal. One row is one rule's match of one token transfer, so a transaction whose USDT transfers of 2,500 and 3,000 both pass STABLE-2K is two rows. Params: `rule=<id>` (optional), `cursor`, `page_size` (default 50), `after=<cursor>` (only newer rows, for polling). Ordering: the transfer's transaction `block_number` desc, then its `transaction_index` desc, then the transfer as decoding stored it (log order), then `rule_id`, then the match id. A cursor names a row's place in that order, `"<block>.<tx index>.<transfer id>.<rule id>.<match id>"`; the FE passes `next` and `head` back without reading them.
+The journal. One row is one rule's match of one token transfer, so a transaction whose USDT transfers of 2,500 and 3,000 both pass STABLE-2K is two rows. Params: `rule=<id>` (optional), `cursor`, `page_size` (default 50), `after=<cursor>` (only newer rows, for polling). Ordering: the transfer's `block_number` desc, then its `transaction_index` desc (both copied from its transaction when decoding stores it), then the transfer as decoding stored it (log order), then `rule_id`, then the match id. A cursor names a row's place in that order, `"<block>.<tx index>.<transfer id>.<rule id>.<match id>"`; the FE passes `next` and `head` back without reading them.
 ```ts
 type JournalRow = {
   id: number;

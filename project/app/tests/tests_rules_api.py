@@ -56,6 +56,7 @@ from project.app.tests.tests_evm_block import (
     dynamic_fee_transaction,
     legacy_transaction,
 )
+from project.app.tests.tests_rules_onchain import transfer_position
 
 # Facts of the sample blocks, kept here rather than imported from the
 # evaluator's suites, so their fixtures can change without moving these.
@@ -233,6 +234,7 @@ class RulesApiTestCase(TestCase):
     ):
         """A transfer of ``token``, from Alice to Bob unless told, stored for the transaction as decoding stores one."""
         return TokenTransfer.objects.create(
+            **transfer_position(transaction_hash),
             transaction_hash=transaction_hash,
             log_index=log_index,
             token=token,
@@ -1602,13 +1604,14 @@ class MatchJournalTests(RulesApiTestCase):
             self._journal(rule=switched_off.pk), {"results": [], "next": None, "head": ""}
         )
 
-    def test_a_page_is_three_queries_whatever_its_size(self):
+    def test_a_page_is_two_queries_whatever_its_size(self):
         self._five_rows()
 
-        # The head, the page with its rules and transfers and their tokens,
-        # and the page's transactions.
+        # The head, and the page with its rules and transfers and their
+        # tokens: a transfer carries its transaction's place, so no
+        # transaction is read.
         for size in (1, 5):
-            with self.subTest(size=size), self.assertNumQueries(3):
+            with self.subTest(size=size), self.assertNumQueries(2):
                 rules_services.journal_page(self.user, size=size)
         with CaptureQueriesContext(connection) as one_row:
             self._journal(page_size=1)

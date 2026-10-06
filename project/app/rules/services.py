@@ -26,7 +26,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count, DecimalField, F, Func, Max, Min, OuterRef, Q, Subquery, Sum
+from django.db.models import Count, DecimalField, F, Func, Max, Min, Q, Sum
 from django.utils import timezone
 
 from project.app.constants import NEEDS_CONDITION, TAG_FORMAT, TAG_PATTERN, TAG_TAKEN
@@ -76,18 +76,6 @@ def matches_for(owner):
     )
 
 
-def _transaction_field(field):
-    """``field`` of the transaction a match's transfer is in, as a subquery a match queryset can annotate.
-
-    A transfer names its transaction by hash, with no foreign key to it, and
-    the block fields it copies are empty on transfers stored before they were
-    kept, so the transaction is read for them: its hash is its primary key.
-    """
-    return Subquery(
-        Transaction.objects.filter(hash=OuterRef("transfer__transaction_hash")).values(field)[:1]
-    )
-
-
 def match_stats(owner, rules):
     """The console's ``stats`` for each of ``owner``'s ``rules``, by rule id, from one grouped query.
 
@@ -106,7 +94,7 @@ def match_stats(owner, rules):
         .values("rule")
         .annotate(
             match_count=Count("pk"),
-            last_match_at=Max(_transaction_field("block_timestamp")),
+            last_match_at=Max("transfer__block_timestamp"),
         )
     }
     stats = {}
@@ -524,15 +512,14 @@ def engine_status(owner):
 # --------------------------------------------------------------------------
 
 # The journal's order, key by key, each as (field, descending): newest first by
-# the block and index of the transaction the matched transfer is in, as the
-# console lists matches, then the transaction's transfers in the order
-# decoding stored them, then by rule. Nothing makes a rule's match of a
-# transfer unique (a reorg can record one twice), so the match's own id breaks
-# the last tie, and every row has a position of its own for a cursor to name.
-# The first two are annotated from the transaction (:func:`_journal`).
+# the block and transaction index the matched transfer carries, as the console
+# lists matches, then a transaction's transfers in the order decoding stored
+# them, then by rule. Nothing makes a rule's match of a transfer unique (a reorg
+# can record one twice), so the match's own id breaks the last tie, and every
+# row has a position of its own for a cursor to name.
 JOURNAL_KEYS = (
-    ("block_number", True),
-    ("transaction_index", True),
+    ("transfer__block_number", True),
+    ("transfer__transaction_index", True),
     ("transfer_id", False),
     ("rule_id", False),
     ("id", False),
@@ -554,14 +541,6 @@ class JournalPage:
     head: tuple | None  # the journal's newest row's position; None when it is empty
 
 
-def _journal(matches):
-    """``matches`` with the keys of :data:`JOURNAL_KEYS` the transaction gives annotated."""
-    return matches.annotate(
-        block_number=_transaction_field("block_number"),
-        transaction_index=_transaction_field("transaction_index"),
-    )
-
-
 def journal_page(owner, *, rule=None, older_than=None, newer_than=None, size):
     """A page of ``owner``'s journal, at most ``size`` rows: the matches :func:`matches_for` answers.
 
@@ -573,14 +552,13 @@ def journal_page(owner, *, rule=None, older_than=None, newer_than=None, size):
     the order rather than a row, so it still reads once its row is gone.
 
     ``head`` is the position of the journal's newest row whatever the page, so
-    a poll can ask for what came after it. Three queries, whatever ``size``:
-    the head, the page with each match's rule and transfer, and the page's
-    transactions (:func:`journal_rows`).
+    a poll can ask for what came after it. Two queries, whatever ``size``:
+    the head, and the page with each match's rule and transfer.
     """
     journal = matches_for(owner)
     if rule is not None:
         journal = journal.filter(rule=rule)
-    journal = _journal(journal).order_by(*JOURNAL_ORDER)
+    journal = journal.order_by(*JOURNAL_ORDER)
     head = journal.values_list(*(field for field, _ in JOURNAL_KEYS)).first()
     if older_than is not None:
         journal = journal.filter(_past(older_than, older=True))
@@ -597,10 +575,11 @@ def journal_page(owner, *, rule=None, older_than=None, newer_than=None, size):
 
 
 def _position(match):
-    """Where ``match``, read through :func:`_journal`, sits in the journal: its values of :data:`JOURNAL_KEYS`."""
+    """Where ``match``, read with its transfer, sits in the journal: its values of :data:`JOURNAL_KEYS`."""
+    transfer = match.transfer
     return (
-        match.block_number,
-        match.transaction_index,
+        transfer.block_number,
+        transfer.transaction_index,
         match.transfer_id,
         match.rule_id,
         match.pk,
@@ -627,16 +606,13 @@ def _past(position, *, older):
 def journal_rows(matches):
     """``matches``, each read with its rule and transfer, as the console's ``JournalRow``s.
 
-    One query for the transactions the transfers are in, however many rows.
+    The transfer carries where its transaction is, so no other row is read.
     """
-    transactions = Transaction.objects.in_bulk(
-        {match.transfer.transaction_hash for match in matches}
-    )
-    return [_journal_row(match, transactions[match.transfer.transaction_hash]) for match in matches]
+    return [_journal_row(match) for match in matches]
 
 
-def _journal_row(match, transaction):
-    """One match as the console's ``JournalRow``; ``transaction`` is the one its transfer is in."""
+def _journal_row(match):
+    """One match as the console's ``JournalRow``, its transaction named by what its transfer copied."""
     transfer = match.transfer
     rule = match.rule
     return {
@@ -645,11 +621,11 @@ def _journal_row(match, transaction):
         "rule_revision": match.rule_revision,
         "matched_at": match.created_at,
         "transaction": {
-            "chain": transaction.chain,
-            "hash": transaction.hash,
-            "block_number": transaction.block_number,
-            "transaction_index": transaction.transaction_index,
-            "block_timestamp": transaction.block_timestamp,
+            "chain": transfer.chain,
+            "hash": transfer.transaction_hash,
+            "block_number": transfer.block_number,
+            "transaction_index": transfer.transaction_index,
+            "block_timestamp": transfer.block_timestamp,
         },
         "headline": _headline(transfer),
         "flags": {
@@ -738,7 +714,7 @@ def match_detail(owner, pk):
     transfer = match.transfer
     transaction = Transaction.objects.get(hash=transfer.transaction_hash)
     selector = onchain.selector_of(transaction.input)
-    row = _journal_row(match, transaction)
+    row = _journal_row(match)
     return {
         **row,
         "condition": match.rule.console_condition(),
