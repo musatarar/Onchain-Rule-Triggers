@@ -47,14 +47,15 @@ function detailOf(condition: ConditionNode, row: Awaited<ReturnType<typeof api.b
       method: tx.method,
       decode_status: tx.decode_status,
     },
-    transfer: tx.transfer && {
-      token: row.headline.token!,
-      from_address: tx.transfer.from_address,
-      to_address: tx.transfer.to_address,
-      raw_value: tx.transfer.raw_value,
-      log_index: tx.transfer.log_index,
-      source: tx.transfer.source,
-      verified: tx.transfer.verified,
+    // A backtest row is a transfer the tree held of, so its transaction made one.
+    transfer: {
+      token: row.headline.token,
+      from_address: tx.transfer!.from_address,
+      to_address: tx.transfer!.to_address,
+      raw_value: tx.transfer!.raw_value,
+      log_index: tx.transfer!.log_index,
+      source: tx.transfer!.source,
+      verified: tx.transfer!.verified,
     },
     also_matched: [],
   };
@@ -100,8 +101,8 @@ test('a gate with unknown decimals is no data: power arrives there and stops', a
       { id: 3, type: 'comparison', source: 'token_transfer', field: 'token_recognised', operator: 'eq', value: true },
     ],
   };
-  const detail = await matchOf(condition, (d) => d.transfer?.token.symbol === 'CUBE');
-  assert.equal(detail.transfer!.token.decimals, null);
+  const detail = await matchOf(condition, (d) => d.transfer.token.symbol === 'CUBE');
+  assert.equal(detail.transfer.token.decimals, null);
   const power = powerPath(detail.condition, detail.trace);
   const [amount, recognised] = power.gates;
   assert.equal(amount.held, null);

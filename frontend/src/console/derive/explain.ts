@@ -3,25 +3,20 @@ import { type Comparison, type Describer, describeGate } from './describe.ts';
 import { formatUnits, groupDigits, short } from './format.ts';
 import { type GatePower, parentOf } from './power.ts';
 
-/** What a gate read on this transaction, as drawn under it: "397.09", "Binance 15". */
+/** What a gate read on this transfer, as drawn under it: "397.09", "Binance 15". */
 export function observedText(gate: GateTrace | undefined): string {
   if (!gate) return '';
-  if (gate.reason === 'no_transfer') return 'no token transfer';
   const seen = gate.observed;
   if (!seen) return '';
   switch (seen.kind) {
     case 'amount':
       return seen.decimals === null ? 'decimals unknown' : formatUnits(seen.raw, seen.decimals);
-    case 'native_amount':
-      return `${formatUnits(seen.wei, 18, 4)} ETH`;
     case 'address':
-      return seen.address === null ? 'contract creation' : seen.label || short(seen.address);
+      return seen.address === null ? 'none' : seen.label || short(seen.address);
     case 'token':
       return seen.token.symbol ?? short(seen.token.address);
     case 'bool':
       return seen.value ? 'recognised' : 'unrecognised';
-    case 'method':
-      return seen.signature ?? seen.selector ?? 'none';
   }
 }
 
@@ -37,21 +32,13 @@ function listStep(node: Comparison, address: string | null, gate: GateTrace | un
   return [seen?.label ? `on ${name} as “${seen.label}”` : `on ${name}`];
 }
 
-/** How one gate read the matched transaction's transfer, step by step, for the inspector. */
+/** How one gate read the matched transfer, step by step, for the inspector. */
 export function explain(node: Comparison, gate: GateTrace | undefined, detail: MatchDetail, describer: Describer): Insight {
   const text = describeGate(node, describer);
   const test = (seen: string) => `${seen} ${text.test}`;
   const seen = gate?.observed;
   const transfer = detail.transfer;
 
-  if (!transfer || gate?.reason === 'no_transfer') {
-    return {
-      reads: `token_transfer.${node.field}`,
-      steps: ['No token transfer was decoded from this transaction'],
-      test: 'nothing to compare',
-      note: 'A token-transfer gate cannot hold on a transaction without a decoded transfer.',
-    };
-  }
   const token: TokenRef = seen?.kind === 'token' ? seen.token : transfer.token;
   if (node.field === 'amount') {
     const raw = seen?.kind === 'amount' ? seen.raw : transfer.raw_value;

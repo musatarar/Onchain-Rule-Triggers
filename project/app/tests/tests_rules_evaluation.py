@@ -1,12 +1,11 @@
 """Evaluating the enabled rules against the blocks not evaluated yet, and the demo rules.
 
-Pins what ``rules.services.evaluate_blocks`` records: one match for each
-transaction a rule holds of, with the transfer that made it hold; that it
-evaluates a block once, that a block waits with nothing recorded until decoding
-has finished with it, and that a rule the evaluator refuses
-holds up no other; then the ``evaluate_rules`` command's report, and the demo
-circuits ``scripts/create_demo_rules.py`` loads, evaluated against the sample
-blocks with ``raw_data/tokens.json`` as the token catalog.
+Pins what ``rules.services.evaluate_blocks`` records: one match for each token
+transfer a rule holds of, that it evaluates a block once, that a block waits
+with nothing recorded until decoding has finished with it, and that a rule the
+evaluator refuses holds up no other; then the ``evaluate_rules`` command's
+report, and the demo circuits ``scripts/create_demo_rules.py`` loads, evaluated
+against the sample blocks with ``raw_data/tokens.json`` as the token catalog.
 """
 
 import contextlib
@@ -38,10 +37,8 @@ from project.app.tests.tests_evm_block import (
 )
 from project.app.tests.tests_rules_onchain import (
     ALICE,
-    BOB,
     DYNAMIC_FROM,
     DYNAMIC_TO,
-    USDC,
     USDT,
     OnchainTestCase,
 )
@@ -87,48 +84,57 @@ class EvaluationTestCase(OnchainTestCase):
 
 
 class EvaluateBlocksTests(EvaluationTestCase):
-    def test_a_match_records_the_transaction_it_matched_with_its_block(self):
+    def test_a_match_records_the_transfer_it_matched_and_the_revision_it_ran(self):
         stored = self._store()
         moved = self._usdt_to_dynamic_from()
-        # A USDC transfer DYNAMIC_FROM sends in the dynamic-fee transaction.
-        sent = self._transfer(
-            DYNAMIC_FEE_HASH, self._token(USDC, "USD Coin"), 0, sender=DYNAMIC_FROM, recipient=ALICE
-        )
-        by_sender = self._named("by sender", and_(transfer("from_address", "eq", DYNAMIC_FROM)))
+        by_recipient = self._named("by recipient", and_(transfer("to_address", "eq", DYNAMIC_FROM)))
         moved_usdt = self._named("moved usdt", and_(transfer("token", "eq", token(USDT))))
 
         run = rules_services.evaluate_blocks()
 
         self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (1, 2, 0, {}))
         self.assertEqual(
-            [
-                (m.rule, m.block, m.transaction, m.transfer, m.withdrawal)
-                for m in MatchedRule.objects.all()
-            ],
-            [
-                (by_sender, stored, Transaction.objects.get(hash=DYNAMIC_FEE_HASH), sent, None),
-                (moved_usdt, stored, Transaction.objects.get(hash=LEGACY_HASH), moved, None),
-            ],
+            [(m.rule, m.transfer, m.rule_revision) for m in MatchedRule.objects.all()],
+            [(by_recipient, moved, 1), (moved_usdt, moved, 1)],
         )
         stored.refresh_from_db()
         self.assertIsNotNone(stored.evaluated_at)
 
-    def test_every_row_a_rule_matches_is_one_match_and_a_rule_matching_none_records_none(self):
+    def test_every_transfer_a_rule_holds_of_is_one_match_in_block_order(self):
         self._store()
         usdt = self._token()
-        # One transfer in each sample transaction, neither of them from Bob.
-        self._transfer(LEGACY_HASH, usdt, 0, sender=ALICE, recipient=DYNAMIC_FROM)
-        self._transfer(DYNAMIC_FEE_HASH, usdt, 0, sender=DYNAMIC_FROM, recipient=ALICE)
+        # Two transfers in the legacy transaction (index 35) and one in the
+        # dynamic-fee transaction (index 0), none of them from Bob.
+        second = self._transfer(LEGACY_HASH, usdt, 7, sender=ALICE, recipient=DYNAMIC_TO)
+        first = self._transfer(LEGACY_HASH, usdt, 3, sender=ALICE, recipient=DYNAMIC_FROM)
+        earliest = self._transfer(DYNAMIC_FEE_HASH, usdt, 1, sender=DYNAMIC_FROM, recipient=ALICE)
         every = self._named("every", every_transfer())
-        self._named("from bob", and_(transfer("from_address", "eq", BOB)))
+        self._named("from bob", and_(transfer("from_address", "eq", "0x" + "b0" * 20)))
 
         run = rules_services.evaluate_blocks()
 
-        self.assertEqual(run.matches, 2)
+        # One transaction's two transfers are two matches, not one.
+        self.assertEqual(run.matches, 3)
         self.assertEqual(
-            list(MatchedRule.objects.values_list("rule", "transaction")),
-            [(every.pk, DYNAMIC_FEE_HASH), (every.pk, LEGACY_HASH)],
+            list(MatchedRule.objects.values_list("rule", "transfer")),
+            [(every.pk, earliest.pk), (every.pk, first.pk), (every.pk, second.pk)],
         )
+
+    def test_gates_held_by_different_transfers_of_one_transaction_match_neither(self):
+        self._store()
+        usdt = self._token()
+        self._transfer(LEGACY_HASH, usdt, 0, sender=ALICE, recipient=DYNAMIC_TO, raw_value=10**6)
+        self._transfer(LEGACY_HASH, usdt, 1, sender=DYNAMIC_FROM, recipient=ALICE, raw_value=10**9)
+        # Alice sent 1 USDT and received 1,000: no one transfer is from her and over 100.
+        self._named(
+            "big from alice",
+            and_(transfer("from_address", "eq", ALICE), transfer("amount", "gt", "100")),
+        )
+
+        run = rules_services.evaluate_blocks()
+
+        self.assertEqual((run.blocks, run.matches), (1, 0))
+        self.assertFalse(MatchedRule.objects.exists())
 
     def test_a_block_is_evaluated_once_and_a_rerun_evaluates_only_the_blocks_stored_since(self):
         self._store()
@@ -139,7 +145,7 @@ class EvaluateBlocksTests(EvaluationTestCase):
         again = rules_services.evaluate_blocks()
         self.assertEqual((again.blocks, again.matches), (0, 0))
 
-        later = self._store(
+        self._store(
             block(
                 hash=NEXT_BLOCK_HASH,
                 number="0x112a881",
@@ -151,12 +157,12 @@ class EvaluateBlocksTests(EvaluationTestCase):
                 withdrawals=[],
             )
         )
-        self._transfer(NEXT_HASH, self._token(), 0, sender=ALICE, recipient=DYNAMIC_TO)
+        later = self._transfer(NEXT_HASH, self._token(), 0, sender=ALICE, recipient=DYNAMIC_TO)
         after = rules_services.evaluate_blocks()
 
         self.assertEqual((after.blocks, after.matches), (1, 1))
         self.assertEqual(MatchedRule.objects.count(), 2)
-        self.assertEqual(MatchedRule.objects.last().block, later)
+        self.assertEqual(MatchedRule.objects.last().transfer, later)
 
     def test_every_owners_enabled_rules_are_evaluated_and_no_disabled_one(self):
         self._store()
@@ -194,11 +200,11 @@ class EvaluateBlocksTests(EvaluationTestCase):
                 rules_services.evaluate_blocks()
             return len(queries)
 
-        stored = self._store()
+        self._store()
         self._usdt_to_dynamic_from()
 
         self.assertEqual(queries_with(1), queries_with(10))
-        self.assertEqual(MatchedRule.objects.filter(block=stored).count(), 10)
+        self.assertEqual(MatchedRule.objects.count(), 10)
 
 
 # Rule shapes the sample block's transfers answer in different ways, for the incremental index tests.
@@ -373,8 +379,25 @@ class DecodingTests(EvaluationTestCase):
         )
         decoded = rules_services.evaluate_blocks()
 
-        # Both rules hold of the legacy transaction's one transfer.
+        # Both rules hold of the one transfer.
         self.assertEqual((decoded.blocks, decoded.matches, decoded.undecoded), (1, 2, 0))
+
+    def test_with_no_rule_enabled_a_block_is_evaluated_without_reading_its_rows(self):
+        # Every rule reads transfers, so only a run with none to try skips the wait.
+        stored = self._store(decoded=False)
+        self._named("switched off", every_transfer(), enabled=False)
+
+        with CaptureQueriesContext(connection) as queries:
+            run = rules_services.evaluate_blocks()
+
+        # The block is claimed, but neither its transactions nor its transfers are read.
+        read = " ".join(query["sql"] for query in queries)
+        self.assertNotIn(Transaction._meta.db_table, read)
+        self.assertNotIn("app_tokentransfer", read)
+
+        self.assertEqual((run.blocks, run.matches, run.undecoded), (1, 0, 0))
+        stored.refresh_from_db()
+        self.assertIsNotNone(stored.evaluated_at)
 
 
 class RefusalTests(EvaluationTestCase):
@@ -497,6 +520,8 @@ class CreateDemoRulesScriptTests(TestCase):
     def test_the_demo_circuits_match_the_sample_blocks(self):
         run = self._evaluate_the_sample_blocks()
 
+        # One match per transfer a circuit holds of. No sample transaction has two
+        # transfers that pass one circuit, so each count is its transactions'.
         self.assertEqual((run.blocks, run.matches, run.undecoded, run.refused), (5, 124, 0, {}))
         self.assertEqual(
             {
@@ -510,9 +535,8 @@ class CreateDemoRulesScriptTests(TestCase):
                 "PEPE-1B": 2,
                 "ANY-1M": 4,
                 "LINK-BNB": 0,  # disarmed
-                # Its transactions with a transfer out of the hot wallets. The one
-                # transaction only its sender or the ETH it sent made a match no
-                # longer is one, now that BNB-OUT reads only transfers.
+                # Its transfers out of the hot wallets; a transaction only its
+                # sender or the ETH it sent made a match no longer is one.
                 "BNB-OUT": 4,
             },
         )
@@ -521,7 +545,7 @@ class CreateDemoRulesScriptTests(TestCase):
         self._evaluate_the_sample_blocks()
         owner = get_user_model().objects.get()
         bnb_out = Rule.objects.get(tag="BNB-OUT")
-        match = MatchedRule.objects.get(rule=bnb_out, transaction=TX_4273)
+        match = MatchedRule.objects.get(rule=bnb_out, transfer__transaction_hash=TX_4273)
 
         detail = rules_services.match_detail(owner, match.pk)
 
@@ -550,13 +574,16 @@ class CreateDemoRulesScriptTests(TestCase):
         self.assertEqual(detail["transfer"]["raw_value"], "385860000")
         self.assertEqual(match.rule_revision, bnb_out.revision)
 
-    def test_every_recorded_trace_holds_at_the_root_and_every_match_has_its_transfer(self):
+    def test_every_recorded_trace_covers_its_tree_holds_at_the_root_and_reads_its_transfer(self):
         self._evaluate_the_sample_blocks()
 
-        for match in MatchedRule.objects.select_related("rule"):
+        for match in MatchedRule.objects.select_related("rule", "transfer"):
             condition = match.rule.console_condition()
-            with self.subTest(rule=match.rule.tag, transaction=match.transaction_id):
+            with self.subTest(rule=match.rule.tag, transfer=match.transfer_id):
                 self.assertEqual(set(match.trace), {str(node["id"]) for node in _nodes(condition)})
                 self.assertIs(match.trace[str(condition["id"])]["held"], True)
-                # Every demo circuit reads only transfers, so no match holds without one.
-                self.assertIsNotNone(match.transfer_id)
+                # Each amount gate read the matched transfer, not another of its transaction's.
+                for node in _nodes(condition):
+                    observed = match.trace[str(node["id"])].get("observed", {})
+                    if observed.get("kind") == "amount":
+                        self.assertEqual(observed["raw"], str(match.transfer.raw_value))

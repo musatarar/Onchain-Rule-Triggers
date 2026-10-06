@@ -11,10 +11,9 @@ order and the cursors, and which recorded matches it lists; then one match's
 detail: its exact JSON, the transaction and transfer facts, the other rules
 it names, and which matches it reads.
 
-A rule reads only decoded token transfers, so every match here is made by a
-transfer stored for one of the sample transactions and an evaluation run once
-decoding has finished. A match is still one (rule, transaction) pair: a
-transaction is matched once, by the first of its transfers the tree holds of.
+A rule reads only decoded token transfers, and a match is one (rule,
+transfer) pair, so every match here is made by a transfer stored for one of
+the sample transactions and an evaluation run once decoding has finished.
 """
 
 import copy
@@ -34,7 +33,7 @@ from django.test.utils import CaptureQueriesContext
 from project.app.constants import NEEDS_CONDITION
 from project.app.evm import services as evm_services
 from project.app.evm.block import services as block_services
-from project.app.evm.block.models import Block, DecodeStatus, Withdrawal
+from project.app.evm.block.models import Block, DecodeStatus
 from project.app.evm.chains import ChainId
 from project.app.evm.function_signatures import FunctionSignatureCreateSchema
 from project.app.evm.tokens import Token, TokenCreateSchema
@@ -51,25 +50,28 @@ from project.app.tests.condition_trees import (
     transfer,
 )
 from project.app.tests.tests_evm_block import (
-    BLOCK_HASH,
     DYNAMIC_FEE_HASH,
     LEGACY_HASH,
     block,
     dynamic_fee_transaction,
     legacy_transaction,
 )
-from project.app.tests.tests_rules_evaluation import NEXT_BLOCK_HASH
-from project.app.tests.tests_rules_onchain import (
-    ALICE,
-    BOB,
-    CAROL,
-    DYNAMIC_FROM,
-    LEGACY_FROM,
-    REORGED_BLOCK_HASH,
-    USDC,
-    USDT,
-    transfer_position,
-)
+from project.app.tests.tests_rules_onchain import transfer_position
+
+# Facts of the sample blocks, kept here rather than imported from the
+# evaluator's suites, so their fixtures can change without moving these.
+# The sample block's senders and the dynamic-fee transaction's recipient.
+DYNAMIC_FROM = "0x16d5783a96ab20c9157d7933ac236646b29589a4"
+DYNAMIC_TO = "0xfd14567eaf9ba941cb8c8a94eec14831ca7fd1b4"
+LEGACY_FROM = "0xda1e4d768aeaf05f343d9be5f7e9b91e5ad72805"
+# The block after the sample block, and another block at the sample block's height.
+NEXT_BLOCK_HASH = "0x" + "d0" * 32
+REORGED_BLOCK_HASH = "0x" + "e0" * 32
+USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+ALICE = "0x" + "a1" * 20
+BOB = "0x" + "b0" * 20
+CAROL = "0x" + "c4" * 20
 
 RULES_URL = "/api/rules/"
 VOCABULARY_URL = "/api/conditions/vocabulary/"
@@ -154,14 +156,23 @@ def _utc(moment):
 
 
 def _placed(row):
-    """What orders a journal row: its block, its transaction's index there, and its rule's id."""
+    """What orders a journal row: its block, its transaction's index there, its transfer's id, and its rule's id.
+
+    A row names no transfer, so the matched transfer's id is read from the match.
+    """
     transaction = row["transaction"]
-    return (transaction["block_number"], transaction["transaction_index"], row["rule"]["id"])
+    transfer_id = MatchedRule.objects.values_list("transfer_id", flat=True).get(pk=row["id"])
+    return (
+        transaction["block_number"],
+        transaction["transaction_index"],
+        transfer_id,
+        row["rule"]["id"],
+    )
 
 
 def _cursor_of(row):
     """The cursor naming a journal row: what orders it, then its own id."""
-    return "{}.{}.{}.{}".format(*_placed(row), row["id"])
+    return "{}.{}.{}.{}.{}".format(*_placed(row), row["id"])
 
 
 class RulesApiTestCase(TestCase):
@@ -196,29 +207,8 @@ class RulesApiTestCase(TestCase):
         rules_services.evaluate_blocks()
 
     def _every_transfer(self, owner=None):
-        """An enabled rule matching every transaction with a token transfer, once each."""
+        """An enabled rule matching every transfer."""
         return self._rule(owner, name="every transfer", condition=_anything())
-
-    def _off_the_journal(self):
-        """Two enabled rules matching no transaction, each with a match the journal leaves out.
-
-        Before #44 a withdrawal rule recorded a withdrawal and a block-only
-        rule the block itself. No tree in the vocabulary records either now,
-        so the sample block's first withdrawal and the block are recorded here
-        directly. Answers the rules: ``withdrawn``, then ``built``.
-        """
-        sample = Block.objects.get(hash=BLOCK_HASH)
-        nobody = and_(transfer("to_address", "eq", NOWHERE))
-        withdrawn = self._rule(name="withdrawn", condition=nobody)
-        built = self._rule(name="built", condition=nobody)
-        MatchedRule.objects.create(
-            rule=withdrawn,
-            block=sample,
-            withdrawal=Withdrawal.objects.order_by("index").first(),
-            rule_revision=withdrawn.revision,
-        )
-        MatchedRule.objects.create(rule=built, block=sample, rule_revision=built.revision)
-        return withdrawn, built
 
     def _token(self, address=USDT, name="Tether", *, decimals=None):
         """``address`` in the token catalog, its decimals as if read from the contract."""
@@ -816,14 +806,13 @@ class ConsoleRuleTests(RulesApiTestCase):
         switched_off = self._every_transfer()
         theirs = self._every_transfer(owner=self.other)
         self._evaluate()
-        self._off_the_journal()
         rules_services.update_rule(switched_off, {"enabled": False})
 
         listed = self.client.get(RULES_URL).json()["results"]
 
-        # Every match stays recorded: one for each of by sender, withdrawn and
-        # built, and two for each rule matching every transfer.
-        self.assertEqual(MatchedRule.objects.count(), 7)
+        # Every match stays recorded: one for by sender, and two for each rule
+        # matching every transfer.
+        self.assertEqual(MatchedRule.objects.count(), 5)
         unmatched = {"match_count": 0, "unevaluable_count": 0, "last_match_at": None}
         self.assertEqual(
             {row["name"]: row["stats"] for row in listed},
@@ -833,8 +822,6 @@ class ConsoleRuleTests(RulesApiTestCase):
                     "unevaluable_count": 0,
                     "last_match_at": SAMPLE_BLOCK_AT,
                 },
-                "withdrawn": unmatched,
-                "built": unmatched,
                 "every transfer": unmatched,
             },
         )
@@ -1087,14 +1074,17 @@ class EngineStatusTests(RulesApiTestCase):
         # The stored window is everyone's.
         self.assertEqual(mine["chains"], theirs["chains"])
 
-    def test_withdrawal_and_block_matches_stay_recorded_but_are_not_counted(self):
-        self._store_sample()
-        self._rule(name="by sender", condition=and_(transfer("from_address", "eq", DYNAMIC_FROM)))
-        self._off_the_journal()
+    def test_each_transfer_a_rule_matches_is_counted_once(self):
+        self._store(block())
+        tether = self._token(decimals=6)
+        # Two transfers of one transaction pass the rule, and a third does not.
+        self._transfer(LEGACY_HASH, tether, raw_value=USDT_250, log_index=1)
+        self._transfer(LEGACY_HASH, tether, raw_value=USDT_397, log_index=2)
+        self._transfer(LEGACY_HASH, tether, raw_value=1_000_000, log_index=3)
+        self._rule(name="moved 250", condition=and_(transfer("amount", "gte", "250")))
         self._evaluate()
 
-        self.assertEqual(MatchedRule.objects.count(), 3)
-        self.assertEqual(self.client.get(ENGINE_STATUS_URL).json()["match_count"], 1)
+        self.assertEqual(self.client.get(ENGINE_STATUS_URL).json()["match_count"], 2)
 
     def test_a_disabled_rules_matches_are_not_counted_until_it_is_enabled_again(self):
         self._store_sample()
@@ -1163,25 +1153,40 @@ class MatchJournalTests(RulesApiTestCase):
         return pages
 
     def _by_sender(self):
-        """An enabled rule matching the transfers ``DYNAMIC_FROM`` sends: in the sample block's first transaction and the later block's."""
+        """An enabled rule matching the transfers ``DYNAMIC_FROM`` sends: the sample block's first and the later block's."""
         return self._rule(
             name="by sender", condition=and_(transfer("from_address", "eq", DYNAMIC_FROM))
         )
 
     def _five_rows(self):
-        """Two rules over the sample block and the later one, which record five matches."""
-        self._store_sample()
-        self._store_later()
+        """Two rules over the sample block and the later one, which record five matches.
+
+        Answers the rules, ``every`` then ``by_sender``, and the three
+        transfers in block order: the sample block's two, then the later one's.
+        """
+        transfers = (*self._store_sample(), self._store_later())
         rules = self._every_transfer(), self._by_sender()
         self._evaluate()
-        return rules
+        return rules, transfers
 
     def test_a_journal_row_is_the_contracts_json(self):
-        self._store_sample()
+        self._store(block())
+        tether = self._token(decimals=6)
+        usdc = self._token(USDC, "USD Coin", decimals=6)
+        sent = self._transfer(
+            DYNAMIC_FEE_HASH,
+            usdc,
+            raw_value=2_500_000_000,
+            log_index=3,
+            verified=True,
+            from_address=DYNAMIC_FROM,
+            to_address=DYNAMIC_TO,
+        )
+        moved = self._transfer(LEGACY_HASH, tether, raw_value=USDT_397)
         rule = self._every_transfer()
         self._evaluate()
-        recorded = {match.transaction_id: match for match in MatchedRule.objects.all()}
-        moved, sent = recorded[LEGACY_HASH], recorded[DYNAMIC_FEE_HASH]
+        recorded = {match.transfer_id: match for match in MatchedRule.objects.all()}
+        moved_match, sent_match = recorded[moved.pk], recorded[sent.pk]
 
         response = self.client.get(MATCHES_URL)
 
@@ -1192,19 +1197,16 @@ class MatchJournalTests(RulesApiTestCase):
             "tag": rule.tag,
             "glyph": rule.glyph,
         }
-        # No symbol is stored yet (#45).
-        tether = {"chain": 1, "address": USDT, "symbol": None, "name": "Tether", "decimals": 6}
-        unflagged = {"token_unrecognised": False, "decimals_unknown": False, "verified": False}
         self.assertEqual(
             response.json(),
             {
                 "results": [
                     # One block, so the transaction later in it comes first.
                     {
-                        "id": moved.pk,
+                        "id": moved_match.pk,
                         "rule": rule_ref,
                         "rule_revision": 1,
-                        "matched_at": _utc(moved.created_at),
+                        "matched_at": _utc(moved_match.created_at),
                         "transaction": {
                             "chain": 1,
                             "hash": LEGACY_HASH,
@@ -1219,15 +1221,28 @@ class MatchJournalTests(RulesApiTestCase):
                             "from_label": None,
                             "to_label": None,
                             "amount": {"raw": "397092712", "decimals": 6, "value": "397.092712"},
-                            "token": tether,
+                            "token": {
+                                "chain": 1,
+                                "address": USDT,
+                                # No symbol is stored yet (#45).
+                                "symbol": None,
+                                "name": "Tether",
+                                "decimals": 6,
+                            },
                         },
-                        "flags": unflagged,
+                        "flags": {
+                            "token_unrecognised": False,
+                            "decimals_unknown": False,
+                            "verified": False,
+                        },
                     },
+                    # The headline is the matched transfer, not the ETH its
+                    # transaction sent, and its flags are that transfer's.
                     {
-                        "id": sent.pk,
+                        "id": sent_match.pk,
                         "rule": rule_ref,
                         "rule_revision": 1,
-                        "matched_at": _utc(sent.created_at),
+                        "matched_at": _utc(sent_match.created_at),
                         "transaction": {
                             "chain": 1,
                             "hash": DYNAMIC_FEE_HASH,
@@ -1238,17 +1253,27 @@ class MatchJournalTests(RulesApiTestCase):
                         "headline": {
                             "kind": "token_transfer",
                             "from_address": DYNAMIC_FROM,
-                            "to_address": BOB,
+                            "to_address": DYNAMIC_TO,
                             "from_label": None,
                             "to_label": None,
-                            "amount": {"raw": "250000000", "decimals": 6, "value": "250"},
-                            "token": tether,
+                            "amount": {"raw": "2500000000", "decimals": 6, "value": "2500"},
+                            "token": {
+                                "chain": 1,
+                                "address": USDC,
+                                "symbol": None,
+                                "name": "USD Coin",
+                                "decimals": 6,
+                            },
                         },
-                        "flags": unflagged,
+                        "flags": {
+                            "token_unrecognised": False,
+                            "decimals_unknown": False,
+                            "verified": True,
+                        },
                     },
                 ],
                 "next": None,
-                "head": f"18000000.35.{rule.pk}.{moved.pk}",
+                "head": f"18000000.35.{moved.pk}.{rule.pk}.{moved_match.pk}",
             },
         )
 
@@ -1287,7 +1312,7 @@ class MatchJournalTests(RulesApiTestCase):
             ),
         )
 
-    def test_a_transaction_leads_with_its_first_transfer_on_its_own_chain(self):
+    def test_each_transfer_of_a_transaction_on_its_own_chain_is_a_row_of_its_own(self):
         self._store(block())
         polygon_usdt = evm_services.save_token(
             TokenCreateSchema(
@@ -1296,17 +1321,64 @@ class MatchJournalTests(RulesApiTestCase):
         )
         # A replay's on another chain, which keeps the hash: not this transaction's.
         self._transfer(LEGACY_HASH, polygon_usdt, raw_value=1, log_index=0)
-        self._transfer(LEGACY_HASH, self._token(USDC, "USD Coin"), raw_value=2, log_index=7)
-        self._transfer(LEGACY_HASH, self._token(), raw_value=3, log_index=2)
-        self._every_transfer()
+        usdc = self._transfer(LEGACY_HASH, self._token(USDC, "USD Coin"), raw_value=2, log_index=7)
+        tether = self._transfer(LEGACY_HASH, self._token(), raw_value=3, log_index=2)
+        rule = self._every_transfer()
         self._evaluate()
 
-        headline = self._journal()["results"][0]["headline"]
+        rows = self._journal()["results"]
 
+        # Ordered by the transfer's id within the transaction, which is the
+        # order decoding stored them in; stored out of log order here, so the
+        # USDC transfer, stored first, leads though its log comes later.
         self.assertEqual(
-            (headline["token"]["chain"], headline["token"]["address"], headline["amount"]["raw"]),
-            (1, USDT, "3"),
+            [
+                (row["headline"]["token"]["chain"], row["headline"]["token"]["address"])
+                for row in rows
+            ],
+            [(1, USDC), (1, USDT)],
         )
+        self.assertEqual(
+            [_placed(row) for row in rows],
+            [(18000000, 35, usdc.pk, rule.pk), (18000000, 35, tether.pk, rule.pk)],
+        )
+
+    def test_two_matched_transfers_of_one_transaction_are_two_rows_a_cursor_pages_between(self):
+        self._store(block())
+        tether = self._token(decimals=6)
+        first = self._transfer(LEGACY_HASH, tether, raw_value=USDT_250, log_index=1)
+        second = self._transfer(LEGACY_HASH, tether, raw_value=USDT_397, log_index=2)
+        # 1 USDT, which the rule does not match.
+        self._transfer(LEGACY_HASH, tether, raw_value=1_000_000, log_index=3)
+        rule = self._rule(name="moved 250", condition=and_(transfer("amount", "gte", "250")))
+        self._evaluate()
+        first_match = MatchedRule.objects.get(transfer=first)
+        second_match = MatchedRule.objects.get(transfer=second)
+
+        pages = self._walk(1)
+
+        # Each a row of its own, the transfer stored first first, though the
+        # two share block, transaction and rule: the transfer id parts them.
+        first_cursor = f"18000000.35.{first.pk}.{rule.pk}.{first_match.pk}"
+        second_cursor = f"18000000.35.{second.pk}.{rule.pk}.{second_match.pk}"
+        self.assertEqual(
+            [([row["id"] for row in page["results"]], page["next"]) for page in pages],
+            [([first_match.pk], first_cursor), ([second_match.pk], None)],
+        )
+        self.assertEqual([page["head"] for page in pages], 2 * [first_cursor])
+        self.assertEqual(
+            [row["headline"]["amount"]["raw"] for page in pages for row in page["results"]],
+            ["250000000", "397092712"],
+        )
+        # Polling from either finds the rows newer than it.
+        self.assertEqual(self._journal(after=first_cursor)["results"], [])
+        self.assertEqual(
+            [row["id"] for row in self._journal(after=second_cursor)["results"]],
+            [first_match.pk],
+        )
+        # As many rows as the rule's stats count.
+        stats = self.client.get(f"{RULES_URL}{rule.pk}/").json()["stats"]
+        self.assertEqual(stats["match_count"], 2)
 
     @unittest.skipUnless(
         connection.vendor == "postgresql", "SQLite keeps 15 significant digits of a decimal"
@@ -1335,26 +1407,29 @@ class MatchJournalTests(RulesApiTestCase):
             ],
         )
 
-    def test_rows_are_newest_first_by_block_then_transaction_then_rule(self):
-        every, by_sender = self._five_rows()
+    def test_rows_are_newest_first_by_block_then_transaction_then_transfer_then_rule(self):
+        (every, by_sender), (sent, moved, later) = self._five_rows()
 
         rows = self._journal()["results"]
 
         self.assertEqual(
             [_placed(row) for row in rows],
             [
-                (18000001, 0, every.pk),
-                (18000001, 0, by_sender.pk),
-                (18000000, 35, every.pk),
-                (18000000, 0, every.pk),
-                (18000000, 0, by_sender.pk),
+                (18000001, 0, later.pk, every.pk),
+                (18000001, 0, later.pk, by_sender.pk),
+                (18000000, 35, moved.pk, every.pk),
+                (18000000, 0, sent.pk, every.pk),
+                (18000000, 0, sent.pk, by_sender.pk),
             ],
         )
 
     def test_a_match_recorded_again_after_a_reorg_is_listed_again_after_the_first(self):
         self._store(block(transactions=[dynamic_fee_transaction()], withdrawals=[]))
         self._transfer(
-            DYNAMIC_FEE_HASH, self._token(decimals=6), raw_value=USDT_250, from_address=DYNAMIC_FROM
+            DYNAMIC_FEE_HASH,
+            self._token(decimals=6),
+            raw_value=USDT_250,
+            from_address=DYNAMIC_FROM,
         )
         every, by_sender = self._every_transfer(), self._by_sender()
         self._evaluate()
@@ -1368,17 +1443,18 @@ class MatchJournalTests(RulesApiTestCase):
         rows = self._journal()["results"]
         walked = [row for page in self._walk(1) for row in page["results"]]
 
-        # Four matches of one transaction, recorded a block at a time, so the
-        # two rules interleave in the order recorded.
+        # Four matches of one transfer, recorded a block at a time, so the two
+        # rules interleave in the order recorded.
         recorded = list(MatchedRule.objects.values_list("rule", "pk"))
         self.assertEqual([rule for rule, _ in recorded], [every.pk, by_sender.pk] * 2)
+        self.assertEqual(MatchedRule.objects.values("transfer").distinct().count(), 1)
         # Listed by rule, and each rule's in the order recorded.
         self.assertEqual([(row["rule"]["id"], row["id"]) for row in rows], sorted(recorded))
         # Each has a cursor of its own, so a walk a row at a time meets each once.
         self.assertEqual([row["id"] for row in walked], [row["id"] for row in rows])
 
     def test_the_cursor_walks_the_journal_to_its_end_with_no_gap_or_repeat(self):
-        every, _ = self._five_rows()
+        (every, _), (_, _, later) = self._five_rows()
         whole = self._journal()["results"]
 
         pages = self._walk(2)
@@ -1395,7 +1471,7 @@ class MatchJournalTests(RulesApiTestCase):
         self.assertEqual(whole[0]["rule"]["id"], every.pk)
         self.assertEqual(
             [page["head"] for page in pages],
-            3 * [f"18000001.0.{every.pk}.{whole[0]['id']}"],
+            3 * [f"18000001.0.{later.pk}.{every.pk}.{whole[0]['id']}"],
         )
 
     def test_after_lists_only_newer_rows_and_the_head_stays_until_one_is_recorded(self):
@@ -1405,15 +1481,16 @@ class MatchJournalTests(RulesApiTestCase):
         head = self._journal()["head"]
 
         quiet = self._journal(after=head)
-        self._store_later()
+        later = self._store_later()
         self._evaluate()
         landed = self._journal(after=head)
 
         self.assertEqual(quiet, {"results": [], "next": None, "head": head})
-        later = MatchedRule.objects.get(transaction=LATER_HASH)
-        self.assertEqual([row["id"] for row in landed["results"]], [later.pk])
+        later_match = MatchedRule.objects.get(transfer=later)
+        self.assertEqual([row["id"] for row in landed["results"]], [later_match.pk])
         self.assertEqual(
-            (landed["next"], landed["head"]), (None, f"18000001.0.{rule.pk}.{later.pk}")
+            (landed["next"], landed["head"]),
+            (None, f"18000001.0.{later.pk}.{rule.pk}.{later_match.pk}"),
         )
 
     def test_after_with_a_cursor_keeps_the_rows_between_the_two(self):
@@ -1435,13 +1512,13 @@ class MatchJournalTests(RulesApiTestCase):
         )
 
     def test_a_rule_narrows_the_journal_to_its_matches(self):
-        _, by_sender = self._five_rows()
+        (_, by_sender), (sent, _, later) = self._five_rows()
 
         narrowed = self._journal(rule=by_sender.pk)
 
         self.assertEqual(
             [_placed(row) for row in narrowed["results"]],
-            [(18000001, 0, by_sender.pk), (18000000, 0, by_sender.pk)],
+            [(18000001, 0, later.pk, by_sender.pk), (18000000, 0, sent.pk, by_sender.pk)],
         )
         self.assertEqual(narrowed["head"], _cursor_of(narrowed["results"][0]))
         # As many rows as the rule's stats count.
@@ -1467,12 +1544,15 @@ class MatchJournalTests(RulesApiTestCase):
             ({"rule": "R7"}, "rule: A valid integer is required."),
             ({"rule": "1.5"}, "rule: A valid integer is required."),
             ({"cursor": "older"}, f"cursor: {not_a_cursor}"),
-            # The demo data's form, which has no match id.
+            # The demo data's form, which has no transfer or match id.
             ({"cursor": "18000000.35.1"}, f"cursor: {not_a_cursor}"),
-            ({"cursor": "18000000.35.1.2.3"}, f"cursor: {not_a_cursor}"),
-            ({"cursor": "18000000.-35.1.2"}, f"cursor: {not_a_cursor}"),
+            # The form before a match was a transfer's, which has no transfer id.
+            ({"cursor": "18000000.35.1.2"}, f"cursor: {not_a_cursor}"),
+            ({"cursor": "18000000.35.1.2.3.4"}, f"cursor: {not_a_cursor}"),
+            ({"cursor": "18000000.-35.1.2.3"}, f"cursor: {not_a_cursor}"),
             # Past any id there is, which SQLite would refuse to compare.
-            ({"after": f"18000000.35.1.{2**63}"}, f"after: {not_a_cursor}"),
+            ({"after": f"18000000.35.1.2.{2**63}"}, f"after: {not_a_cursor}"),
+            ({"after": f"18000000.35.{2**63}.2.3"}, f"after: {not_a_cursor}"),
             ({"page_size": 0}, f"page_size: {page_sizes}"),
             ({"page_size": 101}, f"page_size: {page_sizes}"),
             ({"page_size": "fifty"}, f"page_size: {page_sizes}"),
@@ -1505,19 +1585,18 @@ class MatchJournalTests(RulesApiTestCase):
         self.assertEqual(mine, {"results": [], "next": None, "head": ""})
         self.assertEqual(len(theirs["results"]), 2)
 
-    def test_withdrawal_block_and_disabled_rules_matches_are_not_listed(self):
+    def test_a_disabled_rules_matches_are_not_listed(self):
         self._store_sample()
         by_sender = self._by_sender()
-        self._off_the_journal()
         switched_off = self._every_transfer()
         self._evaluate()
         rules_services.update_rule(switched_off, {"enabled": False})
 
         journal = self._journal()
 
-        # Every match stays recorded: one for each of the first three rules,
-        # and two for the rule matching every transfer.
-        self.assertEqual(MatchedRule.objects.count(), 5)
+        # Every match stays recorded: one for by sender, and two for the rule
+        # matching every transfer.
+        self.assertEqual(MatchedRule.objects.count(), 3)
         self.assertEqual([row["rule"]["id"] for row in journal["results"]], [by_sender.pk])
         # The journal lists what the header counts.
         self.assertEqual(self.client.get(ENGINE_STATUS_URL).json()["match_count"], 1)
@@ -1525,13 +1604,14 @@ class MatchJournalTests(RulesApiTestCase):
             self._journal(rule=switched_off.pk), {"results": [], "next": None, "head": ""}
         )
 
-    def test_a_page_is_three_queries_whatever_its_size(self):
+    def test_a_page_is_two_queries_whatever_its_size(self):
         self._five_rows()
 
-        # The head, the page with its transactions and rules, and the page's
-        # transfers with their tokens.
+        # The head, and the page with its rules and transfers and their
+        # tokens: a transfer carries its transaction's place, so no
+        # transaction is read.
         for size in (1, 5):
-            with self.subTest(size=size), self.assertNumQueries(3):
+            with self.subTest(size=size), self.assertNumQueries(2):
                 rules_services.journal_page(self.user, size=size)
         with CaptureQueriesContext(connection) as one_row:
             self._journal(page_size=1)
@@ -1682,7 +1762,10 @@ class MatchDetailTests(RulesApiTestCase):
             self._transfer(transaction_hash, tether, raw_value=USDT_250)
         self._every_transfer()
         self._evaluate()
-        recorded = {match.transaction_id: match.pk for match in MatchedRule.objects.all()}
+        recorded = {
+            match.transfer.transaction_hash: match.pk
+            for match in MatchedRule.objects.select_related("transfer")
+        }
 
         called = self._detail(recorded[DYNAMIC_FEE_HASH])
         sent = self._detail(recorded[LEGACY_HASH])
@@ -1704,11 +1787,35 @@ class MatchDetailTests(RulesApiTestCase):
             ],
         )
 
+    def test_a_transfer_in_a_contract_creation_reads_its_transaction_with_no_recipient(self):
+        self._store(
+            block(transactions=[legacy_transaction(to=None, value=hex(10**18))], withdrawals=[])
+        )
+        self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=USDT_250)
+        self._every_transfer()
+        self._evaluate()
+
+        detail = self._detail(MatchedRule.objects.get().pk)
+
+        self.assertEqual(
+            (
+                detail["transaction"]["from_address"],
+                detail["transaction"]["to_address"],
+                detail["transaction"]["value"],
+            ),
+            (LEGACY_FROM, None, "1000000000000000000"),
+        )
+        # The headline is still the transfer, whatever the transaction did.
+        self.assertEqual(
+            (detail["headline"]["kind"], detail["headline"]["to_address"]),
+            ("token_transfer", BOB),
+        )
+
     def test_a_selector_names_its_method_only_when_the_catalog_agrees_on_one(self):
         self._store_sample()
         self._every_transfer()
         self._evaluate()
-        pk = MatchedRule.objects.get(transaction=LEGACY_HASH).pk
+        pk = MatchedRule.objects.get(transfer__transaction_hash=LEGACY_HASH).pk
 
         def method():
             return self._detail(pk)["transaction"]["method"]
@@ -1721,20 +1828,20 @@ class MatchDetailTests(RulesApiTestCase):
 
         self.assertEqual((named, method()), ("swapExactTokensForETH", None))
 
-    def test_the_transfer_is_the_one_the_gates_held_of_rather_than_the_leading_one(self):
+    def test_the_headline_and_transfer_are_the_matched_transfer_rather_than_the_first(self):
         self._store(block())
         tether = self._token(decimals=6)
         self._transfer(LEGACY_HASH, tether, raw_value=1_000_000, log_index=1)
-        self._transfer(LEGACY_HASH, tether, raw_value=397_092_712, log_index=2)
+        self._transfer(LEGACY_HASH, tether, raw_value=USDT_397, log_index=2)
         self._moved()
         self._evaluate()
 
+        # The 1 USDT transfer, first in the transaction, is below 250: no match of its own.
         detail = self._detail(MatchedRule.objects.get().pk)
 
-        # The journal row leads with the first transfer; the gates held of the second.
         self.assertEqual(
             (detail["headline"]["amount"]["raw"], detail["transfer"]["raw_value"]),
-            ("1000000", "397092712"),
+            ("397092712", "397092712"),
         )
         amount = detail["condition"]["children"][1]["id"]
         self.assertEqual(detail["trace"][str(amount)]["observed"]["raw"], "397092712")
@@ -1787,7 +1894,7 @@ class MatchDetailTests(RulesApiTestCase):
     def test_a_tokens_decimals_changing_leaves_an_existing_matchs_trace(self):
         self._store(block())
         tether = self._token(decimals=6)
-        self._transfer(LEGACY_HASH, tether, raw_value=397_092_712)
+        self._transfer(LEGACY_HASH, tether, raw_value=USDT_397)
         rule = self._moved()
         self._evaluate()
         pk = MatchedRule.objects.get().pk
@@ -1845,15 +1952,20 @@ class MatchDetailTests(RulesApiTestCase):
 
         rules_services._evaluate(Block.objects.get(), onchain.RuleIndex(stale))
 
+        # The old tree matched both sample transfers.
         self.assertEqual(
-            set(MatchedRule.objects.values_list("rule_revision", flat=True)), {rule.revision - 1}
+            list(MatchedRule.objects.values_list("rule_revision", flat=True)),
+            2 * [rule.revision - 1],
         )
         self.assertEqual(self.client.get(MATCHES_URL).json()["results"], [])
         self.assertEqual(self.client.get(ENGINE_STATUS_URL).json()["match_count"], 0)
+        self.assertEqual(
+            self.client.get(f"{RULES_URL}{rule.pk}/").json()["stats"]["match_count"], 0
+        )
         pk = MatchedRule.objects.first().pk
         self.assertEqual(self.client.get(f"{MATCHES_URL}{pk}/").status_code, 404)
 
-    def test_also_matched_names_each_of_the_owners_other_rules_that_matched_the_transaction_once(
+    def test_also_matched_names_each_of_the_owners_other_rules_that_matched_the_transfer_once(
         self,
     ):
         self._store(block(transactions=[dynamic_fee_transaction()], withdrawals=[]))
@@ -1872,7 +1984,7 @@ class MatchDetailTests(RulesApiTestCase):
         self._evaluate()
         rules_services.update_rule(switched_off, {"enabled": False})
         # Another block at the sample block's height carries its transaction
-        # again, so each enabled rule matches it a second time there.
+        # again, so each enabled rule matches its transfer a second time there.
         self._store(
             block(hash=REORGED_BLOCK_HASH, transactions=[dynamic_fee_transaction()], withdrawals=[])
         )
@@ -1890,16 +2002,57 @@ class MatchDetailTests(RulesApiTestCase):
             [{"match_id": first.pk, "rule": self._rule_ref(every)}],
         )
 
+    def test_also_matched_leaves_out_a_rule_that_matched_another_transfer_of_the_transaction(
+        self,
+    ):
+        self._store(block())
+        tether = self._token(decimals=6)
+        to_bob = self._transfer(LEGACY_HASH, tether, raw_value=USDT_397, log_index=1)
+        to_carol = self._transfer(
+            LEGACY_HASH, tether, raw_value=1_000_000, log_index=2, to_address=CAROL
+        )
+        moved = self._moved()
+        paid_bob = self._rule(name="to Bob", condition=and_(transfer("to_address", "eq", BOB)))
+        paid_carol = self._rule(
+            name="to Carol", condition=and_(transfer("to_address", "eq", CAROL))
+        )
+        self._evaluate()
+        match = {
+            rule: MatchedRule.objects.get(rule=rule).pk for rule in (moved, paid_bob, paid_carol)
+        }
+
+        details = {rule: self._detail(pk) for rule, pk in match.items()}
+
+        # Each rule matched one transfer: moved 250 and to Bob the 397 USDT to
+        # Bob, and to Carol the 1 USDT to Carol, in the same transaction.
+        self.assertEqual(
+            {rule: MatchedRule.objects.get(pk=pk).transfer_id for rule, pk in match.items()},
+            {moved: to_bob.pk, paid_bob: to_bob.pk, paid_carol: to_carol.pk},
+        )
+        self.assertEqual(
+            {rule: details[rule]["transaction"]["hash"] for rule in match},
+            dict.fromkeys(match, LEGACY_HASH),
+        )
+        # The transaction is shared, but also_matched names only the rules
+        # that matched the same transfer.
+        self.assertEqual(
+            details[moved]["also_matched"],
+            [{"match_id": match[paid_bob], "rule": self._rule_ref(paid_bob)}],
+        )
+        self.assertEqual(
+            details[paid_bob]["also_matched"],
+            [{"match_id": match[moved], "rule": self._rule_ref(moved)}],
+        )
+        self.assertEqual(details[paid_carol]["also_matched"], [])
+
     def test_a_match_the_journal_leaves_out_or_an_id_naming_none_is_a_404(self):
         self._store_sample()
         theirs = self._every_transfer(owner=self.other)
-        withdrawn, built = self._off_the_journal()
         switched_off = self._every_transfer()
         self._evaluate()
         rules_services.update_rule(switched_off, {"enabled": False})
         hidden = [
-            MatchedRule.objects.filter(rule=rule).first().pk
-            for rule in (theirs, withdrawn, built, switched_off)
+            MatchedRule.objects.filter(rule=rule).first().pk for rule in (theirs, switched_off)
         ]
         past_the_last = MatchedRule.objects.order_by("pk").last().pk + 1
 
@@ -1915,7 +2068,7 @@ class MatchDetailTests(RulesApiTestCase):
         self.client.force_login(self.other)
         self.assertEqual(self._detail(hidden[0])["id"], hidden[0])
 
-    def test_a_match_is_six_queries_however_many_rules_matched_its_transaction(self):
+    def test_a_match_is_six_queries_however_many_rules_matched_its_transfer(self):
         self._store(block())
         self._transfer(LEGACY_HASH, self._token(decimals=6), raw_value=1)
         self._signature(1, "swapExactTokensForETH")
@@ -1925,12 +2078,11 @@ class MatchDetailTests(RulesApiTestCase):
         for index in range(3):
             self._rule(name=f"also {index}", condition=_anything())
         self._evaluate()
-        pk = MatchedRule.objects.get(rule=every, transaction=LEGACY_HASH).pk
+        pk = MatchedRule.objects.get(rule=every).pk
 
-        # The match with its transaction, rule and transfer, the rule's tree,
-        # the leading transfer with its token, the selector's names in the
-        # catalog, the tokens its trace observed, and the other matches with
-        # their rules.
+        # The match with its rule and transfer, the rule's tree, the
+        # transaction, the selector's names in the catalog, the tokens its
+        # trace observed, and the other matches with their rules.
         with self.assertNumQueries(6):
             detail = rules_services.match_detail(self.user, pk)
 
