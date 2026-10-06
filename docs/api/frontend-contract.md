@@ -104,7 +104,7 @@ type Rule = {
   created_at: string; updated_at: string;
   stats: {                                 // read-only, over the ingested window
     match_count: number;
-    unevaluable_count: number;             // transactions where the root came out null
+    unevaluable_count: number;             // transfers where the root came out null
     last_match_at: string | null;
   };
 };
@@ -142,7 +142,7 @@ Runs an unsaved tree over the ingested window. It shares the evaluator used for 
 ```
 
 ### `GET /api/matches/`
-The journal. Params: `rule=<id>` (optional), `cursor`, `page_size` (default 50), `after=<cursor>` (only newer rows, for polling). Ordering: `block_number` desc, then `transaction_index` desc, then `rule_id`.
+The journal. One row is one rule's match of one token transfer, so a transaction whose USDT transfers of 2,500 and 3,000 both pass STABLE-2K is two rows. Params: `rule=<id>` (optional), `cursor`, `page_size` (default 50), `after=<cursor>` (only newer rows, for polling). Ordering: the transfer's `block_number` desc, then its `transaction_index` desc (both copied from its transaction when decoding stores it), then the transfer as decoding stored it (log order), then `rule_id`, then the match id. A cursor names a row's place in that order, `"<block>.<tx index>.<transfer id>.<rule id>.<match id>"`; the FE passes `next` and `head` back without reading them.
 ```ts
 type JournalRow = {
   id: number;
@@ -151,11 +151,11 @@ type JournalRow = {
   matched_at: string;
   transaction: { chain: Chain; hash: string; block_number: number; transaction_index: number; block_timestamp: string };
   headline: {
-    kind: "token_transfer" | "native";
+    kind: "token_transfer";                // the transfer the rule matched
     from_address: string; to_address: string | null;
     from_label?: string | null; to_label?: string | null;              // optional until address labels land
     amount: { raw: Uint; decimals: number | null; value: string | null };  // value null when decimals unknown
-    token: TokenRef | null;                                                 // null for kind "native"
+    token: TokenRef;
   };
   flags: { token_unrecognised: boolean; decimals_unknown: boolean; verified: boolean };
 };
@@ -167,37 +167,34 @@ The trace pane. One call drives the power-on animation, the lit path and every g
 ```ts
 type MatchDetail = JournalRow & {
   condition: ConditionNode;                // snapshot of the tree AS EVALUATED, not the live rule
-  trace: Record<number, GateTrace> | null; // keyed by node id in `condition`, every node present; null when none was recorded
-  transaction: JournalRow["transaction"] & {
+  trace: Record<number, GateTrace>;        // keyed by node id in `condition`, every node present
+  transaction: JournalRow["transaction"] & {  // the transaction the matched transfer is in
     from_address: string; to_address: string | null; value: Uint;
     input_selector: string | null; method: string | null;               // signature text when catalogued
     decode_status: "INGESTED" | "PROCESSING" | "DECODED" | "UNABLE_TO_DECODE";
   };
-  transfer: null | {
+  transfer: {                              // the transfer the rule matched
     token: TokenRef; from_address: string; to_address: string;
     raw_value: Uint; log_index: number | null;
     source: "calldata" | "log"; verified: boolean;
   };
-  also_matched: { match_id: number; rule: RuleRef }[];
+  also_matched: { match_id: number; rule: RuleRef }[];   // other rules that matched the same transfer
 };
 
 type GateTrace = {
   held: boolean | null;                    // null = no data (the "?" gate)
-  reason?: "no_transfer" | "decimals_unknown" | "no_to_address";        // set when held is null or false for lack of data
+  reason?: "decimals_unknown";             // set when held is null or false for lack of data
   observed?:                               // comparison nodes only: what the gate read
     | { kind: "amount"; raw: Uint; decimals: number | null; value: string | null }
-    | { kind: "native_amount"; wei: Uint; value: string }
     | { kind: "address"; address: string | null; list_hit: boolean | null; label?: string | null }
     | { kind: "token"; token: TokenRef }
-    | { kind: "bool"; value: boolean }
-    | { kind: "method"; selector: string | null; signature: string | null };
+    | { kind: "bool"; value: boolean };
 };
 ```
-The FE derives everything else from the snapshot and the `held` values: the power path (a gate is live when power reaches it and it holds), the animation order, the "Step 2 of 3 in series" wiring line, and the inspector's *Reads / This tx / Test* lines. Example for gate `G4` of BNB-OUT (`amount ≥ 250`) on tx `0x3266…31fd`:
+The FE derives everything else from the snapshot and the `held` values: the power path (a gate is live when power reaches it and it holds), the animation order, the "Step 2 of 3 in series" wiring line, and the inspector's *Reads / This tx / Test* lines. Example for gate `G4` of BNB-OUT (`amount ≥ 250`) on the USDT transfer in tx `0x3266…31fd`:
 ```json
 { "held": true, "observed": { "kind": "amount", "raw": "397092712", "decimals": 6, "value": "397.092712" } }
 ```
-Until the evaluator records a trace per match, the server answers `"trace": null`, with the rule's tree as it reads now in `condition`. The pane then shows the match's transaction and transfer without the circuit, and Replay is off.
 
 ### `GET /api/tokens/?q=<text>&chain=<id>`
 The token picker in the gate editor. Paginated `TokenRef[]`, matched on part of the symbol, part of the name, or the start of the address, case ignored. Rows are ranked by where `q` matched: a symbol equal to `q`, then a symbol starting with it, then a symbol containing it, then the name, then the address. Rows with one rank are sorted by symbol. For `usd` that lists USD, then USDC and USDT, then ALUSD and AUSDT, then a token found only by a name such as "Tether Gold USD". A search for `usd` on chain 1 answers `{ "chain": 1, "address": "0xdac17f958d2ee523a2206206994597c13d831ec7", "symbol": "USDT", "name": "Tether", "decimals": 6 }` among its rows. A placeholder token (a contract the catalog doesn't know) has a null `symbol` and `name`, so only an address search finds it. The console looks a gate's token up with its full address that way.

@@ -1,10 +1,10 @@
 """User-defined rules catalog: the rules that watch the chain.
 
 A rule is its conditions: a tree of :class:`Condition` rows comparing the
-fields of a decoded token transfer against thresholds.
-:mod:`project.app.rules.onchain` evaluates a rule against a stored block, and
-a :class:`MatchedRule` records each row a rule matched when a block was
-evaluated.
+fields of one decoded token transfer against thresholds.
+:mod:`project.app.rules.onchain` evaluates a rule against each transfer in a
+stored block, and a :class:`MatchedRule` records each transfer a rule matched
+when the block was evaluated.
 """
 
 from django.conf import settings
@@ -13,7 +13,6 @@ from django.db import models
 from django.db.models import Q
 
 from project.app.constants import GLYPH_CHOICES
-from project.app.evm.block.models import Block, Transaction, Withdrawal
 from project.app.evm.token_transfers import TokenTransfer
 from project.app.rules import utils
 
@@ -204,38 +203,22 @@ class Condition(models.Model):
 
 
 class MatchedRule(models.Model):
-    """One row of a stored block that satisfied a rule when the block was evaluated.
+    """One decoded token transfer that satisfied a rule when its block was evaluated.
 
-    The row is the one :func:`project.app.rules.onchain.matches_in_block`
-    answers: a ``transaction`` for a rule reading transactions or token
-    transfers, a ``withdrawal`` for a withdrawal rule, and neither for a rule
-    reading only the block, which the block itself satisfied. Recorded by
+    A rule reads only token transfers, so a match is a (rule, transfer) pair:
+    a swap whose 2,500 and 3,000 USDC transfers both pass ``amount gte 2000``
+    is two matches. The transfer carries its transaction's hash, chain and
+    block, so a match keeps no column of its own for them. Recorded by
     ``rules.services.evaluate_blocks``, which evaluates each block once.
     """
 
     # Evaluation can write thousands of these a block, and every index is paid on
-    # each, so the keys are indexed in Meta rather than by the fields: that
-    # skips the pattern-matching twin Postgres builds for each hash key, and
-    # (rule, block) serves the rule key as well.
+    # each, so the keys are indexed in Meta rather than by the fields.
     rule = models.ForeignKey(Rule, on_delete=models.CASCADE, related_name="matches", db_index=False)
-    block = models.ForeignKey(
-        Block, on_delete=models.CASCADE, related_name="rule_matches", db_index=False
-    )
-    transaction = models.ForeignKey(
-        Transaction,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="rule_matches",
-        db_index=False,
-    )
-    withdrawal = models.ForeignKey(
-        Withdrawal,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="rule_matches",
-        db_index=False,
+    # The transfer the rule's gates held of. A match is that transfer, so it
+    # goes with it.
+    transfer = models.ForeignKey(
+        TokenTransfer, on_delete=models.CASCADE, related_name="rule_matches", db_index=False
     )
     # The rule's revision whose tree made the match. A new tree deletes the
     # rule's matches, so a match whose revision is not the rule's was recorded
@@ -243,48 +226,19 @@ class MatchedRule(models.Model):
     rule_revision = models.PositiveIntegerField()
     # Each node of the tree, by id, with whether it held and what it read raw:
     # {"43": {"held": true, "observed": {"kind": "amount", "raw": "25000000000",
-    # "decimals": 6}}}. Null for a withdrawal or block match, which is not traced.
-    trace = models.JSONField(null=True, blank=True)
-    # The token transfer the match's gates held of; null when the tree reads no
-    # transfer, the transaction has none, or the transfer is gone.
-    transfer = models.ForeignKey(
-        TokenTransfer,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="rule_matches",
-        db_index=False,
-    )
+    # "decimals": 6}}}.
+    trace = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["id"]
         indexes = [
-            models.Index(fields=["rule", "block"], name="matchedrule_rule_block_idx"),
-            # Deleting a block, transaction or withdrawal checks its foreign key
-            # against these rows: without an index each check scans them all.
-            models.Index(fields=["block"], name="matchedrule_block_idx"),
-            models.Index(
-                fields=["transaction"],
-                name="matchedrule_transaction_idx",
-                condition=models.Q(transaction__isnull=False),
-            ),
-            models.Index(
-                fields=["withdrawal"],
-                name="matchedrule_withdrawal_idx",
-                condition=models.Q(withdrawal__isnull=False),
-            ),
-            # Deleting a transfer nulls these rows' foreign key, found the same way.
-            models.Index(
-                fields=["transfer"],
-                name="matchedrule_transfer_idx",
-                condition=models.Q(transfer__isnull=False),
-            ),
+            # A rule's matches, and whether it matched a transfer.
+            models.Index(fields=["rule", "transfer"], name="matchedrule_rule_transfer_idx"),
+            # The other rules that matched a transfer, and deleting a transfer,
+            # which checks its foreign key against these rows.
+            models.Index(fields=["transfer"], name="matchedrule_transfer_idx"),
         ]
 
     def __str__(self):
-        if self.transaction_id is not None:
-            return f"rule {self.rule_id} matched transaction {self.transaction_id} in block {self.block_id}"
-        if self.withdrawal_id is not None:
-            return f"rule {self.rule_id} matched withdrawal {self.withdrawal_id} in block {self.block_id}"
-        return f"rule {self.rule_id} matched block {self.block_id}"
+        return f"rule {self.rule_id} matched transfer {self.transfer_id}"

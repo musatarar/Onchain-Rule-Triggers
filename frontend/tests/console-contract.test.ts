@@ -34,15 +34,11 @@ function assertRow(row: Omit<JournalRow, 'id' | 'rule'>) {
   if (headline.to_address !== null) assert.match(headline.to_address, ADDRESS);
   assert.equal(typeof headline.amount.raw, 'string');
   assert.match(headline.amount.raw, UINT);
-  if (headline.kind === 'native') {
-    assert.equal(headline.token, null);
-    assert.equal(headline.amount.decimals, 18);
-  } else {
-    assertToken(headline.token!);
-    assert.equal(headline.amount.decimals, headline.token!.decimals);
-    assert.equal(row.flags.decimals_unknown, headline.token!.decimals === null);
-    assert.equal(row.flags.token_unrecognised, headline.token!.symbol === null);
-  }
+  assert.equal(headline.kind, 'token_transfer', 'every match is a token transfer');
+  assertToken(headline.token);
+  assert.equal(headline.amount.decimals, headline.token.decimals);
+  assert.equal(row.flags.decimals_unknown, headline.token.decimals === null);
+  assert.equal(row.flags.token_unrecognised, headline.token.symbol === null);
   if (headline.amount.decimals === null) assert.equal(headline.amount.value, null);
   else assert.match(headline.amount.value!, DECIMAL);
 }
@@ -59,10 +55,6 @@ function assertGate(gate: GateTrace) {
       assert.equal(gate.held, null, 'an amount with unknown decimals is no data, not a pass or a fail');
       assert.equal(gate.reason, 'decimals_unknown');
     }
-  }
-  if (seen.kind === 'native_amount') {
-    assert.match(seen.wei, UINT);
-    assert.match(seen.value, DECIMAL);
   }
   if (seen.kind === 'address' && seen.address !== null) assert.match(seen.address, ADDRESS);
   if (seen.kind === 'token') assertToken(seen.token);

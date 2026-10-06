@@ -3,26 +3,29 @@
 The five sample mainnet blocks in ``raw_data/`` (106 to 502 transactions each,
 with their receipts) are served by a fake node, so a tick does everything but
 wait on the network: it stores each block with its receipts, decodes its
-transactions and evaluates every enabled rule against it. Each user owns ten
-rules, from one of two workloads:
+transactions and evaluates every enabled rule against each token transfer
+decoding stored, one per Transfer log of a successful transaction. The token
+catalog in ``raw_data/tokens.json`` is stored first, so the amounts of the
+tokens it lists are known. Each user owns ten rules, from one of two workloads:
 
 - ``persona``: the rules of ``PRODUCT.md``'s treasury and risk desks, each
   watching its own wallets ("more than 1M USDT leaves our hot wallet", "our
   governance token sent to an exchange"). A rule names addresses no other
   user's does, so it matches only when its desk's wallets move. A share of the
   desks (``STRESS_ACTIVE_SHARE``, 2% by default) watch wallets that send or
-  receive tokens in the sample blocks, which comes to about 0.02 matches per
-  user per block (measured at 3,000 users): some 165 alerts a day for each
+  receive tokens in the sample blocks, which comes to about 0.04 matches per
+  user per block (measured at 5,000 users): some 300 alerts a day for each
   user;
 - ``demo``: five demo rules and a variant of each with another threshold,
-  the same for every user. Every user then matches many rows a block, so this
-  is the worst case for writing matches, not a likely one.
+  the same for every user. Every user then matches many transfers a block, so
+  this is the worst case for writing matches, not a likely one.
 
 ``QueryScalingTests`` always runs: it pins that a block's rows are read once
 and shared by every rule, so adding users adds no queries to a tick, that the
 rule index answers what each rule answers alone, for both workloads and for the
 console's circuits, and that it files every rule of both workloads by a token,
-address or threshold, so a row is tried against a few rules rather than all.
+address or threshold, so a transfer is tried against a few rules rather than
+all.
 ``PipelineStressTests`` runs only with ``STRESS_USERS`` set, as it takes
 minutes at scale::
 
@@ -109,6 +112,13 @@ SAMPLE_RECEIPTS = _raw("receipts.json")  # one list per block, in block order
 
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+# PEPE-1B's and BNB-OUT's PEPE, and BNB-OUT's Binance hot wallets, in raw_data/circuits.json.
+PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+BINANCE_HOT_WALLETS = (
+    "0x28c6c06298d514db089934071355e5743bf21d60",
+    "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+    "0xdfd5293d8e347dfe59e90efd55b2956a1343963d",
+)
 # The circuits of raw_data/circuits.json the demo workload uses.
 DEMO_CIRCUITS = ("STABLE-2K", "ANY-1M", "BNB-OUT", "PEPE-1B")
 
@@ -462,7 +472,7 @@ class QueryScalingTests(StressTestCase):
         matches aside, and what it did.
 
         A block's matches go in one COPY on Postgres, but SQLite takes an insert
-        per 124 of them (its 999 parameters over a match's eight columns), so its
+        per 199 of them (its 999 parameters over a match's five columns), so its
         inserts grow with the matches. Every other query is a read, which the
         rules must not add to.
         """
@@ -489,9 +499,9 @@ class QueryScalingTests(StressTestCase):
                     matched += len(alone)
         return matched
 
-    def tries_per_binding(self):
-        """How many rules the enabled rules' index tries against each transaction and transfer
-        of the sample blocks bound together, and the index."""
+    def tries_per_transfer(self):
+        """Each token transfer of the sample blocks with how many rules the enabled rules'
+        index tries against it, as ``(transfer, count)``, and the index."""
         index = onchain.RuleIndex(
             Rule.objects.filter(enabled=True).prefetch_related("all_conditions")
         )
@@ -500,22 +510,20 @@ class QueryScalingTests(StressTestCase):
         with mock.patch.object(
             index,
             "candidates",
-            lambda source, bound: tries.append(len(found := candidates(source, bound))) or found,
+            # A set, as bindings_for_rules tries a rule filed under two fields once.
+            lambda moved: tries.append((moved, len(set(found := candidates(moved))))) or found,
         ):
             for block in Block.objects.order_by("number"):
                 onchain.matches_for_rules(index, block)
         return tries, index
 
     def assert_every_rule_is_filed(self):
-        """No rule of the workload is tried against every row: each is filed under a token,
-        an address or a threshold, as each has an equality or threshold gate."""
-        tries, index = self.tries_per_binding()
+        """No rule of the workload is tried against every transfer: each is filed under a
+        token, an address or a threshold, as each has an equality or threshold gate."""
+        tries, index = self.tries_per_transfer()
         rules = len(index.rules)
 
-        self.assertEqual(
-            {source: list(filed) for source, filed in index._everywhere.items()},
-            {source: [] for source in index._everywhere},
-        )
+        self.assertEqual(list(index._everywhere), [])
         self.assertGreater(len(tries), 0)
         return tries, rules
 
@@ -569,35 +577,56 @@ class QueryScalingTests(StressTestCase):
                 },
             )
 
-        # What evaluate_rules records for the enabled circuits on the sample blocks,
-        # ingested with their receipts, so with the transfers their logs carry too.
-        # Every circuit reads token transfers only, so the transactions moving
-        # more than 10 ETH, and those BNB-OUT matched by their sender or ETH
-        # value, no longer match.
-        self.assertEqual(self.assert_index_answers_each_rule_alone(), 405)
+        # What evaluate_blocks records for the enabled circuits on the sample
+        # blocks, ingested with their receipts: a match per transfer, each
+        # Transfer log one. tests_rules_evaluation loads the blocks without
+        # receipts, so its 124 are only the transfers read from calldata.
+        self.assertEqual(self.assert_index_answers_each_rule_alone(), 750)
 
-    def test_every_demo_rule_is_filed_and_a_row_is_tried_against_a_few(self):
+    def test_every_demo_rule_is_filed_and_a_transfer_is_tried_against_its_own(self):
         self.add_users(10)
 
         tries, rules = self.assert_every_rule_is_filed()
 
-        # A USDT transfer is tried against each user's two USDT rules and two
-        # stablecoin rules, a PEPE transfer against the PEPE rules, one from a
-        # Binance hot wallet against the BNB-OUT rules, and a large one against
-        # its amount rules too. With every rule tried everywhere, each row would
-        # be tried against all 100; filed, a row is tried against 13 on average.
-        self.assertLess(sum(tries) / len(tries), rules / 5)
+        # Each rule is filed by the gate naming the fewest, least crowded
+        # values: the USDT rule and STABLE-2K by their tokens, PEPE-1B by
+        # PEPE, BNB-OUT by Binance's wallets (fewer rules name them than its
+        # tokens), and ANY-1M by its threshold. So each user's pair of a rule
+        # and its variant is tried against a transfer of its token, or from
+        # its wallets, and ANY-1M's pair against the transfers past each one's
+        # threshold. Every other transfer is tried against none of them.
+        users = rules // RULES_PER_USER
+        expected = {}
+        for moved, _ in tries:
+            address = moved.token.contract.address
+            amount = onchain._value("amount", moved)
+            per_user = (
+                2 * (address == USDT)
+                + 2 * (address in (USDT, USDC))
+                + 2 * (address == PEPE)
+                + 2 * (moved.from_address in BINANCE_HOT_WALLETS)
+                + (amount is not None and amount >= 1_000_000)
+                + (amount is not None and amount >= 100_000)
+            )
+            expected[moved.pk] = users * per_user
+        self.assertEqual({moved.pk: count for moved, count in tries}, expected)
+        # 522 of the 1,818 transfers are USDT, which four of a user's ten rules
+        # name, so a transfer is tried against about 18 of the 100 on average.
+        self.assertLess(sum(count for _, count in tries) / len(tries), rules / 2)
 
-    def test_every_persona_rule_is_filed_and_a_row_is_tried_against_a_few(self):
+    def test_every_persona_rule_is_filed_and_a_transfer_is_tried_against_a_few(self):
         with mock.patch(f"{__name__}.ACTIVE_SHARE", 0.5):
             self.add_users(50, workload="persona")
 
         tries, rules = self.assert_every_rule_is_filed()
 
-        # Each desk's rules name its own wallets, so a row is tried against the
-        # few naming an address it carries, or the token of a USDT or USDC
-        # rule filed under it, out of 500.
-        self.assertLess(max(tries), rules // 10)
+        # Each desk's rules name its own wallets, so a transfer is tried
+        # against the few naming an address it carries. A USDT or USDC rule is
+        # filed under its token instead when that is less crowded than its
+        # wallet: the first desk's, and those of active desks whose wallet
+        # another active desk drew too. A transfer is tried against at most 7
+        # of the 500.
+        self.assertLess(max(count for _, count in tries), rules // 10)
 
 
 @unittest.skipUnless(STRESS_USERS, "set STRESS_USERS=10,100,... to run the pipeline stress tests")
@@ -665,19 +694,19 @@ class PipelineStressTests(StressTestCase):
         sample = [f"user{index}@stress.example" for index in range(0, count, step)]
         rules = Rule.objects.filter(owner__username__in=sample).prefetch_related("all_conditions")
         recorded = {}
-        for match in MatchedRule.objects.filter(rule__in=rules):
-            key = match.transaction_id or match.withdrawal_id
-            recorded.setdefault((match.rule_id, match.block_id), []).append(key)
+        for rule_id, transfer_id in MatchedRule.objects.filter(rule__in=rules).values_list(
+            "rule_id", "transfer_id"
+        ):
+            recorded.setdefault(rule_id, []).append(transfer_id)
         expected = {}
         for block in Block.objects.all():
             rows = onchain.BlockRows(block)
             for rule in rules:
-                for row in onchain.matches_in_block(rule, block, rows):
-                    key = row.pk if isinstance(row, (Transaction, Withdrawal)) else None
-                    expected.setdefault((rule.pk, block.pk), []).append(key)
+                for moved in onchain.matches_in_block(rule, block, rows):
+                    expected.setdefault(rule.pk, []).append(moved.pk)
         self.assertEqual(
-            {key: sorted(found, key=str) for key, found in recorded.items()},
-            {key: sorted(found, key=str) for key, found in expected.items()},
+            {rule_id: sorted(found) for rule_id, found in recorded.items()},
+            {rule_id: sorted(found) for rule_id, found in expected.items()},
         )
 
     def _reset(self):

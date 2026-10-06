@@ -29,15 +29,8 @@ TEXT = "text"
 NUMBER = "number"
 BOOL = "bool"
 
-# A stored block's rows. A comparison reads only a token transfer
-# (:data:`VOCABULARY`); the evaluator binds the others around the transfer.
-SOURCE_BLOCK = "block"
-SOURCE_TRANSACTION = "transaction"
-SOURCE_WITHDRAWAL = "withdrawal"
+# The one record a comparison reads: a token transfer decoding stored.
 SOURCE_TOKEN_TRANSFER = "token_transfer"
-
-# A transaction and its token transfers are read together.
-TRANSACTION_SOURCES = frozenset({SOURCE_TRANSACTION, SOURCE_TOKEN_TRANSFER})
 
 ORDERED = ("gt", "gte", "lt", "lte", "eq")
 ADDRESS = ("eq", "ne", "in")
@@ -81,9 +74,6 @@ _FIELDS = {
     source["key"]: {field["key"]: field for field in source["fields"]}
     for source in VOCABULARY["sources"]
 }
-
-# A transaction's value is stored in wei, and the console reads it in ETH.
-ETH_DECIMALS = 18
 
 # ``Condition.type`` <-> the console's node ``type``.
 TREE_TYPE_COMPARISON = "COMPARISON"
@@ -203,15 +193,6 @@ def without_ids(node):
     if "children" in bare:
         bare["children"] = [without_ids(child) for child in bare["children"]]
     return bare
-
-
-def tree_sources(nodes):
-    """The sources a rule's tree compares, as a frozenset; groups read none.
-
-    ``nodes`` is every node of one tree, as :func:`render_condition` takes them,
-    so a prefetched tree answers with no query.
-    """
-    return frozenset(node.source for node in nodes if node.type == TREE_TYPE_COMPARISON)
 
 
 def lowercase_thresholds(node):

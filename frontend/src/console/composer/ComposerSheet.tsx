@@ -46,7 +46,6 @@ type Run = { status: 'idle' | 'loading' | 'error'; error: string };
 
 function rowAmount(row: BacktestRow): { amount: string; unit: string } {
   const { headline } = row;
-  if (headline.kind === 'native') return { amount: formatUnits(headline.amount.raw, 18, 4), unit: 'ETH' };
   const { raw, decimals } = headline.amount;
   return {
     amount: decimals === null ? `${rawMagnitude(raw)} raw` : formatUnits(raw, decimals),
