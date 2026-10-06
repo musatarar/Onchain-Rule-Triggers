@@ -397,7 +397,7 @@ class DecodeTransactionsCommandTests(TestCase):
         call_command("decode_transactions", stdout=out)
 
         self.assertEqual(
-            out.getvalue(), "Decoded 68 transfer(s); unable to decode 545 transaction(s).\n"
+            out.getvalue(), "Decoded 594 transfer(s); unable to decode 931 transaction(s).\n"
         )
-        self.assertEqual(TokenTransfer.objects.count(), 68)
+        self.assertEqual(TokenTransfer.objects.count(), 594)
         self.assertFalse(Transaction.objects.filter(decode_status=DecodeStatus.INGESTED).exists())
