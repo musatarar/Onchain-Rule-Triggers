@@ -1,22 +1,20 @@
 """Stress tests for the realtime pipeline: many users' rules against real Ethereum blocks.
 
-The five sample mainnet blocks in ``raw_data/`` (94 to 133 transactions each)
-are served by a fake node, so a tick does everything but wait on the network:
-it stores each block with its receipts, decodes its transactions and
-evaluates every enabled rule against each token transfer decoding stored. The
-receipts in ``raw_data/receipts.json`` are of other blocks, so no sample
-transaction has its own, and decoding reads each one's calldata: the 68 that
-call ``transfer`` or ``transferFrom`` make one transfer each. The console
-demo's token catalog is stored first, so those transfers' amounts are known.
-Each user owns ten rules, from one of two workloads:
+The five sample mainnet blocks in ``raw_data/`` (106 to 502 transactions each,
+with their receipts) are served by a fake node, so a tick does everything but
+wait on the network: it stores each block with its receipts, decodes its
+transactions and evaluates every enabled rule against each token transfer
+decoding stored, one per Transfer log of a successful transaction. The token
+catalog in ``raw_data/tokens.json`` is stored first, so the amounts of the
+tokens it lists are known. Each user owns ten rules, from one of two workloads:
 
 - ``persona``: the rules of ``PRODUCT.md``'s treasury and risk desks, each
   watching its own wallets ("more than 1M USDT leaves our hot wallet", "our
   governance token sent to an exchange"). A rule names addresses no other
   user's does, so it matches only when its desk's wallets move. A share of the
   desks (``STRESS_ACTIVE_SHARE``, 2% by default) watch wallets that send or
-  receive tokens in the sample blocks, which comes to about 0.015 matches per
-  user per block (measured at 5,000 users): some 110 alerts a day for each
+  receive tokens in the sample blocks, which comes to about 0.04 matches per
+  user per block (measured at 5,000 users): some 300 alerts a day for each
   user;
 - ``demo``: five demo rules and a variant of each with another threshold,
   the same for every user. Every user then matches many transfers a block, so
@@ -68,9 +66,8 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from project.app import pipeline
-from project.app.evm import services as evm_services
 from project.app.evm.chains import ChainId
-from project.app.evm.tokens import TokenCreateSchema
+from project.app.evm.decoding import TRANSFER_EVENT_TOPIC
 from project.app.models import (
     Block,
     Condition,
@@ -180,39 +177,27 @@ def _varied(node):
 # the persona workload: each desk's rules over its own wallets
 # --------------------------------------------------------------------------
 
-# The selector of each call decoding reads a transfer from, as how many 32-byte
-# words its calldata holds and which of them are the sender and recipient; a
-# sender of None is the transaction's own.
-TRANSFER_CALLS = {
-    "0xa9059cbb": (2, None, 0),  # transfer(address,uint256)
-    "0x23b872dd": (3, 0, 1),  # transferFrom(address,address,uint256)
-}
 
+def _transfer_parties(receipts):
+    """The ``(sender, recipient)`` of each token transfer in ``receipts``, lowercased, in block order.
 
-def _transfer_parties(blocks):
-    """The ``(sender, recipient)`` of each token transfer of ``blocks``, lowercased, in block order.
-
-    Read from each transaction's calldata, as decoding reads a transaction
-    with no receipt, which every sample transaction is (see the module's
-    docstring).
+    Read from each successful receipt's Transfer logs, as decoding reads a
+    transaction stored with its receipt, which every sample transaction is.
     """
-    for raw in blocks:
-        for transaction in raw["transactions"]:
-            calldata = transaction.get("input") or ""
-            call = TRANSFER_CALLS.get(calldata[:10].lower())
-            if call is None or not transaction["to"]:
+    for block_receipts in receipts:
+        for receipt in block_receipts:
+            if receipt["status"] != "0x1":
                 continue
-            count, sender, recipient = call
-            words = [calldata[10 + 64 * index : 10 + 64 * (index + 1)] for index in range(count)]
-            if len(words[-1]) < 64:
-                continue
-            yield (
-                (transaction["from"] if sender is None else "0x" + words[sender][24:]).lower(),
-                ("0x" + words[recipient][24:]).lower(),
-            )
+            for log in receipt["logs"]:
+                topics = [topic.lower() for topic in log["topics"]]
+                if log.get("removed") or len(topics) not in (3, 4):
+                    continue
+                if topics[0] != TRANSFER_EVENT_TOPIC:
+                    continue
+                yield "0x" + topics[1][-40:], "0x" + topics[2][-40:]
 
 
-PARTIES = list(_transfer_parties(SAMPLE_BLOCKS))
+PARTIES = list(_transfer_parties(SAMPLE_RECEIPTS))
 # The addresses the sample blocks' transfers move between, by the role a desk's
 # wallet would play in them.
 MOVING = {
@@ -350,13 +335,13 @@ class StressTestCase(NodeTestCase):
 
     @staticmethod
     def prepare(node):
-        """The function signatures decoding reads, the console demo's token catalog, and a
-        cursor just before ``node``'s blocks.
+        """The function signatures decoding reads, the token catalog, and a cursor just
+        before ``node``'s blocks.
 
         The first tick on a chain stores only the head, so it starts before the first block.
         """
         call_command("load_function_signatures", stdout=io.StringIO())
-        _catalog_the_demo_tokens()
+        call_command("load_tokens", stdout=io.StringIO())
         IngestCursor.objects.create(
             chain=ChainId.ETHEREUM, last_indexed_block=min(node.by_number) - 1
         )
@@ -420,33 +405,6 @@ class StressTestCase(NodeTestCase):
 STAGES = ("ingest_new_blocks", "decode_transactions", "index", "evaluate_blocks")
 
 
-def _catalog_the_demo_tokens():
-    """Store the tokens the console demo's token catalog lists with a symbol, before decoding
-    stores placeholders for the tokens the sample blocks move, as ``tests_rules_evaluation``
-    catalogues them for the demo circuits' matches.
-
-    A listed symbol makes the token recognised (a coingecko id). A token listed
-    with a null symbol, or not listed, is left to decoding's placeholder, which
-    is not recognised and has no decimals, so no ``amount`` gate holds of it.
-    Without the catalog every sample token would be such a placeholder.
-    """
-    path = settings.BASE_DIR / "frontend" / "src" / "console" / "api" / "demo" / "fixtures"
-    with open(path / "tokens.json", encoding="utf-8") as source:
-        catalog = json.load(source)
-    evm_services.save_tokens(
-        TokenCreateSchema(
-            chain=entry["chain"],
-            address=entry["address"],
-            name=entry["name"],
-            symbol=entry["symbol"],
-            coingecko_id=entry["symbol"].lower(),
-            decimals=entry["decimals"],
-        )
-        for entry in catalog
-        if entry["symbol"]
-    )
-
-
 def _plant_trees(pairs):
     """Store each ``(rule, condition)`` pair's console tree as the rule's tree, a level at a time.
 
@@ -494,13 +452,22 @@ class QueryScalingTests(StressTestCase):
         caches["rpc"].clear()
 
     def evaluate_again(self):
-        """Evaluate every sample block afresh; answer the queries it made and what it did."""
+        """Evaluate every sample block afresh; answer the queries it made, inserting the
+        matches aside, and what it did.
+
+        A block's matches go in one COPY on Postgres, but SQLite takes an insert
+        per 199 of them (its 999 parameters over a match's five columns), so its
+        inserts grow with the matches. Every other query is a read, which the
+        rules must not add to.
+        """
         Block.objects.update(evaluated_at=None)
         MatchedRule.objects.all().delete()
         with CaptureQueriesContext(connection) as queries:
             run = rules_services.evaluate_blocks()
         self.assertEqual(run.blocks, len(SAMPLE_BLOCKS))
-        return len(queries), run
+        table = connection.ops.quote_name(MatchedRule._meta.db_table)
+        inserts = (f"INSERT INTO {table}", f"COPY {table}")
+        return sum(not query["sql"].startswith(inserts) for query in queries), run
 
     def assert_index_answers_each_rule_alone(self):
         rules = list(Rule.objects.filter(enabled=True).prefetch_related("all_conditions"))
@@ -581,6 +548,7 @@ class QueryScalingTests(StressTestCase):
         self.assertGreater(self.assert_index_answers_each_rule_alone(), 0)
 
     def test_the_rule_index_matches_what_each_circuit_matches_alone(self):
+        call_command("load_tokens", stdout=io.StringIO())
         owner = get_user_model().objects.create_user(username="circuits@stress.example")
         for circuit in _raw("circuits.json"):
             rules_services.create_rule(
@@ -593,9 +561,10 @@ class QueryScalingTests(StressTestCase):
             )
 
         # What evaluate_blocks records for the enabled circuits on the sample
-        # blocks, a match per transfer: the console demo's expected-results.json
-        # gives the enabled circuits 7, 13, 5, 1, 3 and 5.
-        self.assertEqual(self.assert_index_answers_each_rule_alone(), 34)
+        # blocks, ingested with their receipts: a match per transfer, each
+        # Transfer log one. tests_rules_evaluation loads the blocks without
+        # receipts, so its 124 are only the transfers read from calldata.
+        self.assertEqual(self.assert_index_answers_each_rule_alone(), 750)
 
     def test_every_demo_rule_is_filed_and_a_transfer_is_tried_against_its_own(self):
         self.add_users(10)
@@ -624,8 +593,8 @@ class QueryScalingTests(StressTestCase):
             )
             expected[moved.pk] = users * per_user
         self.assertEqual({moved.pk: count for moved, count in tries}, expected)
-        # 42 of the 68 transfers are USDT, which four of a user's ten rules
-        # name, so a transfer is tried against about 31 of the 100 on average.
+        # 522 of the 1,818 transfers are USDT, which four of a user's ten rules
+        # name, so a transfer is tried against about 18 of the 100 on average.
         self.assertLess(sum(count for _, count in tries) / len(tries), rules / 2)
 
     def test_every_persona_rule_is_filed_and_a_transfer_is_tried_against_a_few(self):
@@ -638,7 +607,7 @@ class QueryScalingTests(StressTestCase):
         # against the few naming an address it carries. A USDT or USDC rule is
         # filed under its token instead when that is less crowded than its
         # wallet: the first desk's, and those of active desks whose wallet
-        # another active desk drew too. A transfer is tried against at most 18
+        # another active desk drew too. A transfer is tried against at most 7
         # of the 500.
         self.assertLess(max(count for _, count in tries), rules // 10)
 

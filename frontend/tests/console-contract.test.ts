@@ -1,16 +1,16 @@
 /**
- * The demo adapter answers in the contract's exact shapes, so switching a source to
- * the real API changes where data comes from and nothing else. The compiler already
- * holds DemoConsoleApi to the types (it `implements ConsoleApi`); these check what
- * types cannot: uint256 values are decimal strings, unknown decimals are null (never
- * 18), addresses are lowercase, times are ISO, and every node has a trace.
+ * The demo's propose and backtest answer in the contract's exact shapes, so switching
+ * them to the real API changes where data comes from and nothing else. The compiler
+ * already holds DemoConsoleApi to the types (it `implements DemoApi`); these check
+ * what types cannot: uint256 values are decimal strings, unknown decimals are null
+ * (never 18), addresses are lowercase, times are ISO, and every node has a trace.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ApiError } from '../src/api/client.ts';
 import { DemoConsoleApi } from '../src/console/api/demo/DemoConsoleApi.ts';
-import type { ConditionNode, GateTrace, JournalRow, MatchDetail, TokenRef } from '../src/console/api/types.ts';
+import type { ConditionNode, GateTrace, JournalRow, TokenRef } from '../src/console/api/types.ts';
 
 const api = new DemoConsoleApi({ latency: [0, 0] });
 
@@ -76,52 +76,7 @@ function assertCondition(condition: ConditionNode) {
   }
 }
 
-test('engine status, vocabulary and the rule list are contract-shaped', async () => {
-  const status = await api.engineStatus();
-  for (const chain of status.chains) assert.match(chain.last_block_at, ISO);
-  const vocabulary = await api.vocabulary();
-  assert.deepEqual(
-    vocabulary.sources.map((s) => s.key),
-    ['token_transfer'],
-  );
-  const page = await api.listRules();
-  assert.equal(page.count, page.results.length);
-  for (const rule of page.results) {
-    assert.match(rule.tag, /^[A-Z0-9][A-Z0-9-]{0,11}$/);
-    assert.match(rule.created_at, ISO);
-    assertCondition(rule.condition);
-    assert.ok(rule.stats.last_match_at === null || ISO.test(rule.stats.last_match_at));
-  }
-});
-
-test('every journal row and match detail is contract-shaped, with a trace for every node', async () => {
-  const rows = (await api.matches({ page_size: 100 })).results;
-  assert.equal(rows.length, 34);
-  for (const row of rows) {
-    assertRow(row);
-    const detail: MatchDetail = await api.matchDetail(row.id);
-    assert.equal(detail.id, row.id);
-    assertCondition(detail.condition);
-    const trace = detail.trace;
-    assert.ok(trace, 'the demo records a trace for every match');
-    for (const node of nodes(detail.condition)) {
-      assert.ok(node.id !== null && trace[node.id], `node ${node.id} has a trace`);
-      assertGate(trace[node.id!]);
-    }
-    assert.match(detail.transaction.value, UINT);
-    assert.match(detail.transfer.raw_value, UINT);
-    assert.equal(detail.transfer.source, 'calldata');
-    assert.equal(detail.transfer.verified, false, 'calldata transfers are never claimed as verified');
-    assertToken(detail.transfer.token);
-    for (const other of detail.also_matched) assert.notEqual(other.match_id, detail.id);
-  }
-});
-
-test('token search, propose and backtest answer in contract shape, and not-understood is a 422', async () => {
-  const tokens = await api.tokens({ q: 'us', chain: 1 });
-  assert.ok(tokens.results.some((token) => token.symbol === 'USDT'));
-  tokens.results.forEach(assertToken);
-
+test('propose and backtest answer in contract shape, and not-understood is a 422', async () => {
   const proposal = await api.propose('PEPE or LINK above 1m');
   assertCondition(proposal.condition);
   for (const node of nodes(proposal.condition)) assert.equal(node.id, null, 'a proposal is unsaved: every id is null');
@@ -142,5 +97,6 @@ test('token search, propose and backtest answer in contract shape, and not-under
   for (const row of result.matches) {
     assertRow(row);
     assert.ok(Object.keys(row.trace).every((key) => Number(key) < 0), 'traces are keyed by the ids the request sent');
+    Object.values(row.trace).forEach(assertGate);
   }
 });

@@ -395,9 +395,9 @@ class LoadBlocksScriptTests(TestCase):
         self.assertEqual(output, "Loaded 5 block(s) on Ethereum.\n")
         self.assertEqual(
             list(Block.objects.order_by("number").values_list("chain", "number")),
-            [(ChainId.ETHEREUM, 18_000_000 + offset) for offset in range(5)],
+            [(ChainId.ETHEREUM, 26_134_828 + offset) for offset in range(5)],
         )
-        self.assertEqual(Transaction.objects.count(), 613)
+        self.assertEqual(Transaction.objects.count(), 1525)
         self.assertEqual(Withdrawal.objects.count(), 80)
 
     def test_loads_another_file_as_the_chain_it_names(self):
