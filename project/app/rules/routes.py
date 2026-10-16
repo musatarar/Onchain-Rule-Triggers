@@ -21,8 +21,9 @@ from rest_framework.views import APIView
 from project.app.constants import RULES_CATALOG_THROTTLE_SCOPE
 from project.app.evm import services as evm_services
 from project.app.evm.chains import ChainId
-from project.app.rules import services, utils
+from project.app.rules import propose, services, utils
 from project.app.rules.models import Rule
+from project.app.services.llm import LLMError
 
 # The journal's page size when ``?page_size=`` is left out, and the most it can ask for.
 JOURNAL_PAGE_SIZE = 50
@@ -337,10 +338,33 @@ class TokenListView(APIView):
         return paginator.get_paginated_response([services.token_ref(token) for token in page])
 
 
+class ProposeSerializer(serializers.Serializer):
+    sentence = serializers.CharField(max_length=500, trim_whitespace=True)
+
+
+class ProposeView(APIView):
+    """POST /api/rules/propose/ — a sentence turned into an unsaved token-transfer rule."""
+
+    throttle_scope = RULES_CATALOG_THROTTLE_SCOPE
+
+    def post(self, request, *args, **kwargs):
+        body = ProposeSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        try:
+            proposal = propose.propose(request.user, body.validated_data["sentence"])
+        except (DjangoValidationError, LLMError):
+            return Response(
+                {"detail": "Couldn't turn that into conditions.", "code": "not_understood"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        return Response(proposal)
+
+
 # Appended to the `api/` urlpatterns as flat patterns (not include()d): the
 # auth suite audits every pattern's permission classes and expects callbacks.
 urlpatterns = [
     path("rules/", RuleListCreateView.as_view(), name="rules-list"),
+    path("rules/propose/", ProposeView.as_view(), name="rules-propose"),
     path("rules/<int:pk>/", RuleDetailView.as_view(), name="rules-detail"),
     path("conditions/vocabulary/", VocabularyView.as_view(), name="conditions-vocabulary"),
     path("engine/status/", EngineStatusView.as_view(), name="engine-status"),
