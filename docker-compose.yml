@@ -90,5 +90,29 @@ services:
     entrypoint: ["sh", "docker/pipeline.sh"]
     profiles: ["pipeline"]
 
+  # Reverse proxy in front of web, for the tunnel to reach. Not published on a
+  # host port: web's own 8000 stays the local way in.
+  nginx:
+    build:
+      context: docker
+      dockerfile: nginx.Dockerfile
+    depends_on:
+      web:
+        condition: service_healthy
+    profiles: ["tunnel"]
+
+  # A Cloudflare quick tunnel to nginx: a random https://*.trycloudflare.com
+  # link, no Cloudflare account needed. scripts/share.sh starts it and prints
+  # the link. .env must list the link's host for Django, or every request over
+  # it is refused:
+  #   DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,.trycloudflare.com
+  #   DJANGO_CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.1
+    command: ["tunnel", "--no-autoupdate", "--url", "http://nginx:80"]
+    depends_on:
+      - nginx
+    profiles: ["tunnel"]
+
 volumes:
   postgres_data:
