@@ -6,6 +6,7 @@ picking a tag and glyph happen here, so the model never invents an address.
 """
 
 import re
+from typing import Literal
 
 from django.core.exceptions import ValidationError
 from pydantic import BaseModel, Field
@@ -20,8 +21,11 @@ from project.app.services.llm import get_llm_client
 PROMPT = """Extract a token transfer rule from the user's sentence.
 Return null for any field the sentence does not mention.
 - token: the token symbol, uppercase (e.g. "USDC").
-- amount: the minimum amount as a plain decimal number in whole tokens, no
-  commas or units ("over 10" -> "10", "1.5k" -> "1500").
+- amount: the amount as a plain decimal number in whole tokens, no commas or
+  units ("over 10" -> "10", "1.5k" -> "1500").
+- amount_operator: how the transfer compares to amount: "gt" (over, more
+  than), "gte" (at least), "lt" (under, less than), "lte" (at most), "eq"
+  (exactly). Null when no amount is mentioned.
 - from_address: the sender 0x address, exactly as written.
 - to_address: the recipient 0x address, exactly as written.
 
@@ -31,11 +35,18 @@ ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 AMOUNT_RE = re.compile(r"[0-9]+(\.[0-9]+)?")
 
 
+AmountOperator = Literal["gt", "gte", "lt", "lte", "eq"]
+OPERATOR_SYMBOLS = {"gt": ">", "gte": "≥", "lt": "<", "lte": "≤", "eq": "="}
+
+
 class TransferDraft(BaseModel):
-    """The four answers the LLM gives for one sentence; null when not mentioned."""
+    """The answers the LLM gives for one sentence; null when not mentioned."""
 
     token: str | None = Field(description="Token symbol, e.g. USDC")
-    amount: str | None = Field(description="Minimum amount in whole tokens, e.g. 10")
+    amount: str | None = Field(description="Amount in whole tokens, e.g. 10")
+    amount_operator: AmountOperator | None = Field(
+        description="gt, gte, lt, lte or eq; null means gt"
+    )
     from_address: str | None = Field(description="Sender 0x address")
     to_address: str | None = Field(description="Recipient 0x address")
 
@@ -68,8 +79,10 @@ def propose(owner, sentence, chain=ChainId.ETHEREUM):
         compare("token", "eq", {"chain": chain, "address": token.contract.address})
         understood.append(token.symbol)
     if draft.amount and AMOUNT_RE.fullmatch(draft.amount.strip()):
-        compare("amount", "gt", draft.amount.strip())
-        understood.append(f"> {draft.amount.strip()}")
+        # A sentence with an amount but no comparison word ("10 USDC") reads as "over".
+        operator = draft.amount_operator or "gt"
+        compare("amount", operator, draft.amount.strip())
+        understood.append(f"{OPERATOR_SYMBOLS[operator]} {draft.amount.strip()}")
     for field, label in (("from_address", "from"), ("to_address", "to")):
         address = getattr(draft, field)
         if address and ADDRESS_RE.fullmatch(address.strip()):

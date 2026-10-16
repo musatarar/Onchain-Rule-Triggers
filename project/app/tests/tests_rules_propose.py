@@ -39,7 +39,9 @@ class ProposeApiTests(TestCase):
 
     def test_token_amount_and_to(self):
         response = self._post(
-            TransferDraft(token="usdc", amount="10", from_address=None, to_address=TO)
+            TransferDraft(
+                token="usdc", amount="10", amount_operator=None, from_address=None, to_address=TO
+            )
         )
         self.assertEqual(response.status_code, 200)
         leaves = [
@@ -56,9 +58,25 @@ class ProposeApiTests(TestCase):
         )
         self.assertEqual(response.json()["tag"], "USDC")
 
+    def test_amount_operator_is_kept(self):
+        draft = TransferDraft(
+            token=None, amount="250", amount_operator="gte", from_address=None, to_address=None
+        )
+        response = self._post(draft)
+        self.assertEqual(response.status_code, 200)
+        (gate,) = response.json()["condition"]["children"]
+        self.assertEqual((gate["field"], gate["operator"], gate["value"]), ("amount", "gte", "250"))
+        self.assertEqual(response.json()["understood"], ["≥ 250"])
+
     def test_nothing_usable_is_422(self):
         response = self._post(
-            TransferDraft(token="NOPE", amount="lots", from_address="bob", to_address=None)
+            TransferDraft(
+                token="NOPE",
+                amount="lots",
+                amount_operator="gt",
+                from_address="bob",
+                to_address=None,
+            )
         )
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["code"], "not_understood")
