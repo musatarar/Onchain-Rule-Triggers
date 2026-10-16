@@ -91,6 +91,9 @@ EDITS = int(os.environ.get("STRESS_EDITS", "10"))
 CHECKED_USERS = 50
 # The rules the kept index's memory is measured on, at most.
 MEASURED_RULES = 20_000
+# Users added per round of inserts. Adding 50,000 users' trees in one insert a level
+# had one Postgres backend hold 7.7 GB, so they are added this many at a time.
+USERS_PER_INSERT = 5_000
 
 
 def _raw(name):
@@ -328,7 +331,17 @@ class StressTestCase(NodeTestCase):
         )
 
     def add_users(self, count, start=0, workload="demo"):
-        """``count`` users from the ``start``-th, each owning ten enabled rules of ``workload``; answers the rules."""
+        """``count`` users from the ``start``-th, each owning ten enabled rules of ``workload``; answers the rules.
+
+        They are added ``USERS_PER_INSERT`` at a time, so no insert grows with ``count``.
+        """
+        rules = []
+        for first in range(start, start + count, USERS_PER_INSERT):
+            batch = min(USERS_PER_INSERT, start + count - first)
+            rules += self._add_users(batch, first, workload)
+        return rules
+
+    def _add_users(self, count, start, workload):
         users = get_user_model().objects.bulk_create(
             get_user_model()(username=f"user{start + index}@stress.example")
             for index in range(count)
