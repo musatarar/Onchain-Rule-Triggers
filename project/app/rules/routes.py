@@ -7,7 +7,6 @@ lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
 the payload is ignored), and a row id belonging to someone else reads as 404.
 """
 
-import logging
 import re
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -25,8 +24,6 @@ from project.app.evm.chains import ChainId
 from project.app.rules import propose, services, utils
 from project.app.rules.models import Rule
 from project.app.services.llm import LLMError
-
-logger = logging.getLogger(__name__)
 
 # The journal's page size when ``?page_size=`` is left out, and the most it can ask for.
 JOURNAL_PAGE_SIZE = 50
@@ -355,8 +352,7 @@ class ProposeView(APIView):
         body.is_valid(raise_exception=True)
         try:
             proposal = propose.propose(request.user, body.validated_data["sentence"])
-        except (DjangoValidationError, LLMError) as exc:
-            logger.warning("propose: 422 for %r: %r", body.validated_data["sentence"], exc)
+        except (DjangoValidationError, LLMError):
             return Response(
                 {"detail": "Couldn't turn that into conditions.", "code": "not_understood"},
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,

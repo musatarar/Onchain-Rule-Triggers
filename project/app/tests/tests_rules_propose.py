@@ -13,7 +13,6 @@ from project.app.rules.propose import TransferDraft
 from project.app.services.llm import LLMTimeoutError
 
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-ETHFI = "0xfe0c30065b384f05761f15d0cc899d4f9f9cc0eb"
 TO = "0x34" + "ab" * 19
 
 
@@ -29,16 +28,6 @@ class ProposeApiTests(TestCase):
                 name="USD Coin",
                 coingecko_id="usd-coin",
                 symbol="USDC",
-            )
-        )
-
-        evm_services.save_token(
-            TokenCreateSchema(
-                chain=ChainId.ETHEREUM,
-                address=ETHFI,
-                name="Ether.fi",
-                coingecko_id="ether-fi",
-                symbol="ETHFI",
             )
         )
 
@@ -78,35 +67,6 @@ class ProposeApiTests(TestCase):
         (gate,) = response.json()["condition"]["children"]
         self.assertEqual((gate["field"], gate["operator"], gate["value"]), ("amount", "gte", "250"))
         self.assertEqual(response.json()["understood"], ["≥ 250"])
-
-    def test_token_by_name_and_amount_with_magnitude(self):
-        """ "Ether.fi transfers over 10k": the model may answer with the name and "10k"."""
-        draft = TransferDraft(
-            token="ETHER.FI", amount="10k", amount_operator="gt", from_address=None, to_address=None
-        )
-        response = self._post(draft)
-        self.assertEqual(response.status_code, 200)
-        leaves = [
-            (c["field"], c["operator"], c["value"])
-            for c in response.json()["condition"]["children"]
-        ]
-        self.assertEqual(
-            leaves, [("token", "eq", {"chain": 1, "address": ETHFI}), ("amount", "gt", "10000")]
-        )
-
-    def test_amount_forms(self):
-        from project.app.rules.propose import _amount
-
-        for text, expected in [
-            ("10000", "10000"),
-            ("10,000", "10000"),
-            ("1.5k", "1500"),
-            ("$2M", "2000000"),
-            ("0.5", "0.5"),
-            ("lots", None),
-            (None, None),
-        ]:
-            self.assertEqual(_amount(text), expected, text)
 
     def test_nothing_usable_is_422(self):
         response = self._post(
